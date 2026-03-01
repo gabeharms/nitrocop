@@ -64,7 +64,18 @@ impl Cop for DotSeparatedKeys {
             None => return,
         };
 
-        for arg in args.arguments().iter() {
+        // RuboCop requires the first positional argument to be a symbol or string literal.
+        // If the first arg is a variable, method call, array, etc., don't flag.
+        let arg_list = args.arguments();
+        let first_arg = match arg_list.iter().next() {
+            Some(a) => a,
+            None => return,
+        };
+        if first_arg.as_symbol_node().is_none() && first_arg.as_string_node().is_none() {
+            return;
+        }
+
+        for arg in arg_list.iter() {
             let hash = if let Some(h) = arg.as_keyword_hash_node() {
                 h.elements()
             } else {
