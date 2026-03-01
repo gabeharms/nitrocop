@@ -25,6 +25,10 @@ const EXAMPLE_METHODS: &[&[u8]] = &[
     b"pending",
 ];
 
+fn is_identifier_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 /// Check if trimmed line starts with an RSpec example method call (e.g. `it `, `its(`, `specify {`).
 /// Returns the example method name if found, or None.
 fn line_example_method(trimmed: &[u8]) -> Option<&'static [u8]> {
@@ -38,6 +42,62 @@ fn line_example_method(trimmed: &[u8]) -> Option<&'static [u8]> {
         }
     }
     None
+}
+
+/// Check if a line contains an RSpec example method call anywhere on the line.
+/// Used for one-line nested forms like:
+/// `items.each { |item| it { is_expected.to ... } }`
+fn line_contains_example_method(trimmed: &[u8]) -> Option<&'static [u8]> {
+    for &method in EXAMPLE_METHODS {
+        if trimmed.len() <= method.len() {
+            continue;
+        }
+
+        for start in 0..=(trimmed.len() - method.len()) {
+            if &trimmed[start..start + method.len()] != method {
+                continue;
+            }
+
+            // Require a token boundary before the method name.
+            if start > 0 && is_identifier_byte(trimmed[start - 1]) {
+                continue;
+            }
+
+            // Method name must be followed by space, `(`, `{`, or `'`/`"`.
+            if start + method.len() >= trimmed.len() {
+                continue;
+            }
+
+            let next = trimmed[start + method.len()];
+            if next == b' ' || next == b'(' || next == b'{' || next == b'\'' || next == b'"' {
+                return Some(method);
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if a line contains `end` as a standalone token.
+fn line_contains_end_keyword(line: &[u8]) -> bool {
+    if line.len() < 3 {
+        return false;
+    }
+
+    for i in 0..=(line.len() - 3) {
+        if &line[i..i + 3] != b"end" {
+            continue;
+        }
+
+        let before_ok = i == 0 || !is_identifier_byte(line[i - 1]);
+        let after_ok = i + 3 == line.len() || !is_identifier_byte(line[i + 3]);
+
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+
+    false
 }
 
 impl Cop for ImplicitSubject {
@@ -119,9 +179,12 @@ impl Cop for ImplicitSubject {
             Some((_, example_line)) => {
                 // Check if the example block is on a single line
                 let example_line_bytes = source.lines().nth(example_line - 1).unwrap_or(b"");
-                // Single-line if the example opener line contains a closing `}` or `end`
+                // Single-line if the example opener line contains an inline closer
+                // (`}` for brace blocks, `end` for one-line do/end blocks)
                 // and the implicit subject call is on the same line as the example opener
-                line == example_line && example_line_bytes.contains(&b'}')
+                line == example_line
+                    && (example_line_bytes.contains(&b'}')
+                        || line_contains_end_keyword(example_line_bytes))
             }
             None => false,
         };
@@ -167,6 +230,14 @@ fn find_enclosing_example(source: &SourceFile, from_line: usize) -> Option<(&'st
             Some(s) => &line_bytes[s..],
             None => continue,
         };
+
+        // Same-line nested examples:
+        // `helper { it { is_expected.to ... } }`
+        if check_line == from_line {
+            if let Some(method) = line_contains_example_method(trimmed) {
+                return Some((method, check_line));
+            }
+        }
 
         if let Some(method) = line_example_method(trimmed) {
             return Some((method, check_line));

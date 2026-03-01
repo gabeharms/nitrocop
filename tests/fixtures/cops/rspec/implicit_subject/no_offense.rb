@@ -18,3 +18,11 @@ it 'uses some similar sounding methods' do
   baz.is_expected
   foo.should(deny_access)
 end
+
+[1, 2].each do |value|
+  helper_context(item: value) { it { should eq(value) } }
+end
+
+it do setup_helper('x') do is_expected.not_to be_bad end end
+
+['a', 'b'].each { |entry| it { is_expected.to eq(entry) } }
