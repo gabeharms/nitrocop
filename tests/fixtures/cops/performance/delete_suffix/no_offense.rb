@@ -11,3 +11,7 @@ str.gsub(/suffix\z/x, '')
 str.gsub(/@suffix\z/, '')
 # Both \A and \z anchors — not just a suffix
 str.gsub(/\Asuffix\z/, '')
+# Unescaped dot is a regex metacharacter, not a literal suffix
+str.sub(/.rb\z/, '')
+str.gsub(/.git\z/, '')
+str.sub!(/.\z/, '')
