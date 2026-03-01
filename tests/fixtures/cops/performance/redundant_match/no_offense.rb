@@ -62,10 +62,12 @@ mapper.match 'sms', via: [:get, :post]
 mapper.match '/', action: 'index', as: 'search', via: [:get, :post]
 # Value is used through string interpolation
 break "/docs/screens#{/#.*$/.match(url)}"
-# Case branch return value is used
-case type
-when :either
-  name.to_s.match(/^(inspec|train)-/)
-else
-  false
+# Case branch return value is used (implicit method return)
+def check_type(type, name)
+  case type
+  when :either
+    name.to_s.match(/^(inspec|train)-/)
+  else
+    false
+  end
 end
