@@ -15,3 +15,10 @@
 # Complex nested character classes
 /^@{0,2}[\d[[:lower:]]_]+$/
 /^@{0,2}(?:_|_?[[[:lower:]]][\d[[:lower:]][[:upper:]]]*)[!?=]?$/
+
+# Interpolated character class should not be analyzed part-by-part.
+charset = "a-z"
+/[^#{charset}]/
+
+word_chars = "\\p{Word}"
+/(^|[^#{word_chars};:}])text/

@@ -65,23 +65,9 @@ impl Cop for UnescapedBracketInRegexp {
         }
 
         // Check InterpolatedRegularExpressionNode
-        if let Some(interp_regexp) = node.as_interpolated_regular_expression_node() {
-            for part in interp_regexp.parts().iter() {
-                if let Some(s) = part.as_string_node() {
-                    let content = s.unescaped();
-                    let content_str = match std::str::from_utf8(content) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    let content_start = s.content_loc().start_offset();
-                    diagnostics.extend(find_unescaped_brackets(
-                        self,
-                        source,
-                        content_str,
-                        content_start,
-                    ));
-                }
-            }
+        if node.as_interpolated_regular_expression_node().is_some() {
+            // Scanning interpolated regex parts independently creates false positives when
+            // a character class starts before interpolation and closes after it.
         }
     }
 }
