@@ -41,11 +41,12 @@ impl Cop for HooksBeforeExamples {
 
         let method_name = call.name().as_slice();
 
-        // Check for example group calls (including ::RSpec.describe)
+        // Check for example group calls (including ::RSpec.describe), but
+        // exclude shared groups to match RuboCop's ExampleGroups scope.
         let is_example_group = if let Some(recv) = call.receiver() {
             util::constant_name(&recv).is_some_and(|n| n == b"RSpec") && method_name == b"describe"
         } else {
-            is_rspec_example_group(method_name)
+            is_rspec_example_group(method_name) && !is_shared_group(method_name)
         };
 
         if !is_example_group {
@@ -76,10 +77,16 @@ impl Cop for HooksBeforeExamples {
             if let Some(c) = stmt.as_call_node() {
                 let name = c.name().as_slice();
                 if c.receiver().is_none() {
-                    if is_rspec_example(name)
-                        || (is_rspec_example_group(name) && !is_shared_group(name))
-                        || is_example_include(name)
-                    {
+                    // RuboCop's matcher counts:
+                    // - examples/example groups only when they're block forms
+                    // - include_examples/it_behaves_like only as plain sends (no block)
+                    let is_example_or_group_with_block = (is_rspec_example(name)
+                        || (is_rspec_example_group(name) && !is_shared_group(name)))
+                        && c.block().is_some();
+                    let is_example_include_without_block =
+                        is_example_include(name) && c.block().is_none();
+
+                    if is_example_or_group_with_block || is_example_include_without_block {
                         seen_example = true;
                     } else if seen_example && is_rspec_hook(name) {
                         let hook_name = std::str::from_utf8(name).unwrap_or("before");

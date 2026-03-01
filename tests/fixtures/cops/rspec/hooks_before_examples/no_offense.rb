@@ -55,3 +55,23 @@ RSpec.describe Loader do
     expect(loader.files).not_to be_empty
   end
 end
+
+shared_examples_for 'reporter behavior' do
+  include_examples 'component behavior'
+
+  before(:all) { setup_reporter }
+  after(:each) { cleanup_reporter }
+end
+
+# include-style calls with blocks are not treated as examples
+RSpec.describe Service do
+  it_behaves_like 'shared behavior' do
+    let(:value) { 1 }
+  end
+
+  before { setup_service }
+
+  it 'runs' do
+    expect(value).to eq(1)
+  end
+end
