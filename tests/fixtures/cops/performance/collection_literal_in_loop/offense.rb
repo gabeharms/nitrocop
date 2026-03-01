@@ -56,3 +56,7 @@ while true
     s.upcase
   end
 end
+items.each do |str|
+  [/foo/, /bar/].any? { |r| str.match?(r) }
+  ^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.
+end

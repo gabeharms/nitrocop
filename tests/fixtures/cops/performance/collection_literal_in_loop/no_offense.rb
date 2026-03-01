@@ -21,3 +21,9 @@ end
 while x < 100
   puts x
 end
+# Safe navigation (&.) should NOT be treated as a loop
+items&.each { |item| [1, 2, 3].include?(item) }
+items&.map { |item| [1, 2, 3].include?(item) }
+items&.select { |item| { a: 1 }.key?(item) }
+# Interpolated regex is NOT a basic literal — should not be flagged
+items.each { |item| [/foo/, /#{item}/].any? { |r| "str".match?(r) } }

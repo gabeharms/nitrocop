@@ -5,25 +5,18 @@ use ruby_prism::Visit;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-/// ## Known false positives (17 FP in corpus as of 2026-03-01)
+/// ## FP/FN history
 ///
-/// An attempt was made to fix FPs (commit 2ffed5a7, reverted). Two changes:
-///   1. Safe navigation exclusion: `items&.each { }` should not count as a
+/// A previous attempt to fix FPs (commit 2ffed5a7) was reverted because the
+/// source-byte comparison for structural equality was too aggressive — it
+/// matched literals that happened to have the same text as a loop receiver
+/// in an unrelated ancestor scope, suppressing valid offenses.
+///
+/// Current fixes applied:
+///   1. Safe navigation exclusion: `items&.each { }` does not count as a
 ///      loop (RuboCop's enumerable_loop? only matches `send`, not `csend`).
-///   2. Structural equality skip: when a literal like `[1, 2]` appears inside
-///      `[1, 2].each { }`, RuboCop skips it because the literal structurally
-///      equals the loop's receiver. Implemented via source-byte comparison of
-///      literal vs ancestor loop receivers.
-///
-/// This fixed 17 target FPs but introduced 8 NEW false positives (17→25 FP),
-/// while eliminating 10 FNs (net divergence improved 27→25 but FPs increased).
-/// Root cause of regression: the source-byte comparison was too aggressive —
-/// it matched literals that happened to have the same text as a loop receiver
-/// in an unrelated ancestor scope, suppressing valid offenses. A correct fix
-/// needs true structural node comparison (not just source byte equality) and
-/// must scope the receiver matching to the IMMEDIATE enclosing loop, not all
-/// ancestor loops. The safe-nav fix (change 1) may be correct on its own but
-/// was not tested in isolation.
+///   2. Added regex, rational, and imaginary node types to
+///      `is_recursive_basic_literal` to match RuboCop's `recursive_basic_literal?`.
 pub struct CollectionLiteralInLoop;
 
 const ENUMERABLE_METHODS: &[&[u8]] = &[
@@ -372,7 +365,9 @@ impl<'pr> Visit<'pr> for CollectionLiteralVisitor<'_, '_> {
 }
 
 impl CollectionLiteralVisitor<'_, '_> {
-    /// Check if a call node is a loop-like method (Kernel.loop or enumerable method)
+    /// Check if a call node is a loop-like method (Kernel.loop or enumerable method).
+    /// RuboCop's `enumerable_loop?` pattern only matches `send`, not `csend` (safe
+    /// navigation `&.`), so `items&.each { }` is NOT treated as a loop.
     fn is_loop_method(&self, call: &ruby_prism::CallNode<'_>) -> bool {
         let method_name = call.name().as_slice();
 
@@ -395,6 +390,14 @@ impl CollectionLiteralVisitor<'_, '_> {
                         }
                     }
                 }
+            }
+        }
+
+        // Safe navigation (&.) calls are NOT loops — RuboCop's enumerable_loop?
+        // pattern only matches `send`, not `csend`.
+        if let Some(op) = call.call_operator_loc() {
+            if op.as_slice() == b"&." {
+                return false;
             }
         }
 
@@ -462,6 +465,9 @@ impl CollectionLiteralVisitor<'_, '_> {
 }
 
 /// Check if a node is a recursive basic literal (all children are basic literals too).
+/// Matches RuboCop's `recursive_basic_literal?` which includes: int, float, str, sym,
+/// nil, true, false, complex (ImaginaryNode), rational (RationalNode), and
+/// regexp (non-interpolated RegularExpressionNode).
 fn is_recursive_basic_literal(node: &ruby_prism::Node<'_>) -> bool {
     if node.as_integer_node().is_some()
         || node.as_float_node().is_some()
@@ -470,6 +476,9 @@ fn is_recursive_basic_literal(node: &ruby_prism::Node<'_>) -> bool {
         || node.as_nil_node().is_some()
         || node.as_true_node().is_some()
         || node.as_false_node().is_some()
+        || node.as_rational_node().is_some()
+        || node.as_imaginary_node().is_some()
+        || node.as_regular_expression_node().is_some()
     {
         return true;
     }
@@ -771,6 +780,24 @@ mod tests {
             &CollectionLiteralInLoop,
             b"items.each do |item|\n  [1, 2, 3].include?(item)\n  ^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\nend\n",
             config,
+        );
+    }
+
+    #[test]
+    fn detects_regex_array_in_loop() {
+        // Array of regex literals should be detected (regex is a basic literal in RuboCop)
+        crate::testutil::assert_cop_offenses_full(
+            &CollectionLiteralInLoop,
+            b"items.each do |str|\n  [/foo/, /bar/].any? { |r| str.match?(r) }\n  ^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\nend\n",
+        );
+    }
+
+    #[test]
+    fn no_offense_safe_navigation_loop() {
+        // Safe navigation (&.) should NOT be treated as a loop
+        crate::testutil::assert_cop_no_offenses_full(
+            &CollectionLiteralInLoop,
+            b"items&.each { |item| [1, 2, 3].include?(item) }\n",
         );
     }
 }
