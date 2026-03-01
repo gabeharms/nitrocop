@@ -45,7 +45,7 @@ impl Cop for MessageExpectation {
         };
 
         let method_name = call.name().as_slice();
-        if method_name != b"to" && method_name != b"not_to" && method_name != b"to_not" {
+        if method_name != b"to" {
             return;
         }
 
@@ -60,24 +60,11 @@ impl Cop for MessageExpectation {
         }
 
         let first_arg = &arg_list[0];
-        // The first arg could be `receive(...)` directly or chained like `receive(...).with(...)`
-        let receive_call = if let Some(c) = first_arg.as_call_node() {
-            // Could be `receive(...)` or `receive(...).with(...)` etc
-            if c.name().as_slice() == b"receive" && c.receiver().is_none() {
-                Some(c)
-            } else if let Some(recv) = c.receiver() {
-                // Check if the receiver chain eventually has `receive`
-                recv.as_call_node().filter(|inner| {
-                    inner.name().as_slice() == b"receive" && inner.receiver().is_none()
-                })
-            } else {
-                None
-            }
-        } else {
-            None
+        let matcher_call = match first_arg.as_call_node() {
+            Some(c) => c,
+            None => return,
         };
-
-        if receive_call.is_none() {
+        if !call_chain_includes_receive(matcher_call) {
             return;
         }
 
@@ -124,6 +111,20 @@ impl Cop for MessageExpectation {
             ));
         }
     }
+}
+
+fn call_chain_includes_receive(call: ruby_prism::CallNode<'_>) -> bool {
+    if call.name().as_slice() == b"receive" && call.receiver().is_none() {
+        return true;
+    }
+
+    if let Some(recv) = call.receiver() {
+        if let Some(recv_call) = recv.as_call_node() {
+            return call_chain_includes_receive(recv_call);
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
