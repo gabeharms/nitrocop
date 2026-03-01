@@ -58,3 +58,12 @@ end
 if config.verbose.to_s =~ /^-?(v+)$/
   result = $+
 end
+# =~ inside case/in pattern matching guard — not flagged
+case val
+in pattern if val =~ /regex/
+  :ok
+end
+case val
+in { name: name } if name =~ /human/i
+  puts name
+end

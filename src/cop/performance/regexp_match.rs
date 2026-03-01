@@ -229,6 +229,17 @@ impl<'pr> Visit<'pr> for ConditionVisitor<'_, '_> {
     // RuboCop only checks on_if (covers if/unless/elsif/ternary) and on_case.
     // It does NOT check while/until conditions.
 
+    // In pattern matching `case/in`, the guard `if`/`unless` is embedded as an
+    // IfNode/UnlessNode inside InNode.pattern(). The default visitor would descend
+    // into these and treat the guard condition as a regular if-condition. RuboCop's
+    // `on_if` does NOT fire for pattern matching guards, so we skip the pattern
+    // and only visit the body (statements).
+    fn visit_in_node(&mut self, node: &ruby_prism::InNode<'pr>) {
+        if let Some(stmts) = node.statements() {
+            self.visit(&stmts.as_node());
+        }
+    }
+
     fn visit_case_node(&mut self, node: &ruby_prism::CaseNode<'pr>) {
         // RuboCop only checks case-less when (i.e., `case\n when cond\n ...`)
         if node.predicate().is_none() {
