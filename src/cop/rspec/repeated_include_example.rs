@@ -231,17 +231,11 @@ impl<'pr> Visit<'pr> for NonLiteralOrConstVisitor {
         self.mark();
     }
 
-    fn visit_class_variable_read_node(
-        &mut self,
-        _node: &ruby_prism::ClassVariableReadNode<'pr>,
-    ) {
+    fn visit_class_variable_read_node(&mut self, _node: &ruby_prism::ClassVariableReadNode<'pr>) {
         self.mark();
     }
 
-    fn visit_global_variable_read_node(
-        &mut self,
-        _node: &ruby_prism::GlobalVariableReadNode<'pr>,
-    ) {
+    fn visit_global_variable_read_node(&mut self, _node: &ruby_prism::GlobalVariableReadNode<'pr>) {
         self.mark();
     }
 
@@ -249,17 +243,11 @@ impl<'pr> Visit<'pr> for NonLiteralOrConstVisitor {
         self.mark();
     }
 
-    fn visit_interpolated_string_node(
-        &mut self,
-        _node: &ruby_prism::InterpolatedStringNode<'pr>,
-    ) {
+    fn visit_interpolated_string_node(&mut self, _node: &ruby_prism::InterpolatedStringNode<'pr>) {
         self.mark();
     }
 
-    fn visit_interpolated_symbol_node(
-        &mut self,
-        _node: &ruby_prism::InterpolatedSymbolNode<'pr>,
-    ) {
+    fn visit_interpolated_symbol_node(&mut self, _node: &ruby_prism::InterpolatedSymbolNode<'pr>) {
         self.mark();
     }
 }
