@@ -3,6 +3,25 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
 pub struct RedundantMatch;
+// HANDOFF (March 1, 2026):
+// Status:
+//   Performance/RedundantMatch = +1 FP, 0 FN (latest local full-corpus rerun).
+//
+// Verified repro command:
+//   python3 scripts/check-cop.py Performance/RedundantMatch \
+//     --input "/var/folders/bp/9k2j7t8j4k74vtdk2twvm82m0000gn/T/gem-progress-zn88twq6/corpus-results.json" \
+//     --verbose --rerun
+//
+// Validation parity requirements:
+//   - Use --rerun and baseline bundle at bench/corpus/vendor/bundle.
+//   - Compare with RuboCop invocation parity from corpus oracle:
+//     --force-exclusion --cache false (Rubocop may still return rc=2 on parser errors).
+//
+// Known hotspot:
+//   - Remaining mismatch likely tied to jruby parser-error aggregation path.
+//   - Previously validated baseline FP examples (already mostly handled):
+//     freeCodeCamp__devdocs__3987861: lib/docs/scrapers/tailwindcss.rb
+//     inspec__inspec__965502e: lib/inspec/plugin/v2/filter.rb
 
 impl Cop for RedundantMatch {
     fn name(&self) -> &'static str {
