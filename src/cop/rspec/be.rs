@@ -51,7 +51,7 @@ impl Cop for Be {
         };
 
         let arg_list: Vec<_> = args.arguments().iter().collect();
-        if arg_list.is_empty() {
+        if arg_list.len() != 1 {
             return;
         }
 
@@ -72,6 +72,11 @@ impl Cop for Be {
 
         // Must have no arguments
         if be_call.arguments().is_some() {
+            return;
+        }
+
+        // `expect(...).to be { ... }` has a block and is allowed.
+        if be_call.block().is_some() {
             return;
         }
 

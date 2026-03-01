@@ -3,3 +3,5 @@ it { expect(foo).not_to be(0) }
 it { expect(foo).to be_truthy }
 it { expect(foo).not_to be_falsy }
 it { expect(foo).to be_nil }
+it { expect(tree_hash[join]).to be {} }
+it { expect(idx).to be, -> { name } }
