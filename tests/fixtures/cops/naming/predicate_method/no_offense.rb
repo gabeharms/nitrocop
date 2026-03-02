@@ -126,3 +126,24 @@ def evidence(node)
     yield(filename)
   end
 end
+
+# spaceship operator returns Integer, not boolean — not a predicate
+def compare(a, b)
+  a <=> b
+end
+
+# spaceship in conditional context — still not boolean
+def direction(x, y)
+  x <=> y
+end
+
+# predicate returning self — self is not a literal, conservative mode skips
+def ready?
+  setup
+  self
+end
+
+# predicate returning lambda — lambda is not a literal, conservative mode skips
+def authorized?
+  -> { true }
+end

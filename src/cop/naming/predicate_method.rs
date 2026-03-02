@@ -19,8 +19,9 @@ const OPERATOR_METHODS: &[&[u8]] = &[
 ];
 
 /// Comparison methods whose return value is boolean.
+/// Note: `<=>` is intentionally excluded — it returns Integer (-1, 0, 1), not boolean.
 const COMPARISON_METHODS: &[&[u8]] = &[
-    b"==", b"!=", b"<", b">", b"<=", b">=", b"<=>", b"===", b"match?", b"equal?", b"eql?",
+    b"==", b"!=", b"<", b">", b"<=", b">=", b"===", b"match?", b"equal?", b"eql?",
 ];
 
 /// Classification of a return value.
@@ -581,10 +582,14 @@ fn classify_node(node: &ruby_prism::Node<'_>, wayward: &[String]) -> ReturnType 
         || node.as_source_file_node().is_some()
         || node.as_source_line_node().is_some()
         || node.as_source_encoding_node().is_some()
-        || node.as_self_node().is_some()
-        || node.as_lambda_node().is_some()
     {
         return ReturnType::NonBooleanLiteral;
+    }
+
+    // self and lambda — RuboCop treats these as unknown/call-like, not literals.
+    // In conservative mode, Unknown causes the cop to skip the method.
+    if node.as_self_node().is_some() || node.as_lambda_node().is_some() {
+        return ReturnType::Unknown;
     }
 
     // super / forwarding_super
