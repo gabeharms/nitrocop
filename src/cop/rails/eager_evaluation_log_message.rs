@@ -1,10 +1,7 @@
-use crate::cop::node_type::{
-    CALL_NODE, CONSTANT_PATH_NODE, CONSTANT_READ_NODE, INTERPOLATED_STRING_NODE,
-};
-use crate::cop::util;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
+use ruby_prism::Visit;
 
 pub struct EagerEvaluationLogMessage;
 
@@ -17,29 +14,63 @@ impl Cop for EagerEvaluationLogMessage {
         Severity::Convention
     }
 
-    fn interested_node_types(&self) -> &'static [u8] {
-        &[
-            CALL_NODE,
-            CONSTANT_PATH_NODE,
-            CONSTANT_READ_NODE,
-            INTERPOLATED_STRING_NODE,
-        ]
-    }
-
-    fn check_node(
+    fn check_source(
         &self,
         source: &SourceFile,
-        node: &ruby_prism::Node<'_>,
-        _parse_result: &ruby_prism::ParseResult<'_>,
+        parse_result: &ruby_prism::ParseResult<'_>,
+        _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let call = match node.as_call_node() {
-            Some(c) => c,
-            None => return,
+        let mut visitor = EagerEvalVisitor {
+            cop: self,
+            source,
+            diagnostics: Vec::new(),
+            sole_block_stmt: false,
         };
+        visitor.visit(&parse_result.node());
+        diagnostics.extend(visitor.diagnostics);
+    }
+}
 
+struct EagerEvalVisitor<'a> {
+    cop: &'a EagerEvaluationLogMessage,
+    source: &'a SourceFile,
+    diagnostics: Vec<Diagnostic>,
+    /// True when visiting the sole statement inside a block body.
+    /// Matches RuboCop's `return if node.parent&.block_type?` — in Parser AST,
+    /// a block with a single statement has the statement as a direct child of the
+    /// block node (no `begin` wrapper), so `parent.block_type?` is true.
+    sole_block_stmt: bool,
+}
+
+impl<'pr> Visit<'pr> for EagerEvalVisitor<'_> {
+    fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
+        // If the block body has exactly 1 statement, set the flag while visiting it.
+        if let Some(body) = node.body() {
+            if let Some(stmts) = body.as_statements_node() {
+                let count = stmts.body().iter().count();
+                if count == 1 {
+                    let was = self.sole_block_stmt;
+                    self.sole_block_stmt = true;
+                    self.visit(&body);
+                    self.sole_block_stmt = was;
+                    return;
+                }
+            }
+        }
+        ruby_prism::visit_block_node(self, node);
+    }
+
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        self.check_debug_call(node);
+        ruby_prism::visit_call_node(self, node);
+    }
+}
+
+impl EagerEvalVisitor<'_> {
+    fn check_debug_call(&mut self, call: &ruby_prism::CallNode<'_>) {
         if call.name().as_slice() != b"debug" {
             return;
         }
@@ -49,26 +80,35 @@ impl Cop for EagerEvaluationLogMessage {
             return;
         }
 
+        // RuboCop: `return if node.parent&.block_type?` — skip when the debug call
+        // is the sole statement in a block body.
+        if self.sole_block_stmt {
+            return;
+        }
+
         // RuboCop's pattern matches `send` (not `csend`), so safe navigation
-        // `Rails.logger&.debug(...)` is excluded. Check the call operator.
+        // `Rails.logger&.debug(...)` is excluded.
         if let Some(op) = call.call_operator_loc() {
-            if source.as_bytes()[op.start_offset()..op.end_offset()] == *b"&." {
+            if self.source.as_bytes()[op.start_offset()..op.end_offset()] == *b"&." {
                 return;
             }
         }
 
         // Receiver must be Rails.logger (a 2-method chain)
-        let chain = match util::as_method_chain(node) {
+        let receiver = match call.receiver() {
+            Some(r) => r,
+            None => return,
+        };
+        let inner_call = match receiver.as_call_node() {
             Some(c) => c,
             None => return,
         };
-
-        if chain.inner_method != b"logger" {
+        if inner_call.name().as_slice() != b"logger" {
             return;
         }
 
         // Inner receiver must be `Rails` constant
-        let inner_recv = match chain.inner_call.receiver() {
+        let inner_recv = match inner_call.receiver() {
             Some(r) => r,
             None => return,
         };
@@ -96,15 +136,14 @@ impl Cop for EagerEvaluationLogMessage {
             return;
         }
 
-        // Check if the first argument is an interpolated string
         if arg_list[0].as_interpolated_string_node().is_none() {
             return;
         }
 
-        let loc = node.location();
-        let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
-            source,
+        let loc = call.location();
+        let (line, column) = self.source.offset_to_line_col(loc.start_offset());
+        self.diagnostics.push(self.cop.diagnostic(
+            self.source,
             line,
             column,
             "Pass a block to `Rails.logger.debug`.".to_string(),
