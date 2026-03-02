@@ -119,6 +119,7 @@ Report:
 - Parallel-agent activity is common; expect unrelated local changes in the working tree.
 - Treat unrelated modified files as off-limits: do not edit/revert them unless the user explicitly asks.
 - Do not include unrelated files in your commit; stage only files for the cop(s) you are fixing.
+- Do not pause or block on unrelated working-tree changes; continue your task and leave those files untouched.
 - Never use `git stash` or `git stash pop`.
 - Do not copy identifiers from private repos into fixtures or source.
 - Prefer generic minimal repros and generic naming in tests.

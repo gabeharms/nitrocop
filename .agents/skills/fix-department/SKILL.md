@@ -135,6 +135,7 @@ Report:
 - Parallel-agent activity is common; expect unrelated local changes in the working tree.
 - Do not revert or include unrelated files in your commit; stage only files for the cop(s) you are fixing.
 - Treat unrelated modified files as off-limits: do not edit them unless the user explicitly asks.
+- Do not pause or block on unrelated working-tree changes; continue your task and leave those files untouched.
 - Commit each cop fix separately for safe cherry-picks.
 - Never use `git stash` or `git stash pop`.
 - Use local corpus files under `vendor/corpus/` when available.
