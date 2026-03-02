@@ -37,19 +37,28 @@ More text here.
 """
 
 
-def make_corpus(tmp: Path) -> tuple[Path, Path, Path]:
+# README with comma-formatted repo count (regression test for "1,1000" bug)
+SAMPLE_README_COMMA = SAMPLE_README.replace(
+    "[**500 open-source repos**]",
+    "[**1,000 open-source repos**]",
+)
+
+
+def make_corpus(tmp: Path, *, fp: int = 100000, fn: int = 100000,
+                matches: int = 4900000) -> tuple[Path, Path, Path]:
     """Write minimal corpus-results.json, manifest.jsonl, and README.md."""
+    total = matches + fn
     corpus = {
         "schema": 1,
         "summary": {
             "total_repos": 500,
             "repos_perfect": 100,
             "repos_error": 0,
-            "total_offenses_compared": 5100000,
-            "matches": 4900000,
-            "fp": 100000,
-            "fn": 100000,
-            "overall_match_rate": 0.9608,
+            "total_offenses_compared": total,
+            "matches": matches,
+            "fp": fp,
+            "fn": fn,
+            "overall_match_rate": matches / total if total > 0 else 0,
             "total_files_inspected": 167000,
         },
         "by_repo": [
@@ -133,7 +142,73 @@ def test_write():
         assert "| RuboCop offenses |" in updated
 
 
+def test_conformance_includes_fp():
+    """Conformance rate should be matches/(matches+fp+fn), not matches/(matches+fn).
+
+    With asymmetric FP/FN the two formulas diverge:
+    - matches/(matches+fn) = 10M/(10M+500K) = 95.2%
+    - matches/(matches+fp+fn) = 10M/(10M+120K+500K) = 94.2%
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        input_path, manifest_path, readme_path = make_corpus(
+            tmp, matches=10_000_000, fp=120_000, fn=500_000,
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable, str(SCRIPT),
+                "--input", str(input_path),
+                "--manifest", str(manifest_path),
+                "--readme", str(readme_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"Script failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+
+        updated = readme_path.read_text()
+        # matches/(matches+fp+fn) = 10M/10.62M = 94.2%
+        assert "94.2% conformance" in updated, (
+            f"Expected 94.2% (includes FP in denominator), got: "
+            + next(l for l in updated.splitlines() if "conformance" in l)
+        )
+        # NOT 95.2% (which would be matches/(matches+fn), ignoring FP)
+        assert "95.2% conformance" not in updated
+
+
+def test_comma_repo_count():
+    """Repo count regex should handle comma-formatted numbers (e.g. '1,000')."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        input_path, manifest_path, readme_path = make_corpus(tmp)
+        # Write README with comma-formatted repo count
+        readme_path.write_text(SAMPLE_README_COMMA)
+
+        result = subprocess.run(
+            [
+                sys.executable, str(SCRIPT),
+                "--input", str(input_path),
+                "--manifest", str(manifest_path),
+                "--readme", str(readme_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"Script failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+
+        updated = readme_path.read_text()
+        # Should NOT produce "1,500" or "1,1000" mangled forms
+        assert "1,500" not in updated
+        assert "1,1000" not in updated
+        assert "500 open-source repos" in updated
+
+
 if __name__ == "__main__":
     test_dry_run()
     test_write()
+    test_conformance_includes_fp()
+    test_comma_repo_count()
     print("OK: all tests passed")

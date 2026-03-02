@@ -131,10 +131,14 @@ def update_readme(readme_text: str, summary: dict, by_repo: list,
                   manifest: dict[str, tuple[str, int]]) -> str:
     """Replace conformance data in README text."""
     total_repos = summary["total_repos"]
-    match_rate = summary["overall_match_rate"]
+    matches = summary["matches"]
+    fp = summary["fp"]
+    fn = summary["fn"]
+    total = matches + fp + fn
+    conformance_rate = matches / total if total > 0 else 0.0
     files = summary.get("total_files_inspected", 0)
 
-    rate_str = format_match_rate(match_rate)
+    rate_str = format_match_rate(conformance_rate)
     files_str = format_files(files) if files > 0 else None
 
     # 1. Features bullet: **XX.X% conformance**
@@ -146,8 +150,8 @@ def update_readme(readme_text: str, summary: dict, by_repo: list,
 
     # 2. Repo count: update all "N open-source repos" occurrences
     readme_text = re.sub(
-        r"\d+ open-source repos",
-        f"{total_repos} open-source repos",
+        r"[\d,]+ open-source repos",
+        f"{total_repos:,} open-source repos",
         readme_text,
     )
 
