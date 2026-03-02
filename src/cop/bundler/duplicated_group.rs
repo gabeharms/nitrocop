@@ -129,7 +129,10 @@ fn source_text(source: &SourceFile, node: &ruby_prism::Node<'_>) -> String {
     String::from_utf8_lossy(&source.as_bytes()[loc.start_offset()..loc.end_offset()]).into_owned()
 }
 
-fn source_scope_key_for_call(source: &SourceFile, call: &ruby_prism::CallNode<'_>) -> Option<String> {
+fn source_scope_key_for_call(
+    source: &SourceFile,
+    call: &ruby_prism::CallNode<'_>,
+) -> Option<String> {
     if call.receiver().is_some() {
         return None;
     }

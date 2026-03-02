@@ -214,10 +214,14 @@ impl<'pr> Visit<'pr> for GemDeclarationVisitor<'_> {
     }
 
     fn visit_when_node(&mut self, node: &ruby_prism::WhenNode<'pr>) {
-        let case_root_id = self.ancestors.iter().rev().find_map(|frame| match frame.kind {
-            AncestorKind::Case { root_id } => Some(root_id),
-            _ => None,
-        });
+        let case_root_id = self
+            .ancestors
+            .iter()
+            .rev()
+            .find_map(|frame| match frame.kind {
+                AncestorKind::Case { root_id } => Some(root_id),
+                _ => None,
+            });
         if let Some(frame) = self.ancestors.last_mut() {
             frame.kind = case_root_id
                 .map(|root_id| AncestorKind::When { root_id })
