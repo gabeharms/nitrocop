@@ -33,8 +33,12 @@ impl MemoizedInstanceVariableName {
                 ivar_base == base_name || ivar_base == with_underscore
             }
             _ => {
-                // "disallowed" (default): only @method_name is valid
+                // "disallowed" (default): @method_name or @method_name_without_leading_underscore
+                // RuboCop's variable_name_candidates returns [method_name, no_underscore]
                 ivar_base == base_name
+                    || base_name
+                        .strip_prefix('_')
+                        .is_some_and(|stripped| ivar_base == stripped)
             }
         };
 
@@ -75,8 +79,11 @@ impl MemoizedInstanceVariableName {
                 ivar_base == base_name || ivar_base == with_underscore
             }
             _ => {
-                // "disallowed" (default)
+                // "disallowed" (default): @method_name or @method_name_without_leading_underscore
                 ivar_base == base_name
+                    || base_name
+                        .strip_prefix('_')
+                        .is_some_and(|stripped| ivar_base == stripped)
             }
         };
 
@@ -273,8 +280,9 @@ impl Cop for MemoizedInstanceVariableName {
             return;
         }
 
-        // Strip trailing ? or ! from method name for matching
-        let base_name = method_name_str.trim_end_matches(['?', '!']);
+        // Strip trailing ?, !, or = from method name for matching
+        // RuboCop does method_name.to_s.delete('!?=')
+        let base_name = method_name_str.trim_end_matches(['?', '!', '=']);
 
         let body = match def_node.body() {
             Some(b) => b,

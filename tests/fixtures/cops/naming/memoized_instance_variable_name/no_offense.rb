@@ -38,3 +38,21 @@ def compute!
   return @compute if defined?(@compute)
   @compute = heavy_calculation
 end
+
+# Setter method: = suffix stripped from method name
+def max_time=(value)
+  @max_time ||= value
+end
+
+def tab_color=(value)
+  @tab_color ||= value
+end
+
+# Leading underscore method in disallowed style: @ivar matches method without leading _
+def _rate_limit_key
+  @rate_limit_key ||= compute_key
+end
+
+def _strategies
+  @strategies ||= build_strategies
+end
