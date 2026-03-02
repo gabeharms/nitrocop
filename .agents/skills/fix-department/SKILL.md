@@ -123,6 +123,31 @@ Report:
 - Cops deferred/reverted and why
 - Verification status (`fmt`, `clippy`, `test`, `check-cop`, coverage docs)
 
+### Phase 5: Integrate Back to Main (Default)
+
+Do not leave retained progress only in a worktree branch.
+
+1. Commit all progress worth keeping in the worktree:
+   - Accepted cop fixes: one commit per cop (preferred).
+   - Useful investigation artifacts retained in repo (for example, reverted-attempt notes): separate commit.
+
+2. Integrate those commit(s) into `main` immediately (unless the user explicitly says not to):
+   ```bash
+   git -C /path/to/main checkout main
+   git -C /path/to/main cherry-pick <sha1> [<sha2> ...]
+   ```
+   If a merge is preferred, use a normal non-interactive merge.
+
+3. Verify integration on `main`:
+   ```bash
+   git -C /path/to/main log --oneline -n 10
+   git -C /path/to/main status --short --branch
+   ```
+
+4. Report exactly what was integrated (commit SHA(s) and short subjects).
+
+5. If there is truly no repo-retained progress, explicitly report that no commit was made.
+
 ## Notes
 
 - Use a dedicated git worktree for all code-editing runs of this skill, including single-agent runs.
@@ -136,7 +161,7 @@ Report:
 - Do not revert or include unrelated files in your commit; stage only files for the cop(s) you are fixing.
 - Treat unrelated modified files as off-limits: do not edit them unless the user explicitly asks.
 - Do not pause or block on unrelated working-tree changes; continue your task and leave those files untouched.
-- Commit each cop fix separately for safe cherry-picks.
+- Commit each cop fix separately for safe cherry-picks, then integrate into `main` before ending the run.
 - Never use `git stash` or `git stash pop`.
 - Use local corpus files under `vendor/corpus/` when available.
 - Do not copy identifiers from private repositories into source, fixtures, or commit messages.
