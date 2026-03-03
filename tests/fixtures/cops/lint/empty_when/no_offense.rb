@@ -17,3 +17,20 @@ when :fog, :azure
 when :filesystem
   process_fs
 end
+# Inline comment on when line (AllowComments: true by default)
+case line
+when /^\s+not a dynamic executable$/ # ignore non-executable files
+when :other
+  handle(line)
+end
+case char
+when 'C' ; # ignore right key
+when 'D' ; # ignore left key
+else
+  handle(char)
+end
+case value
+when 2 then # comment
+when 3
+  do_something
+end

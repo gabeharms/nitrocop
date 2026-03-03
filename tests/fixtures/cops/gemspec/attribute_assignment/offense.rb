@@ -1,12 +1,16 @@
 # nitrocop-filename: example.gemspec
+# Inconsistent hash assignment (metadata uses both direct and indexed)
 Gem::Specification.new do |spec|
-  spec.name = 'example'
-  spec.version = '1.0'
-  spec.name = 'other'
-       ^^^^ Gemspec/AttributeAssignment: Attribute `name` is already set on line 2.
-  spec.summary = 'Summary'
-  spec.summary = 'Other summary'
-       ^^^^^^^ Gemspec/AttributeAssignment: Attribute `summary` is already set on line 5.
-  spec.version = '2.0'
-       ^^^^^^^ Gemspec/AttributeAssignment: Attribute `version` is already set on line 3.
+  spec.metadata = { 'key-0' => 'value-0' }
+  spec.metadata['key-1'] = 'value-1'
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Gemspec/AttributeAssignment: Use consistent style for Gemspec attributes assignment.
+  spec.metadata['key-2'] = 'value-2'
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Gemspec/AttributeAssignment: Use consistent style for Gemspec attributes assignment.
+end
+
+# Inconsistent array assignment (authors uses both direct and indexed)
+Gem::Specification.new do |spec|
+  spec.authors = %w[author-0 author-1]
+  spec.authors[2] = 'author-2'
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Gemspec/AttributeAssignment: Use consistent style for Gemspec attributes assignment.
 end

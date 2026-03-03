@@ -22,62 +22,104 @@ impl Cop for AttributeAssignment {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        // Track attribute assignments: attr_name -> (line_num, style)
-        // style is "direct" for spec.name = or "indexed" for spec.metadata["name"] =
-        let mut seen: HashMap<String, (usize, &str)> = HashMap::new();
+        // Collect all lines with metadata
+        let lines: Vec<(usize, String)> = source
+            .lines()
+            .enumerate()
+            .filter_map(|(idx, line)| {
+                std::str::from_utf8(line)
+                    .ok()
+                    .map(|s| (idx + 1, s.to_string()))
+            })
+            .collect();
 
-        for (line_idx, line) in source.lines().enumerate() {
-            let line_str = match std::str::from_utf8(line) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
+        // Find gemspec block boundaries and process each independently
+        let mut block_start_indices = Vec::new();
+        for (i, (_line_num, line_str)) in lines.iter().enumerate() {
+            let trimmed = line_str.trim();
+            if trimmed.contains("Gem::Specification.new") && trimmed.contains("do") {
+                block_start_indices.push(i);
+            }
+        }
+
+        if block_start_indices.is_empty() {
+            // No gemspec blocks found, process the whole file as one block
+            self.process_block(source, &lines, diagnostics);
+        } else {
+            // Process each block independently
+            for (bi, &start) in block_start_indices.iter().enumerate() {
+                let end = if bi + 1 < block_start_indices.len() {
+                    block_start_indices[bi + 1]
+                } else {
+                    lines.len()
+                };
+                self.process_block(source, &lines[start..end], diagnostics);
+            }
+        }
+    }
+}
+
+impl AttributeAssignment {
+    fn process_block(
+        &self,
+        source: &SourceFile,
+        lines: &[(usize, String)],
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let mut direct_assignments: HashMap<String, usize> = HashMap::new();
+        let mut indexed_assignments: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+
+        for (line_num, line_str) in lines {
             let trimmed = line_str.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
 
-            let line_num = line_idx + 1;
+            let leading_spaces = line_str.len() - line_str.trim_start().len();
 
-            // Check for duplicate attribute assignments
-            if let Some((attr, _style)) = extract_attr_assignment(trimmed) {
-                if let Some(&(first_line, _first_style)) = seen.get(&attr) {
-                    let dot_pos = line_str.find('.').unwrap_or(0);
+            match classify_assignment(trimmed) {
+                Some((attr, AssignStyle::Direct)) => {
+                    direct_assignments.entry(attr).or_insert(*line_num);
+                }
+                Some((attr, AssignStyle::Indexed)) => {
+                    indexed_assignments
+                        .entry(attr)
+                        .or_default()
+                        .push((*line_num, leading_spaces));
+                }
+                None => {}
+            }
+        }
+
+        for (attr, locations) in &indexed_assignments {
+            if direct_assignments.contains_key(attr) {
+                for &(line_num, col) in locations {
                     diagnostics.push(self.diagnostic(
                         source,
                         line_num,
-                        dot_pos + 1,
-                        format!("Attribute `{attr}` is already set on line {first_line}."),
+                        col,
+                        "Use consistent style for Gemspec attributes assignment.".to_string(),
                     ));
-                } else {
-                    seen.insert(attr, (line_num, _style));
                 }
             }
         }
     }
 }
 
-/// Extract attribute name and assignment style from a line.
-/// Returns (attr_name, "direct"|"indexed") or None.
-fn extract_attr_assignment(trimmed: &str) -> Option<(String, &'static str)> {
+#[derive(Debug, PartialEq)]
+enum AssignStyle {
+    Direct,
+    Indexed,
+}
+
+/// Classify an assignment line as direct or indexed.
+/// Returns the attribute name and style, or None if not an assignment.
+fn classify_assignment(trimmed: &str) -> Option<(String, AssignStyle)> {
     // Look for a dot after a variable name
     let dot_pos = trimmed.find('.')?;
     let after_dot = &trimmed[dot_pos + 1..];
 
-    // Check for metadata["key"] = pattern
-    if after_dot.starts_with("metadata[") || after_dot.starts_with("metadata [") {
-        let bracket_start = after_dot.find('[')?;
-        let bracket_end = after_dot.find(']')?;
-        let key_part = &after_dot[bracket_start + 1..bracket_end];
-        // Strip quotes
-        let key = key_part.trim_matches(|c| c == '\'' || c == '"');
-        let rest = after_dot[bracket_end + 1..].trim_start();
-        if rest.starts_with('=') && !rest.starts_with("==") {
-            return Some((format!("metadata[{key}]"), "indexed"));
-        }
-        return None;
-    }
-
-    // Check for direct assignment: attr_name = ...
+    // Extract the attribute name (alphanumeric + underscore)
     let attr_end = after_dot
         .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .unwrap_or(after_dot.len());
@@ -85,13 +127,26 @@ fn extract_attr_assignment(trimmed: &str) -> Option<(String, &'static str)> {
         return None;
     }
     let attr = &after_dot[..attr_end];
-    let rest = after_dot[attr_end..].trim_start();
+    let rest = &after_dot[attr_end..];
 
-    if rest.starts_with('=') && !rest.starts_with("==") {
-        Some((attr.to_string(), "direct"))
-    } else {
-        None
+    // Check for indexed assignment: attr[...] = or attr [...] =
+    let rest_trimmed = rest.trim_start();
+    if rest_trimmed.starts_with('[') {
+        if let Some(bracket_end) = rest_trimmed.find(']') {
+            let after_bracket = rest_trimmed[bracket_end + 1..].trim_start();
+            if after_bracket.starts_with('=') && !after_bracket.starts_with("==") {
+                return Some((attr.to_string(), AssignStyle::Indexed));
+            }
+        }
+        return None;
     }
+
+    // Check for direct assignment: attr = (but not attr ==)
+    if rest_trimmed.starts_with('=') && !rest_trimmed.starts_with("==") {
+        return Some((attr.to_string(), AssignStyle::Direct));
+    }
+
+    None
 }
 
 #[cfg(test)]
