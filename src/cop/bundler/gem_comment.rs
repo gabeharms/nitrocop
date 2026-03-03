@@ -6,11 +6,23 @@ use super::extract_gem_name;
 
 pub struct GemComment;
 
-// Known corpus gap (1 FN as of 2026-03-02):
-// Landed fix: ignore magic comments as gem description comments.
-// Attempted fix (reverted): ignore preceding comments on modifier-guarded gem declarations.
-// Effect: FP regressions (FP=0/FN=1 → FP=13/FN=0). Needs AST comment-association
-// parity with RuboCop instead of line-adjacent heuristics.
+/// ## Corpus investigation (2026-03-03)
+///
+/// Corpus oracle reported FP=10, FN=16 (after prior fixes).
+///
+/// **FP=10 fixed**: All FPs were from `extract_gem_name` matching lines where the gem
+/// "name" was a variable (`gem db_gem`), interpolation (`gem "x-#{g}"`), or method call
+/// (`gem ENV.fetch(...)`). Fixed by requiring a quoted string literal immediately after
+/// `gem `. Commit 0a40768.
+///
+/// **FN=16 deferred**: All 16 FNs are gems with preceding line comments that RuboCop
+/// still flags as missing a comment. Examples: `gem 'rails', ENV['VER'] if ENV['VER']`
+/// with `# Allow CI ...` on the line above — nitrocop sees the comment and skips,
+/// RuboCop still flags. Root cause: RuboCop's GemComment uses AST-level comment
+/// association (not line-adjacent heuristics). A previous attempt to fix this by
+/// ignoring comments on modifier-guarded declarations caused FP regressions
+/// (FP=0/FN=1 → FP=13/FN=0). A correct fix needs AST-based comment-to-gem
+/// association matching RuboCop's `preceding_lines` method.
 
 impl Cop for GemComment {
     fn name(&self) -> &'static str {

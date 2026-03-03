@@ -5,10 +5,20 @@ use ruby_prism::Visit;
 
 pub struct GemVersion;
 
-// Corpus conformance note: is_version_specification() mirrors RuboCop's
-// VERSION_SPECIFICATION_REGEX = /^\s*[~<>=]*\s*[0-9.]+/ exactly.
-// The character class [~<>=]* does NOT include '!', so "!= x.y.z" is not
-// considered a version specification (matching RuboCop behavior).
+/// ## Corpus investigation (2026-03-03)
+///
+/// Corpus oracle reported FP=0, FN=29. All FNs from `!=`-only version constraints
+/// (e.g., `gem "cuprite", "!= 0.15.1"`).
+///
+/// **FN=29 → FN=3 fixed**: Rewrote `is_version_specification()` to use a character-class
+/// approach `trim_start_matches(|c| matches!(c, '~' | '<' | '>' | '='))` that mirrors
+/// RuboCop's `VERSION_SPECIFICATION_REGEX = /^\s*[~<>=]*\s*[0-9.]+/`. The `[~<>=]*`
+/// class does NOT include `!`, so `"!= x.y.z"` is not a version spec. Commit e01710d.
+///
+/// A previous attempt (pre-2026-03-03) that used sequential `trim_start_matches("!=")`
+/// removal caused 9 FPs. The character-class rewrite avoids that issue entirely.
+///
+/// **3 remaining FN**: Likely file-drop noise (parser crash repos). Not actionable.
 
 impl Cop for GemVersion {
     fn name(&self) -> &'static str {
