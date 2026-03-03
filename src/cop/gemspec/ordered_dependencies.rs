@@ -142,13 +142,21 @@ fn sort_key(name: &str, consider_punctuation: bool) -> String {
     if consider_punctuation {
         name.to_lowercase()
     } else {
-        // Strip leading non-alphanumeric characters for comparison
-        let stripped = name.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
-        stripped.to_lowercase()
+        // Remove all hyphens and underscores, then lowercase.
+        // This matches RuboCop's `gem_canonical_name`: `name.tr('-_', '').downcase`
+        let mut result = String::with_capacity(name.len());
+        for c in name.chars() {
+            if c != '-' && c != '_' {
+                result.push(c.to_ascii_lowercase());
+            }
+        }
+        result
     }
 }
 
 /// Extract the gem name from the arguments after a dependency method call.
+/// Returns `None` when the argument uses `.freeze` (e.g., `%q<name>.freeze` or
+/// `"name".freeze`), matching RuboCop's AST pattern which requires a bare `(str _)`.
 fn extract_gem_name(after_method: &str) -> Option<String> {
     let s = after_method.trim_start();
     let s = if let Some(stripped) = s.strip_prefix('(') {
@@ -160,36 +168,50 @@ fn extract_gem_name(after_method: &str) -> Option<String> {
     if s.starts_with('\'') || s.starts_with('"') {
         let quote = s.as_bytes()[0];
         let rest = &s[1..];
-        rest.find(|c: char| c as u8 == quote)
-            .map(|end| rest[..end].to_string())
+        let end = rest.find(|c: char| c as u8 == quote)?;
+        let name = rest[..end].to_string();
+        // Check for .freeze after the closing quote — RuboCop ignores these
+        let after_quote = rest[end + 1..].trim_start();
+        if after_quote.starts_with(".freeze") {
+            return None;
+        }
+        Some(name)
     } else {
-        parse_percent_string(s)
+        let (name, consumed) = parse_percent_string_with_len(s)?;
+        // Check for .freeze after the percent string — RuboCop ignores these
+        let after_pct = s[consumed..].trim_start();
+        if after_pct.starts_with(".freeze") {
+            return None;
+        }
+        Some(name)
     }
 }
 
 /// Parse a Ruby percent string literal (%q<...>, %Q<...>, %q(...), etc.)
-fn parse_percent_string(s: &str) -> Option<String> {
+/// Returns the extracted name and the byte length consumed from `s`.
+fn parse_percent_string_with_len(s: &str) -> Option<(String, usize)> {
     if !s.starts_with('%') {
         return None;
     }
-    let rest = &s[1..];
+    let mut offset = 1;
     // Skip optional q/Q qualifier
-    let rest = if rest.starts_with('q') || rest.starts_with('Q') {
-        &rest[1..]
-    } else {
-        rest
-    };
+    if s[offset..].starts_with('q') || s[offset..].starts_with('Q') {
+        offset += 1;
+    }
     // Match delimiter pair
-    let close = match rest.as_bytes().first()? {
+    let close = match s.as_bytes().get(offset)? {
         b'<' => '>',
         b'(' => ')',
         b'[' => ']',
         b'{' => '}',
         _ => return None,
     };
-    let inner = &rest[1..];
+    offset += 1;
+    let inner = &s[offset..];
     let end = inner.find(close)?;
-    Some(inner[..end].to_string())
+    let name = inner[..end].to_string();
+    offset += end + 1; // skip content + closing delimiter
+    Some((name, offset))
 }
 
 #[cfg(test)]
