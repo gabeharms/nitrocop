@@ -19,7 +19,6 @@ pub struct GemVersion;
 /// removal caused 9 FPs. The character-class rewrite avoids that issue entirely.
 ///
 /// **3 remaining FN**: Likely file-drop noise (parser crash repos). Not actionable.
-
 impl Cop for GemVersion {
     fn name(&self) -> &'static str {
         "Bundler/GemVersion"

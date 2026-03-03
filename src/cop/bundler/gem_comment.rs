@@ -23,7 +23,6 @@ pub struct GemComment;
 /// ignoring comments on modifier-guarded declarations caused FP regressions
 /// (FP=0/FN=1 → FP=13/FN=0). A correct fix needs AST-based comment-to-gem
 /// association matching RuboCop's `preceding_lines` method.
-
 impl Cop for GemComment {
     fn name(&self) -> &'static str {
         "Bundler/GemComment"

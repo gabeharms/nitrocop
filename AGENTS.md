@@ -26,10 +26,12 @@ cargo run -- --debug .       # phase-level timing breakdown
 Always run these before committing to match CI:
 
 ```
-cargo fmt
-cargo clippy --release -- -D warnings
+cargo fmt -- src/path/to/changed_file.rs    # format only the files you modified
+cargo clippy --release -- -D warnings       # incremental — fast when few files changed
 cargo test --release
 ```
+
+**Important:** Run `cargo fmt` on the specific files you edited (not `cargo fmt` with no args, which formats everything). Run `cargo clippy` which leverages incremental compilation and is fast when few files changed. Do NOT use `git diff` to discover changed files — multiple agents may be working on main concurrently.
 
 ## Performance Profiling
 
