@@ -13,7 +13,7 @@ impl RedundantConditional {
             let name_bytes = name.as_slice();
             return matches!(
                 name_bytes,
-                b"==" | b"!=" | b"<" | b">" | b"<=" | b">=" | b"===" | b"<=>" | b"=~" | b"!~"
+                b"==" | b"!=" | b"<" | b">" | b"<=" | b">=" | b"==="
             );
         }
         false

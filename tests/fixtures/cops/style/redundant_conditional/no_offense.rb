@@ -7,3 +7,6 @@ else
 end
 x == y ? true : 'no'
 x ? true : false
+x =~ /pattern/ ? true : false
+x !~ /pattern/ ? true : false
+x <=> y ? true : false
