@@ -50,6 +50,13 @@ impl Cop for OrderedDependencies {
             };
             let trimmed = line_str.trim();
 
+            // Blank lines act as group separators
+            if trimmed.is_empty() {
+                flush_group(&mut group, diagnostics, source, self, consider_punctuation);
+                current_method = None;
+                continue;
+            }
+
             // Check if this is a comment line
             if trimmed.starts_with('#') {
                 if treat_comments_as_separators {
@@ -155,9 +162,36 @@ fn extract_gem_name(after_method: &str) -> Option<String> {
         let rest = &s[1..];
         rest.find(|c: char| c as u8 == quote)
             .map(|end| rest[..end].to_string())
+    } else if let Some(name) = parse_percent_string(s) {
+        Some(name)
     } else {
         None
     }
+}
+
+/// Parse a Ruby percent string literal (%q<...>, %Q<...>, %q(...), etc.)
+fn parse_percent_string(s: &str) -> Option<String> {
+    if !s.starts_with('%') {
+        return None;
+    }
+    let rest = &s[1..];
+    // Skip optional q/Q qualifier
+    let rest = if rest.starts_with('q') || rest.starts_with('Q') {
+        &rest[1..]
+    } else {
+        rest
+    };
+    // Match delimiter pair
+    let close = match rest.as_bytes().first()? {
+        b'<' => '>',
+        b'(' => ')',
+        b'[' => ']',
+        b'{' => '}',
+        _ => return None,
+    };
+    let inner = &rest[1..];
+    let end = inner.find(close)?;
+    Some(inner[..end].to_string())
 }
 
 #[cfg(test)]
