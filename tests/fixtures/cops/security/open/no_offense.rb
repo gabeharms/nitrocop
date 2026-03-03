@@ -10,3 +10,5 @@ Kernel.open(user_input)
 ::Kernel.open(user_input)
 page.open
 open("safe #{interpolated}")
+open(__FILE__)
+open(__FILE__) { |f| f.read }

@@ -5,11 +5,21 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-03)
+///
+/// Corpus oracle reported FP=4, FN=3. FP fixed by handling `__FILE__` (SourceFileNode).
+/// FN=3 are all from lines with `# standard:disable Security/Open` comments — nitrocop
+/// correctly honors these while RuboCop ignores them. These are expected FNs, not bugs.
 pub struct Open;
 
 /// Check if the argument is a "safe" string literal.
 /// A safe argument is a non-empty string that doesn't start with '|'.
 fn is_safe_arg(node: &ruby_prism::Node<'_>) -> bool {
+    // __FILE__ is always safe — it's a file path literal, never starts with '|'.
+    // In Prism this is SourceFileNode (not StringNode like in Parser gem).
+    if node.as_source_file_node().is_some() {
+        return true;
+    }
     // Simple string literal
     if let Some(s) = node.as_string_node() {
         let content = s.unescaped();
