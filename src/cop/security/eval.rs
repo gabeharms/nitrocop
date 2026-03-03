@@ -3,6 +3,20 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-03)
+///
+/// Corpus oracle reported FP=2, FN=5.
+///
+/// FP=2: Both in samg/timetrap `lib/Getopt/Declare.rb` (lines 32, 1266). The file
+/// is ISO-8859 encoded without a magic encoding comment. RuboCop fails with
+/// `Lint/Syntax: Invalid byte sequence in utf-8` and reports zero offenses for the
+/// entire file. Nitrocop (via Prism) is more encoding-tolerant and successfully
+/// parses and flags the `eval` calls. These are environment/encoding discrepancies,
+/// not cop logic bugs — nitrocop's detections are correct.
+///
+/// FN=5: All from lines with `# standard:disable Security/Eval` comments. Nitrocop
+/// correctly honors `standard:disable` directives while RuboCop ignores them.
+/// These are expected FNs (correct behavior).
 pub struct Eval;
 
 impl Cop for Eval {
