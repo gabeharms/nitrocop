@@ -1,9 +1,103 @@
-use crate::cop::node_type::{ARRAY_NODE, CALL_NODE};
+use crate::cop::node_type::{CALL_NODE, DEF_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
 pub struct CompoundHash;
+
+const COMBINATOR_MSG: &str = "Use `[...].hash` instead of combining hash values manually.";
+const MONUPLE_MSG: &str =
+    "Delegate hash directly without wrapping in an array when only using a single value.";
+const REDUNDANT_MSG: &str = "Calling `.hash` on elements of a hashed array is redundant.";
+
+/// Combinator operator names: ^, +, *, |
+fn is_combinator_op(name: &[u8]) -> bool {
+    matches!(name, b"^" | b"+" | b"*" | b"|")
+}
+
+/// Walk the body of a hash method to find outermost combinator expressions.
+/// "Outermost" means: if `a ^ b ^ c` parses as `(a ^ b) ^ c`, only the outer `^` is flagged.
+fn find_outermost_combinators<'pr>(
+    node: &ruby_prism::Node<'pr>,
+    source: &SourceFile,
+    results: &mut Vec<ruby_prism::Location<'pr>>,
+) {
+    use ruby_prism::Visit;
+
+    struct CombinatorFinder<'a, 'pr> {
+        source: &'a SourceFile,
+        results: &'a mut Vec<ruby_prism::Location<'pr>>,
+    }
+
+    impl CombinatorFinder<'_, '_> {
+        fn is_combinator_op_at(&self, loc: &ruby_prism::Location<'_>) -> bool {
+            let op = &self.source.as_bytes()[loc.start_offset()..loc.end_offset()];
+            is_combinator_op(op)
+        }
+    }
+
+    impl<'pr> Visit<'pr> for CombinatorFinder<'_, 'pr> {
+        fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+            if is_combinator_op(node.name().as_slice()) {
+                // Flag the outermost combinator — do NOT recurse into children
+                self.results.push(node.location());
+                return;
+            }
+            // Continue visiting children for non-combinator calls
+            ruby_prism::visit_call_node(self, node);
+        }
+
+        fn visit_local_variable_operator_write_node(
+            &mut self,
+            node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
+        ) {
+            if self.is_combinator_op_at(&node.binary_operator_loc()) {
+                self.results.push(node.location());
+                return;
+            }
+            ruby_prism::visit_local_variable_operator_write_node(self, node);
+        }
+
+        fn visit_instance_variable_operator_write_node(
+            &mut self,
+            node: &ruby_prism::InstanceVariableOperatorWriteNode<'pr>,
+        ) {
+            if self.is_combinator_op_at(&node.binary_operator_loc()) {
+                self.results.push(node.location());
+                return;
+            }
+            ruby_prism::visit_instance_variable_operator_write_node(self, node);
+        }
+
+        fn visit_class_variable_operator_write_node(
+            &mut self,
+            node: &ruby_prism::ClassVariableOperatorWriteNode<'pr>,
+        ) {
+            if self.is_combinator_op_at(&node.binary_operator_loc()) {
+                self.results.push(node.location());
+                return;
+            }
+            ruby_prism::visit_class_variable_operator_write_node(self, node);
+        }
+
+        fn visit_global_variable_operator_write_node(
+            &mut self,
+            node: &ruby_prism::GlobalVariableOperatorWriteNode<'pr>,
+        ) {
+            if self.is_combinator_op_at(&node.binary_operator_loc()) {
+                self.results.push(node.location());
+                return;
+            }
+            ruby_prism::visit_global_variable_operator_write_node(self, node);
+        }
+
+        // Do not recurse into nested def nodes — they define a separate scope
+        fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+    }
+
+    let mut finder = CombinatorFinder { source, results };
+    finder.visit(node);
+}
 
 impl Cop for CompoundHash {
     fn name(&self) -> &'static str {
@@ -15,7 +109,7 @@ impl Cop for CompoundHash {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[ARRAY_NODE, CALL_NODE]
+        &[CALL_NODE, DEF_NODE]
     }
 
     fn check_node(
@@ -27,12 +121,75 @@ impl Cop for CompoundHash {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        // === COMBINATOR pattern: detect operators inside def hash ===
+
+        // Handle `def hash` and `def object.hash` (DefNode)
+        if let Some(def_node) = node.as_def_node() {
+            if def_node.name().as_slice() == b"hash" {
+                if let Some(body) = def_node.body() {
+                    let mut combinator_locs = Vec::new();
+                    find_outermost_combinators(&body, source, &mut combinator_locs);
+                    for loc in combinator_locs {
+                        let (line, column) = source.offset_to_line_col(loc.start_offset());
+                        diagnostics.push(self.diagnostic(
+                            source,
+                            line,
+                            column,
+                            COMBINATOR_MSG.to_string(),
+                        ));
+                    }
+                }
+            }
+            return;
+        }
+
+        // Handle CallNode: define_method(:hash), or .hash on arrays
         let call = match node.as_call_node() {
             Some(c) => c,
             None => return,
         };
+        let name = call.name().as_slice();
 
-        if call.name().as_slice() != b"hash" {
+        // Check for define_method(:hash) or define_singleton_method(:hash)
+        if name == b"define_method" || name == b"define_singleton_method" {
+            if let Some(args) = call.arguments() {
+                let arg_list: Vec<ruby_prism::Node<'_>> = args.arguments().iter().collect();
+                if let Some(first_arg) = arg_list.first() {
+                    if let Some(sym) = first_arg.as_symbol_node() {
+                        if sym.unescaped() == b"hash" {
+                            if let Some(block) = call.block() {
+                                if let Some(block_node) = block.as_block_node() {
+                                    if let Some(body) = block_node.body() {
+                                        let mut combinator_locs = Vec::new();
+                                        find_outermost_combinators(
+                                            &body,
+                                            source,
+                                            &mut combinator_locs,
+                                        );
+                                        for loc in combinator_locs {
+                                            let (line, column) =
+                                                source.offset_to_line_col(loc.start_offset());
+                                            diagnostics.push(self.diagnostic(
+                                                source,
+                                                line,
+                                                column,
+                                                COMBINATOR_MSG.to_string(),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // === MONUPLE and REDUNDANT patterns ===
+        // These are for `.hash` calls on arrays: `[x].hash` or `[a.hash, b].hash`
+
+        if name != b"hash" {
             return;
         }
 
@@ -54,46 +211,28 @@ impl Cop for CompoundHash {
 
         let elements: Vec<ruby_prism::Node<'_>> = array_node.elements().iter().collect();
 
-        // RuboCop's CompoundHash cop detects:
-        // 1. Manual hash combining with ^/+/*/| inside def hash (COMBINATOR pattern)
-        // 2. [single_value].hash (MONUPLE pattern - wrapping single value is redundant)
-        // 3. [a.hash, b.hash].hash (REDUNDANT pattern - .hash on elements is redundant)
-        //
-        // [a, b].hash is the RECOMMENDED pattern - never flag it.
-
-        // Check for monuple: [single_value].hash
+        // Monuple: [single_value].hash
         if elements.len() == 1 {
             let msg_loc = call.message_loc().unwrap();
             let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-            diagnostics.push(self.diagnostic(
-                source,
-                line,
-                column,
-                "Delegate hash directly without wrapping in an array when only using a single value."
-                    .to_string(),
-            ));
+            diagnostics.push(self.diagnostic(source, line, column, MONUPLE_MSG.to_string()));
         }
 
-        // Check for redundant: all elements call .hash
+        // Redundant: flag EACH element that calls .hash (ANY, not ALL)
         if elements.len() >= 2 {
-            let all_call_hash = elements.iter().all(|e| {
-                if let Some(c) = e.as_call_node() {
-                    c.name().as_slice() == b"hash"
+            for elem in &elements {
+                if let Some(c) = elem.as_call_node() {
+                    if c.name().as_slice() == b"hash"
                         && c.arguments().is_none()
                         && c.receiver().is_some()
-                } else {
-                    false
+                    {
+                        let loc = c.location();
+                        let (line, column) = source.offset_to_line_col(loc.start_offset());
+                        diagnostics.push(
+                            self.diagnostic(source, line, column, REDUNDANT_MSG.to_string()),
+                        );
+                    }
                 }
-            });
-            if all_call_hash {
-                let msg_loc = call.message_loc().unwrap();
-                let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-                diagnostics.push(self.diagnostic(
-                    source,
-                    line,
-                    column,
-                    "Calling `.hash` on elements of a hashed array is redundant.".to_string(),
-                ));
             }
         }
     }
