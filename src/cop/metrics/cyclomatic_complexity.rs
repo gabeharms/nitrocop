@@ -19,11 +19,20 @@ use crate::parse::source::SourceFile;
 /// - Missing compound assignment nodes: `IndexOrWriteNode`,
 ///   `IndexAndWriteNode`, `CallOrWriteNode`, `CallAndWriteNode` were
 ///   not counted as conditions.
+/// - Missing inline rescue handling: Prism models `expr rescue fallback`
+///   as `RescueModifierNode`, which must count as a decision point.
+///   Fixing this reduced local corpus rerun drift from missing=70 to missing=4
+///   (expected=22,797, actual=22,793; potential FP remained 0) on 2026-03-04.
 ///
 /// FP root causes (fixed):
 /// - AllowedPatterns used substring match instead of regex.
 /// - Pattern matching `if` guards: in `case/in` with `in :x if guard`,
 ///   Prism nests an IfNode inside InNode's pattern, causing double-counting.
+///
+/// Reverted attempt:
+/// - Counting nested rescues separately via manual rescue-chain traversal closed
+///   remaining FN but introduced potential FP (+12 vs RuboCop expected offenses).
+///   The manual traversal approach was reverted to preserve zero-excess behavior.
 pub struct CyclomaticComplexity;
 
 #[derive(Default)]
@@ -124,7 +133,8 @@ impl CyclomaticCounter {
             | ruby_prism::Node::ForNode { .. }
             | ruby_prism::Node::WhenNode { .. }
             | ruby_prism::Node::AndNode { .. }
-            | ruby_prism::Node::OrNode { .. } => {
+            | ruby_prism::Node::OrNode { .. }
+            | ruby_prism::Node::RescueModifierNode { .. } => {
                 self.complexity += 1;
             }
             // InNode is handled in visit_in_node to manage guard suppression.

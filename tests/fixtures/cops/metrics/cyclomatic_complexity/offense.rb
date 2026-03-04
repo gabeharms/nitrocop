@@ -172,3 +172,14 @@ def method_with_compound_asgn(h, obj)
   obj.other &&= process(obj.other)
   result = h || obj
 end
+
+def method_with_many_rescue_modifiers
+^^^ Metrics/CyclomaticComplexity: Cyclomatic complexity for method_with_many_rescue_modifiers is too high. [8/7]
+  a = first_call rescue nil
+  b = second_call rescue nil
+  c = third_call rescue nil
+  d = fourth_call rescue nil
+  e = fifth_call rescue nil
+  f = sixth_call rescue nil
+  g = seventh_call rescue nil
+end
