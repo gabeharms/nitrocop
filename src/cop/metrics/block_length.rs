@@ -21,10 +21,13 @@ use crate::parse::source::SourceFile;
 /// Additional investigation (same run):
 /// - FN: `super do ... end` blocks were not analyzed because only `CallNode`-backed blocks were handled.
 /// - FP: `Data.define(...) do ... end` constructor blocks were counted, while RuboCop exempts them like `Struct.new`.
+/// - FN: brace-style blocks where the last body token shares the closing `}` line
+///   (e.g. `lambda { Hash.new(...) }`) were undercounted by one line.
 ///
 /// Fixes:
 /// - Analyze `SuperNode` and `ForwardingSuperNode` blocks as method name `super`.
 /// - Extend constructor exemption to include `Data.define`.
+/// - When block body and closing token share a line, count that trailing body line.
 pub struct BlockLength;
 
 impl Cop for BlockLength {
@@ -144,6 +147,7 @@ impl BlockLength {
             source,
             block_node.opening_loc().start_offset(),
             end_offset,
+            block_node.closing_loc().end_offset(),
             block_node.body(),
             count_comments,
             &count_as_one,
@@ -176,6 +180,7 @@ impl BlockLength {
             source,
             lambda_node.opening_loc().start_offset(),
             end_offset,
+            lambda_node.closing_loc().end_offset(),
             lambda_node.body(),
             count_comments,
             &count_as_one,
@@ -200,6 +205,7 @@ fn count_block_lines(
     source: &SourceFile,
     opening_offset: usize,
     end_offset: usize,
+    closing_end_offset: usize,
     body: Option<ruby_prism::Node<'_>>,
     count_comments: bool,
     count_as_one: &Option<Vec<String>>,
@@ -227,6 +233,21 @@ fn count_block_lines(
         opening_offset
     };
 
+    // For brace blocks like `lambda { Hash.new(...) }`, the final body token can
+    // share the same line as the closing `}`. RuboCop counts that final line.
+    // `count_body_lines_ex` excludes the end line, so move end to next line start.
+    let mut effective_end_offset = end_offset;
+    let (body_end_line, _) =
+        source.offset_to_line_col(body.location().end_offset().saturating_sub(1));
+    let (closing_line, _) = source.offset_to_line_col(end_offset);
+    if body_end_line == closing_line {
+        if let Some(next_line_start) = source.line_col_to_offset(closing_line + 1, 0) {
+            effective_end_offset = next_line_start;
+        } else {
+            effective_end_offset = closing_end_offset;
+        }
+    }
+
     // Collect foldable ranges from CountAsOne config. Heredocs are only
     // folded when "heredoc" is explicitly in CountAsOne (default: []).
     // For non-bare-heredoc bodies, RuboCop's CodeLengthCalculator includes
@@ -246,7 +267,7 @@ fn count_block_lines(
     count_body_lines_ex(
         source,
         effective_start_offset,
-        end_offset,
+        effective_end_offset,
         count_comments,
         &all_foldable,
     )

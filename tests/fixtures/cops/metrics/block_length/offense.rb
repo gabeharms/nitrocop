@@ -152,3 +152,33 @@ def with_super_block
     v26 = 26
   end
 end
+
+payload = {
+  check_records_exist: lambda {Hash.new(
+                       ^^^^^^^^^^^^^^^^^^^^^ Metrics/BlockLength: Block has too many lines. [26/25]
+    "code" => 200,
+    "body" => {
+      "records" => [
+        {
+          "actual_values" => [
+            "v=spf1 a mx include:_spf.example.com ~all",
+            "verification-token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "address" => "example.com",
+          "match" => false,
+          "match_against" => "bogus record",
+          "type" => "txt"
+        },
+        {
+          "actual_values" => [
+            "v=spf1 mx include:mail.example.com ~all"
+          ],
+          "address" => "app.example.com",
+          "match" => false,
+          "match_against" => "v=spf1 include:mail.example.com ~all",
+          "type" => "txt"
+        }
+      ]
+    }
+  )}
+}
