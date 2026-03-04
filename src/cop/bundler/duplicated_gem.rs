@@ -11,38 +11,42 @@ pub struct DuplicatedGem;
 
 /// ## Corpus investigation (2026-03-03)
 ///
+/// ### Round 3 — FP=0, FN=1 (after structural equality fix)
+///
+/// **FP=0:** All 4 FPs from Round 2 are fixed. The structural equality path
+/// (Path 1 in `is_conditional_declaration`) compares `call_source` bytes across
+/// all duplicate declarations. When all gem calls have identical source (e.g.,
+/// both are bare `gem "redcarpet"`) and any one is inside a conditional, the
+/// entire group is exempt. This matches RuboCop's `within_conditional?` where
+/// `branch.child_nodes.include?(node)` uses structural `==` (Parser gem), so
+/// a gem in a `group` block structurally matches a gem in an `if` branch.
+/// Fixes: discourse (redcarpet, faker, discourse_dev_assets exempt via
+/// structural equality; sqlite3 + csv flagged due to different args),
+/// fat_free_crm (puma exempt), pact-ruby (pry-byebug exempt).
+///
+/// **FN=1:** pg_search — `# standard:disable Bundler/DuplicatedGem` suppresses
+/// the offense in nitrocop but RuboCop doesn't recognize `standard:disable`.
+/// This is a disable-comment handling issue, not a cop logic issue.
+///
 /// ### Round 2 — FP=4, FN=11 (after previous fixes in d10cfe6)
 ///
-/// **FP=4 root causes:**
+/// **FP=4 root causes (all fixed in Round 3):**
 ///
 /// 1. **Block `if...end` (no else) treated as modifier if** (graphql-ruby, 1 FP):
-///    `if RUBY_VERSION >= "3.2.0"; gem "minitest-mock"; gem "minitest-mock"; end`
-///    was treated as modifier (transparent) because `subsequent().is_none()` is true
-///    for BOTH modifier `gem 'x' if cond` AND block `if cond; ...; end` without else.
 ///    Fix: use `end_keyword_loc().is_none()` — block `if...end` always has an end
 ///    keyword; modifier `gem 'x' if cond` does not.
 ///
 /// 2. **Gems in conditional + gems in non-conditional group** (discourse, fat_free_crm,
-///    pact-ruby, 3 FP): one gem inside `if...end` / `case-when`, another in a top-level
-///    `group` block. Since blocks were BeginLike (transparent), the group gem inherited
-///    the conditional root from a parent scope, causing both gems to share a root and
-///    get conditional exemption. Fix: blocks are now opaque (`Block` kind); only
-///    StatementsNode/BeginNode/ElseNode are transparent. Gems inside blocks don't see
-///    through to outer conditional roots.
+///    pact-ruby, 3 FP): Fix: blocks are now opaque (`Block` kind); structural
+///    equality comparison added for identical gem calls.
 ///
-/// **FN=11 root causes:**
+/// **FN=11 root causes (all fixed):**
 ///
 /// 1. **Gems inside `git` blocks within case/when** (ransack 8 FN, mobility 2 FN):
-///    `git 'url' do; gem 'x'; end` inside a when branch. The gem is NOT a direct
-///    child of the when branch (it's nested inside a git block). RuboCop's
-///    `within_conditional?` uses `branch.child_nodes.include?(node)` which only
-///    checks direct children. Fix: track `blocks_above_conditional` count; require
-///    it to be 0 for conditional exemption.
+///    Fix: track `blocks_above_conditional` count; require 0 for conditional exemption.
 ///
-/// 2. **`standard:disable` comment suppression** (pg_search 1 FN):
-///    `# standard:disable Bundler/DuplicatedGem` was recognized as a disable
-///    directive, suppressing the offense. RuboCop doesn't recognize `standard:disable`.
-///    This is a disable-comment handling issue, not a cop logic issue.
+/// 2. **`standard:disable` comment suppression** (pg_search 1 FN): expected behavior
+///    difference, not fixable in cop logic.
 impl Cop for DuplicatedGem {
     fn name(&self) -> &'static str {
         "Bundler/DuplicatedGem"
@@ -90,17 +94,27 @@ impl Cop for DuplicatedGem {
             }
 
             let first = &declarations[0];
-            // Conditional exemption requires:
-            // 1. All gems share the same conditional root
-            // 2. All gems are direct children of the conditional branches (no
-            //    intervening blocks like git/group/source/platforms)
-            // This matches RuboCop's `within_conditional?` which uses
-            // `branch.child_nodes.include?(node)` — direct children only.
-            let is_conditional_declaration = first.conditional_root.is_some()
-                && declarations.iter().all(|decl| {
-                    decl.conditional_root == first.conditional_root
-                        && decl.blocks_above_conditional == 0
-                });
+
+            // RuboCop structural equality: `within_conditional?` uses
+            // `branch == node` which compares AST by structure, not identity.
+            // When all gem calls have identical source (e.g., all are bare
+            // `gem "redcarpet"`) and any one is inside a conditional, RuboCop
+            // considers them all conditional-exempt (the structural match makes
+            // `branch.child_nodes.include?(node)` return true for the wrong branch).
+            let all_identical_source = declarations
+                .iter()
+                .all(|d| d.call_source == first.call_source);
+            let any_conditional = declarations.iter().any(|d| d.conditional_root.is_some());
+
+            let is_conditional_declaration =
+                // Path 1: structural equality — identical calls with any conditional
+                (all_identical_source && any_conditional)
+                // Path 2: standard conditional — all direct children of same conditional root
+                || (first.conditional_root.is_some()
+                    && declarations.iter().all(|decl| {
+                        decl.conditional_root == first.conditional_root
+                            && decl.blocks_above_conditional == 0
+                    }));
             if is_conditional_declaration {
                 continue;
             }
@@ -152,6 +166,11 @@ struct GemDeclaration {
     /// Number of opaque Block frames between this gem and its nearest conditional root.
     /// Must be 0 for conditional exemption (matches RuboCop's direct-child check).
     blocks_above_conditional: usize,
+    /// Full source bytes of the CallNode (e.g., `gem "redcarpet"`). Used to replicate
+    /// RuboCop's AST structural equality in `within_conditional?` where `branch == node`
+    /// compares by structure, not identity. When all duplicate declarations have identical
+    /// source and any is inside a conditional, RuboCop considers them all conditional.
+    call_source: Vec<u8>,
 }
 
 struct GemDeclarationVisitor<'a> {
@@ -367,12 +386,16 @@ impl<'pr> Visit<'pr> for GemDeclarationVisitor<'_> {
             let loc = node.message_loc().unwrap_or(node.location());
             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
             let (conditional_root, blocks_above_conditional) = self.nearest_conditional_root();
+            let call_loc = node.location();
+            let call_source =
+                self.source.as_bytes()[call_loc.start_offset()..call_loc.end_offset()].to_vec();
             self.declarations.push(GemDeclaration {
                 gem_name,
                 line,
                 column,
                 conditional_root,
                 blocks_above_conditional,
+                call_source,
             });
         }
         ruby_prism::visit_call_node(self, node);

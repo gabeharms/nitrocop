@@ -45,3 +45,25 @@ if RUBY_VERSION >= "3.2.0"
   gem "async", "~>2.0"
   gem "minitest-mock"
 end
+
+# Structural equality exemption: identical bare gem calls where one is in a
+# conditional and another in a non-conditional group block. RuboCop's
+# `within_conditional?` uses `branch == node` (structural equality), so when
+# the AST structures match, the non-conditional gem is treated as conditional.
+group :development do
+  gem "redcarpet"
+end
+if ENV["CI"]
+  gem "redcarpet"
+end
+
+# Same pattern with case/when
+group :test do
+  gem "simplecov"
+end
+case RUBY_ENGINE
+when "ruby"
+  gem "simplecov"
+when "jruby"
+  gem "simplecov"
+end
