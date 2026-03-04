@@ -48,7 +48,7 @@ fn build_hook_key(call: &ruby_prism::CallNode<'_>, source: &SourceFile) -> Vec<u
                         || name == b"context"
                         || name == b"suite")
                 {
-                    scope = normalize_scope(&name);
+                    scope = normalize_scope(name);
                     found_scope = true;
                 } else {
                     // Additional symbol args are metadata, equivalent to `name: true`

@@ -1,6 +1,4 @@
-use crate::cop::node_type::{
-    BLOCK_NODE, CALL_NODE, CONSTANT_PATH_NODE, CONSTANT_READ_NODE, LAMBDA_NODE,
-};
+use crate::cop::node_type::{CALL_NODE, FORWARDING_SUPER_NODE, LAMBDA_NODE, SUPER_NODE};
 use crate::cop::util::{collect_foldable_ranges, collect_heredoc_ranges, count_body_lines_ex};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
@@ -19,6 +17,14 @@ use crate::parse::source::SourceFile;
 /// producing false positives on large documentation/example blocks.
 ///
 /// Fix: detect "single heredoc expression body" and count it as one line.
+///
+/// Additional investigation (same run):
+/// - FN: `super do ... end` blocks were not analyzed because only `CallNode`-backed blocks were handled.
+/// - FP: `Data.define(...) do ... end` constructor blocks were counted, while RuboCop exempts them like `Struct.new`.
+///
+/// Fixes:
+/// - Analyze `SuperNode` and `ForwardingSuperNode` blocks as method name `super`.
+/// - Extend constructor exemption to include `Data.define`.
 pub struct BlockLength;
 
 impl Cop for BlockLength {
@@ -31,13 +37,7 @@ impl Cop for BlockLength {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[
-            BLOCK_NODE,
-            CALL_NODE,
-            CONSTANT_PATH_NODE,
-            CONSTANT_READ_NODE,
-            LAMBDA_NODE,
-        ]
+        &[CALL_NODE, SUPER_NODE, FORWARDING_SUPER_NODE, LAMBDA_NODE]
     }
 
     fn check_node(
@@ -55,32 +55,72 @@ impl Cop for BlockLength {
             return;
         }
 
-        // We check CallNode (not BlockNode) so we can read the method name
-        // for AllowedMethods/AllowedPatterns filtering.
-        let call_node = match node.as_call_node() {
-            Some(c) => c,
-            None => return,
-        };
-
-        let block_node = match call_node.block() {
-            Some(b) => match b.as_block_node() {
-                Some(bn) => bn,
+        if let Some(call_node) = node.as_call_node() {
+            let block_node = match call_node.block().and_then(|b| b.as_block_node()) {
+                Some(b) => b,
                 None => return,
-            },
-            None => return,
-        };
-
-        // RuboCop skips class constructor blocks (Struct.new, Class.new, etc.)
-        if is_class_constructor(&call_node) {
+            };
+            // RuboCop skips class constructor blocks (Struct.new, Class.new, etc.)
+            if is_class_constructor(&call_node) {
+                return;
+            }
+            self.check_invocation_block(
+                source,
+                std::str::from_utf8(call_node.name().as_slice()).unwrap_or(""),
+                call_node.location().start_offset(),
+                &block_node,
+                config,
+                diagnostics,
+            );
             return;
         }
 
+        if let Some(super_node) = node.as_super_node() {
+            let block_node = match super_node.block().and_then(|b| b.as_block_node()) {
+                Some(b) => b,
+                None => return,
+            };
+            self.check_invocation_block(
+                source,
+                "super",
+                super_node.location().start_offset(),
+                &block_node,
+                config,
+                diagnostics,
+            );
+            return;
+        }
+
+        if let Some(forwarding_super_node) = node.as_forwarding_super_node() {
+            let block_node = match forwarding_super_node.block() {
+                Some(b) => b,
+                None => return,
+            };
+            self.check_invocation_block(
+                source,
+                "super",
+                forwarding_super_node.location().start_offset(),
+                &block_node,
+                config,
+                diagnostics,
+            );
+        }
+    }
+}
+
+impl BlockLength {
+    fn check_invocation_block(
+        &self,
+        source: &SourceFile,
+        method_name: &str,
+        offense_offset: usize,
+        block_node: &ruby_prism::BlockNode<'_>,
+        config: &CopConfig,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
         let max = config.get_usize("Max", 25);
         let count_comments = config.get_bool("CountComments", false);
         let count_as_one = config.get_string_array("CountAsOne");
-
-        // AllowedMethods / AllowedPatterns: skip blocks on matching method calls
-        let method_name = std::str::from_utf8(call_node.name().as_slice()).unwrap_or("");
         let allowed_methods = config.get_string_array("AllowedMethods");
         let allowed_patterns = config.get_string_array("AllowedPatterns");
 
@@ -110,9 +150,7 @@ impl Cop for BlockLength {
         );
 
         if count > max {
-            // Use call_node location (not block opening) to match RuboCop's
-            // offense position which spans the full expression in Parser AST.
-            let (line, column) = source.offset_to_line_col(call_node.location().start_offset());
+            let (line, column) = source.offset_to_line_col(offense_offset);
             diagnostics.push(self.diagnostic(
                 source,
                 line,
@@ -121,9 +159,7 @@ impl Cop for BlockLength {
             ));
         }
     }
-}
 
-impl BlockLength {
     fn check_lambda(
         &self,
         source: &SourceFile,
@@ -252,26 +288,18 @@ fn is_heredoc_node(source: &SourceFile, node: &ruby_prism::Node<'_>) -> bool {
 /// Check if a call is a class constructor like `Struct.new`, `Class.new`, `Module.new`, etc.
 /// RuboCop's Metrics/BlockLength does not count these blocks.
 fn is_class_constructor(call: &ruby_prism::CallNode<'_>) -> bool {
-    if call.name().as_slice() != b"new" {
-        return false;
-    }
     let recv = match call.receiver() {
         Some(r) => r,
         None => return false,
     };
-    // Check for simple constant receiver (Struct, Class, Module, etc.)
-    if let Some(cr) = recv.as_constant_read_node() {
-        let name = cr.name().as_slice();
-        return matches!(name, b"Struct" | b"Class" | b"Module");
+    let recv_name = crate::cop::util::constant_name(&recv).unwrap_or_default();
+
+    match call.name().as_slice() {
+        b"new" => matches!(recv_name, b"Struct" | b"Class" | b"Module"),
+        // Data.define is also a class constructor in RuboCop.
+        b"define" => recv_name == b"Data",
+        _ => false,
     }
-    // Check for constant path (e.g., ::Struct.new)
-    if let Some(cp) = recv.as_constant_path_node() {
-        if let Some(name_node) = cp.name() {
-            let name = name_node.as_slice();
-            return matches!(name, b"Struct" | b"Class" | b"Module");
-        }
-    }
-    false
 }
 
 #[cfg(test)]
