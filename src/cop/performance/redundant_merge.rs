@@ -3,6 +3,30 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// ## Corpus investigation (2026-03-04)
+///
+/// Corpus oracle reported FP=2, FN=5.
+///
+/// FP=2: Both involve `merge!` on method-chain receivers (`config.action_dispatch.rescue_responses`)
+/// and constant paths (`Client::ERROR_MAPPING`). The cop's "pure receiver" check treats constants
+/// and constant paths as pure, but these are essentially accessors whose `merge!` result is used
+/// by the object being mutated. RuboCop doesn't flag these.
+///
+/// FN=5: All involve `merge!` on the accumulator inside `each_with_object` blocks. RuboCop has a
+/// special `EachWithObjectInspector` that detects when the accumulator is passed by reference and
+/// the `merge!` return value isn't truly consumed. An attempt was made to detect `each_with_object`
+/// blocks and track the accumulator (commit 80417659, reverted a639bfc4). The approach:
+/// - Detected `each_with_object` by method name
+/// - Extracted second block parameter as accumulator name
+/// - Exempted merge! on that accumulator from value_used check
+/// Acceptance gate before: expected=874, actual=871, excess=2 FP, missing=5 FN
+/// Acceptance gate after:  expected=874, actual=882, excess=8 FP, missing=0 FN
+/// This fixed the 5 FNs but introduced 6 NEW false positives (2→8 excess).
+/// Root cause of regression: the class/module body `value_used=true` fix interacted with
+/// the each_with_object exemption — merge! calls in class bodies within each_with_object-like
+/// contexts were incorrectly exempted. A correct fix needs to:
+/// 1. Fix the FP side independently (class/module body value_used) without touching each_with_object
+/// 2. Then carefully implement each_with_object detection that respects nested class/module bodies
 pub struct RedundantMerge;
 
 impl Cop for RedundantMerge {
