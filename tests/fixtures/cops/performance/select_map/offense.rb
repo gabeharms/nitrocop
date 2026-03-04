@@ -12,3 +12,8 @@ ary.do_something.select(&:present?).map(&:to_i).max
                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/SelectMap: Use `filter_map` instead of `select.map`.
 select(&:present?).map(&:to_i)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/SelectMap: Use `filter_map` instead of `select.map`.
+# select without a block (returns Enumerator) chained with map
+select.map { |e| e.to_s }
+^^^^^^ Performance/SelectMap: Use `filter_map` instead of `select.map`.
+items.select.map { |e| e.name }
+      ^^^^^^ Performance/SelectMap: Use `filter_map` instead of `select.map`.
