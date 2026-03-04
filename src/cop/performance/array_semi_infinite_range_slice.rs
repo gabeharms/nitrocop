@@ -3,6 +3,11 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Performance/ArraySemiInfiniteRangeSlice
+///
+/// Investigation: 1 FN in corpus — `0x1f0..` (hex integer literal in endless range).
+/// Root cause: `is_positive_int()` used `str::parse::<i64>()` which only handles decimal.
+/// Fix: parse hex (0x), binary (0b), octal (0o/0), and underscored integer literals.
 pub struct ArraySemiInfiniteRangeSlice;
 
 fn is_string_receiver(receiver: &ruby_prism::Node<'_>) -> bool {
@@ -13,12 +18,28 @@ fn is_string_receiver(receiver: &ruby_prism::Node<'_>) -> bool {
 }
 
 /// Check if a node is a positive integer literal.
+/// Handles decimal, hex (0x), octal (0o/0), and binary (0b) Ruby integer literals,
+/// as well as underscored variants (e.g. 1_000).
 fn is_positive_int(node: &ruby_prism::Node<'_>, source: &SourceFile) -> bool {
     if let Some(int_node) = node.as_integer_node() {
         let loc = int_node.location();
         let src = &source.as_bytes()[loc.start_offset()..loc.end_offset()];
         if let Ok(s) = std::str::from_utf8(src) {
-            if let Ok(v) = s.parse::<i64>() {
+            let stripped = s.replace('_', "");
+            let val = if let Some(hex) = stripped.strip_prefix("0x").or(stripped.strip_prefix("0X"))
+            {
+                i64::from_str_radix(hex, 16).ok()
+            } else if let Some(bin) = stripped.strip_prefix("0b").or(stripped.strip_prefix("0B")) {
+                i64::from_str_radix(bin, 2).ok()
+            } else if let Some(oct) = stripped.strip_prefix("0o").or(stripped.strip_prefix("0O")) {
+                i64::from_str_radix(oct, 8).ok()
+            } else if stripped.starts_with('0') && stripped.len() > 1 && !stripped.contains('.') {
+                // Legacy octal: 0777
+                i64::from_str_radix(&stripped[1..], 8).ok()
+            } else {
+                stripped.parse::<i64>().ok()
+            };
+            if let Some(v) = val {
                 return v > 0;
             }
         }
