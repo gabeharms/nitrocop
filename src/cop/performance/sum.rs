@@ -1,8 +1,19 @@
-use crate::cop::node_type::{CALL_NODE, INTEGER_NODE, SYMBOL_NODE};
+use crate::cop::node_type::CALL_NODE;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Performance/Sum detects `inject`/`reduce` calls that can be replaced with `sum`.
+///
+/// Detected patterns:
+/// 1. Symbol form: `inject(:+)`, `inject(0, :+)`, `inject(init, :+)`
+/// 2. Block-pass form: `inject(&:+)`, `inject(0, &:+)`
+/// 3. Block form: `inject(init) { |acc, elem| acc + elem }` (or `elem + acc`)
+/// 4. Block form without init: `inject { |acc, elem| acc + elem }`
+///
+/// Root cause of FN=294: the cop previously rejected all calls with blocks,
+/// missing the block-based addition pattern. Also missed non-zero initial
+/// values with `:+` and `&:+` block-pass form.
 pub struct Sum;
 
 impl Cop for Sum {
@@ -15,7 +26,7 @@ impl Cop for Sum {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[CALL_NODE, INTEGER_NODE, SYMBOL_NODE]
+        &[CALL_NODE]
     }
 
     fn check_node(
@@ -43,11 +54,72 @@ impl Cop for Sum {
             return;
         }
 
-        // Must not have a block
-        if call.block().is_some() {
+        let method_str = std::str::from_utf8(method_name).unwrap_or("inject");
+
+        if let Some(block) = call.block() {
+            // Check for block-based pattern: inject(init) { |acc, elem| acc + elem }
+            if let Some(block_node) = block.as_block_node() {
+                if is_sum_block(&block_node) {
+                    let has_init = call.arguments().is_some();
+                    if only_sum_or_with_initial_value && !has_init {
+                        return;
+                    }
+                    let msg_loc = match call.message_loc() {
+                        Some(loc) => loc,
+                        None => return,
+                    };
+                    let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
+                    let raw_init = get_raw_init_text(source, call.arguments());
+                    let suggestion_init = get_suggestion_init(source, call.arguments());
+                    let message =
+                        format_block_message(method_str, raw_init.as_deref(), &suggestion_init);
+                    diagnostics.push(self.diagnostic(source, line, column, message));
+                }
+                return;
+            }
+
+            // Check for block-pass pattern: inject(&:+), inject(0, &:+)
+            if let Some(block_arg) = block.as_block_argument_node() {
+                let is_plus = block_arg
+                    .expression()
+                    .and_then(|e| e.as_symbol_node())
+                    .is_some_and(|s| s.unescaped() == b"+");
+                if !is_plus {
+                    return;
+                }
+
+                let has_init = call.arguments().is_some();
+                if only_sum_or_with_initial_value && !has_init {
+                    return;
+                }
+
+                let msg_loc = match call.message_loc() {
+                    Some(loc) => loc,
+                    None => return,
+                };
+                let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
+
+                if has_init {
+                    let raw_init = get_raw_init_text(source, call.arguments()).unwrap_or_default();
+                    let suggestion_init = get_suggestion_init(source, call.arguments());
+                    let message =
+                        format_symbol_message(method_str, &raw_init, &suggestion_init, "&:+");
+                    diagnostics.push(self.diagnostic(source, line, column, message));
+                } else {
+                    diagnostics.push(self.diagnostic(
+                        source,
+                        line,
+                        column,
+                        format!("Use `sum` instead of `{method_str}(&:+)`, unless calling `{method_str}(&:+)` on an empty array."),
+                    ));
+                }
+                return;
+            }
+
             return;
         }
 
+        // No block — check symbol argument patterns: inject(:+), inject(init, :+)
         let args = match call.arguments() {
             Some(a) => a,
             None => return,
@@ -55,47 +127,133 @@ impl Cop for Sum {
 
         let arg_nodes: Vec<_> = args.arguments().iter().collect();
 
-        let is_sum_pattern = match arg_nodes.len() {
+        match arg_nodes.len() {
             1 => {
-                // inject(:+) or reduce(:+)
-                // OnlySumOrWithInitialValue: when true, skip this pattern (no initial value)
-                if only_sum_or_with_initial_value {
-                    false
-                } else {
-                    is_plus_symbol(&arg_nodes[0])
+                if is_plus_symbol(&arg_nodes[0]) {
+                    // inject(:+) — no initial value
+                    if only_sum_or_with_initial_value {
+                        return;
+                    }
+                    let msg_loc = match call.message_loc() {
+                        Some(loc) => loc,
+                        None => return,
+                    };
+                    let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
+                    diagnostics.push(self.diagnostic(
+                        source,
+                        line,
+                        column,
+                        format!("Use `sum` instead of `{method_str}(:+)`."),
+                    ));
                 }
             }
             2 => {
-                // inject(0, :+) or reduce(0, :+)
-                is_zero_literal(&arg_nodes[0]) && is_plus_symbol(&arg_nodes[1])
+                if is_plus_symbol(&arg_nodes[1]) {
+                    let msg_loc = match call.message_loc() {
+                        Some(loc) => loc,
+                        None => return,
+                    };
+                    let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
+                    let raw_init = get_raw_init_text(source, call.arguments()).unwrap_or_default();
+                    let suggestion_init = get_suggestion_init(source, call.arguments());
+                    let message =
+                        format_symbol_message(method_str, &raw_init, &suggestion_init, ":+");
+                    diagnostics.push(self.diagnostic(source, line, column, message));
+                }
             }
-            _ => false,
-        };
-
-        if !is_sum_pattern {
-            return;
+            _ => {}
         }
-
-        let msg_loc = match call.message_loc() {
-            Some(loc) => loc,
-            None => return,
-        };
-        let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-
-        let method_str = std::str::from_utf8(method_name).unwrap_or("inject");
-        let args_str = if arg_nodes.len() == 2 {
-            format!("{method_str}(0, :+)")
-        } else {
-            format!("{method_str}(:+)")
-        };
-
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            column,
-            format!("Use `sum` instead of `{args_str}`."),
-        ));
     }
+}
+
+/// Check if a block implements summation: `{ |acc, elem| acc + elem }` or `{ |acc, elem| elem + acc }`
+fn is_sum_block(block: &ruby_prism::BlockNode<'_>) -> bool {
+    // Must have exactly 2 block parameters
+    let params = match block.parameters() {
+        Some(p) => p,
+        None => return false,
+    };
+    let block_params = match params.as_block_parameters_node() {
+        Some(bp) => bp,
+        None => return false,
+    };
+    let param_list = match block_params.parameters() {
+        Some(pl) => pl,
+        None => return false,
+    };
+    let requireds: Vec<_> = param_list.requireds().iter().collect();
+    if requireds.len() != 2 {
+        return false;
+    }
+
+    // Get parameter names
+    let param1_name = match requireds[0].as_required_parameter_node() {
+        Some(p) => p.name().as_slice().to_vec(),
+        None => return false,
+    };
+    let param2_name = match requireds[1].as_required_parameter_node() {
+        Some(p) => p.name().as_slice().to_vec(),
+        None => return false,
+    };
+
+    // Block body must be a single expression that is `param1 + param2` or `param2 + param1`
+    let body = match block.body() {
+        Some(b) => b,
+        None => return false,
+    };
+
+    let stmts = match body.as_statements_node() {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let body_stmts: Vec<_> = stmts.body().iter().collect();
+    if body_stmts.len() != 1 {
+        return false;
+    }
+
+    let call = match body_stmts[0].as_call_node() {
+        Some(c) => c,
+        None => return false,
+    };
+
+    // Must be a `+` call
+    if call.name().as_slice() != b"+" {
+        return false;
+    }
+
+    // Get the receiver (left operand) and the argument (right operand)
+    let receiver = match call.receiver() {
+        Some(r) => r,
+        None => return false,
+    };
+
+    let args = match call.arguments() {
+        Some(a) => a,
+        None => return false,
+    };
+
+    let arg_nodes: Vec<_> = args.arguments().iter().collect();
+    if arg_nodes.len() != 1 {
+        return false;
+    }
+
+    let left_name = local_var_name(&receiver);
+    let right_name = local_var_name(&arg_nodes[0]);
+
+    let (left_name, right_name) = match (left_name, right_name) {
+        (Some(l), Some(r)) => (l, r),
+        _ => return false,
+    };
+
+    // acc + elem or elem + acc
+    (left_name == param1_name && right_name == param2_name)
+        || (left_name == param2_name && right_name == param1_name)
+}
+
+fn local_var_name(node: &ruby_prism::Node<'_>) -> Option<Vec<u8>> {
+    node.as_local_variable_read_node()
+        .map(|n| n.name().as_slice().to_vec())
 }
 
 fn is_plus_symbol(node: &ruby_prism::Node<'_>) -> bool {
@@ -112,6 +270,81 @@ fn is_zero_literal(node: &ruby_prism::Node<'_>) -> bool {
         return !negative && digits == [0];
     }
     false
+}
+
+fn is_zero_int(node: &ruby_prism::Node<'_>) -> bool {
+    is_zero_literal(node)
+}
+
+/// Get the raw source text of the first argument (init value).
+/// Returns None if no arguments.
+fn get_raw_init_text(
+    source: &SourceFile,
+    arguments: Option<ruby_prism::ArgumentsNode<'_>>,
+) -> Option<String> {
+    let args = arguments?;
+    let arg_nodes: Vec<_> = args.arguments().iter().collect();
+    if arg_nodes.is_empty() {
+        return None;
+    }
+    let init_node = &arg_nodes[0];
+    let start = init_node.location().start_offset();
+    let end = init_node.location().end_offset();
+    let init_text = &source.as_bytes()[start..end];
+    Some(String::from_utf8_lossy(init_text).to_string())
+}
+
+/// Get the suggestion init text (empty for integer 0, since `sum` == `sum(0)`).
+fn get_suggestion_init(
+    source: &SourceFile,
+    arguments: Option<ruby_prism::ArgumentsNode<'_>>,
+) -> String {
+    let args = match arguments {
+        Some(a) => a,
+        None => return String::new(),
+    };
+    let arg_nodes: Vec<_> = args.arguments().iter().collect();
+    if arg_nodes.is_empty() {
+        return String::new();
+    }
+    let init_node = &arg_nodes[0];
+    if is_zero_int(init_node) {
+        return String::new();
+    }
+    let start = init_node.location().start_offset();
+    let end = init_node.location().end_offset();
+    let init_text = &source.as_bytes()[start..end];
+    String::from_utf8_lossy(init_text).to_string()
+}
+
+fn format_sum_suggestion(init: &str) -> String {
+    if init.is_empty() {
+        "sum".to_string()
+    } else {
+        format!("sum({init})")
+    }
+}
+
+fn format_block_message(method_str: &str, raw_init: Option<&str>, suggestion_init: &str) -> String {
+    let suggestion = format_sum_suggestion(suggestion_init);
+    match raw_init {
+        Some(init) => format!(
+            "Use `{suggestion}` instead of `{method_str}({init}) {{ |acc, elem| acc + elem }}`."
+        ),
+        None => {
+            format!("Use `{suggestion}` instead of `{method_str} {{ |acc, elem| acc + elem }}`.")
+        }
+    }
+}
+
+fn format_symbol_message(
+    method_str: &str,
+    raw_init: &str,
+    suggestion_init: &str,
+    sym_str: &str,
+) -> String {
+    let suggestion = format_sum_suggestion(suggestion_init);
+    format!("Use `{suggestion}` instead of `{method_str}({raw_init}, {sym_str})`.")
 }
 
 #[cfg(test)]
@@ -148,5 +381,12 @@ mod tests {
             1,
             "OnlySumOrWithInitialValue should still flag inject(0, :+)"
         );
+    }
+
+    #[test]
+    fn instance_var_inject_block() {
+        let src = b"@stack.inject(0) { |n, sum| sum + n }\n";
+        let diags = run_cop_full_with_config(&Sum, src, CopConfig::default());
+        assert_eq!(diags.len(), 1, "should flag @stack.inject(0) block pattern");
     }
 }
