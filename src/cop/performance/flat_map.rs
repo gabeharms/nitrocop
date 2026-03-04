@@ -4,6 +4,15 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Flags `map { ... }.flatten(1)` and `collect { ... }.flatten(1)` — suggest `flat_map` instead.
+///
+/// ## Investigation notes
+/// - Offense location must start at the inner method selector (`map`/`collect`), not at the
+///   start of the entire receiver chain. RuboCop uses `map_send_node.loc.selector.begin_pos`.
+///   Multi-line chains (e.g., `ancestors.reject { ... }\n  .map(...).flatten(1)`) would
+///   otherwise report on the wrong line, causing FP/FN pairs in corpus comparison.
+/// - `EnabledForFlattenWithoutParams` defaults to `false` in vendor config. When false, bare
+///   `.flatten` (no args) is not flagged — only `.flatten(1)` is. This matches RuboCop's default.
 pub struct FlatMap;
 
 impl Cop for FlatMap {
@@ -29,7 +38,7 @@ impl Cop for FlatMap {
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enabled_for_flatten_without_params =
-            config.get_bool("EnabledForFlattenWithoutParams", true);
+            config.get_bool("EnabledForFlattenWithoutParams", false);
         let chain = match as_method_chain(node) {
             Some(c) => c,
             None => return,
@@ -95,8 +104,14 @@ impl Cop for FlatMap {
 
         let flatten_name = std::str::from_utf8(chain.outer_method).unwrap_or("flatten");
 
-        let loc = node.location();
-        let (line, column) = source.offset_to_line_col(loc.start_offset());
+        // RuboCop reports the offense starting at the inner method's selector (map/collect),
+        // not at the start of the entire chain. This matters for multi-line chains where
+        // the receiver is on a different line than the map/collect call.
+        let inner_msg_loc = chain
+            .inner_call
+            .message_loc()
+            .unwrap_or(chain.inner_call.location());
+        let (line, column) = source.offset_to_line_col(inner_msg_loc.start_offset());
         diagnostics.push(self.diagnostic(
             source,
             line,
@@ -129,6 +144,28 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Should skip flatten without params when EnabledForFlattenWithoutParams is false"
+        );
+    }
+
+    #[test]
+    fn enabled_for_flatten_without_params_flags_bare_flatten() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([(
+                "EnabledForFlattenWithoutParams".into(),
+                serde_yml::Value::Bool(true),
+            )]),
+            ..CopConfig::default()
+        };
+        // map { }.flatten without args — SHOULD be flagged when config enabled
+        let src = b"[1, 2].map { |x| [x, x] }.flatten\n";
+        let diags = run_cop_full_with_config(&FlatMap, src, config);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should flag flatten without params when EnabledForFlattenWithoutParams is true"
         );
     }
 }
