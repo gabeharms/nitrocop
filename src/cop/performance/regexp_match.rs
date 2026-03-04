@@ -22,6 +22,13 @@ use ruby_prism::Visit;
 ///    receiverless match() when the argument is a literal.
 /// 4. FN: case/when used case_start as if_node_offset for all when conditions, making
 ///    them indistinguishable. Fixed by using each when condition's own offset.
+///
+/// Corpus investigation (round 3): FP=2, FN=0. Root cause: when a MatchData reference
+/// (e.g., `$``, `Regexp.last_match`) is used as the receiver of the NEXT match expression,
+/// its byte offset equals the next match expression's start offset. The boundary check
+/// `r.offset < upper_bound` excluded it. Fixed by using `<=` so refs at the exact boundary
+/// are included. Examples: `$` =~ MGR0` after `w =~ /eed$/`, and
+/// `Regexp.last_match[0] =~ /re/` after `str =~ /pattern/`.
 pub struct RegexpMatch;
 
 impl Cop for RegexpMatch {
@@ -483,9 +490,12 @@ fn last_match_used_in_scope(
         .unwrap_or(usize::MAX);
 
     // Check if any MatchData ref in the same scope falls within
-    // [if_node_offset, upper_bound).
+    // [if_node_offset, upper_bound]. We use <= for the upper bound because
+    // a MatchData ref can be the receiver of the next match expression
+    // (e.g., `$` =~ MGR0` or `Regexp.last_match[0] =~ /re/`), in which
+    // case the ref's offset equals the next match expression's start offset.
     for r in match_data_refs {
-        if r.scope == current_scope && r.offset >= if_node_offset && r.offset < upper_bound {
+        if r.scope == current_scope && r.offset >= if_node_offset && r.offset <= upper_bound {
             return true;
         }
     }
@@ -714,6 +724,40 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Should NOT flag when Regexp.last_match is used. Got: {:?}",
+            diags
+                .iter()
+                .map(|d| format!("{}:{} {}", d.location.line, d.location.column, d.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn prematch_used_as_receiver_of_next_match() {
+        use crate::testutil::run_cop_full;
+        // $` (prematch) is used as the receiver of the next =~ expression.
+        // The MatchData ref offset equals the next match expr start offset,
+        // so the boundary check must use <= not <.
+        let source = b"if w =~ /eed$/\n  w.chop! if $` =~ MGR0\nend\n";
+        let diags = run_cop_full(&RegexpMatch, source);
+        assert!(
+            diags.is_empty(),
+            "Should NOT flag when $` is used as receiver of next =~. Got: {:?}",
+            diags
+                .iter()
+                .map(|d| format!("{}:{} {}", d.location.line, d.location.column, d.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn regexp_last_match_used_as_receiver_of_next_match() {
+        use crate::testutil::run_cop_full;
+        // Regexp.last_match[0] is used as receiver of the next =~ expression.
+        let source = b"def conformance?(protocol)\n  return false unless str =~ /pattern/\n  Regexp.last_match[0] =~ /test/\nend\n";
+        let diags = run_cop_full(&RegexpMatch, source);
+        assert!(
+            diags.is_empty(),
+            "Should NOT flag when Regexp.last_match is used as receiver of next =~. Got: {:?}",
             diags
                 .iter()
                 .map(|d| format!("{}:{} {}", d.location.line, d.location.column, d.message))

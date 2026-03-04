@@ -98,3 +98,12 @@ when line =~ /^ORIGINAL ?([\w\s]+)$/
 when line =~ /^(.+)$/
   opts = eval("{ #{$~[1]} }")
 end
+# MatchData ref used as receiver of next =~ (prematch $`)
+if w =~ /eed$/
+  w.chop! if $` =~ /pattern/
+end
+# Regexp.last_match used as receiver of next =~ via []
+def conformance?(protocol)
+  return false unless str =~ /pattern/
+  Regexp.last_match[0] =~ /test/
+end
