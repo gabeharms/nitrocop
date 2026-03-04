@@ -1,4 +1,4 @@
-use crate::cop::node_type::{ARRAY_NODE, CALL_NODE, KEYWORD_HASH_NODE, STRING_NODE, SYMBOL_NODE};
+use crate::cop::node_type::{ARRAY_NODE, CALL_NODE, STRING_NODE, SYMBOL_NODE};
 use crate::cop::util::RSPEC_DEFAULT_INCLUDE;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
@@ -20,13 +20,7 @@ impl Cop for SingleArgumentMessageChain {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[
-            ARRAY_NODE,
-            CALL_NODE,
-            KEYWORD_HASH_NODE,
-            STRING_NODE,
-            SYMBOL_NODE,
-        ]
+        &[ARRAY_NODE, CALL_NODE, STRING_NODE, SYMBOL_NODE]
     }
 
     fn check_node(
@@ -70,9 +64,6 @@ impl Cop for SingleArgumentMessageChain {
             } else if let Some(arr) = arg.as_array_node() {
                 // Single-element array
                 arr.elements().iter().count() == 1
-            } else if let Some(kh) = arg.as_keyword_hash_node() {
-                // Single-key hash
-                kh.elements().iter().count() == 1
             } else {
                 false
             }
