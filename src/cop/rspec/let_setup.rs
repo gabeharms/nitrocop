@@ -1,4 +1,3 @@
-use crate::cop::node_type::{BLOCK_NODE, CALL_NODE, STATEMENTS_NODE, STRING_NODE, SYMBOL_NODE};
 use crate::cop::util::RSPEC_DEFAULT_INCLUDE;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
@@ -7,6 +6,13 @@ use ruby_prism::Visit;
 use std::collections::HashSet;
 
 /// RSpec/LetSetup: Flag `let!` that is not referenced in tests (only used for side effects).
+///
+/// Investigation findings:
+/// - The dominant false-positive pattern was inner `let!` overriding an outer `let!` with the
+///   same name (e.g., `let!(:record) { nil }` inside a nested context that overrides a parent
+///   `let!(:record) { create(...) }`). RuboCop skips these via `overrides_outer_let_bang?`.
+/// - Implemented a recursive visitor that maintains a stack of ancestor `let!` names, so inner
+///   overrides are correctly suppressed without needing parent node references.
 pub struct LetSetup;
 
 impl Cop for LetSetup {
@@ -22,43 +28,35 @@ impl Cop for LetSetup {
         RSPEC_DEFAULT_INCLUDE
     }
 
-    fn interested_node_types(&self) -> &'static [u8] {
-        &[
-            BLOCK_NODE,
-            CALL_NODE,
-            STATEMENTS_NODE,
-            STRING_NODE,
-            SYMBOL_NODE,
-        ]
-    }
-
-    fn check_node(
+    fn check_source(
         &self,
         source: &SourceFile,
-        node: &ruby_prism::Node<'_>,
-        _parse_result: &ruby_prism::ParseResult<'_>,
+        parse_result: &ruby_prism::ParseResult<'_>,
+        _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let call = match node.as_call_node() {
-            Some(c) => c,
-            None => return,
+        let mut visitor = LetSetupVisitor {
+            cop: self,
+            source,
+            diagnostics,
+            ancestor_let_bang_names: Vec::new(),
         };
+        visitor.visit(&parse_result.node());
+    }
+}
 
-        let name = call.name().as_slice();
-        if !is_example_group(name) {
-            return;
-        }
+struct LetSetupVisitor<'a> {
+    cop: &'a LetSetup,
+    source: &'a SourceFile,
+    diagnostics: &'a mut Vec<Diagnostic>,
+    /// Stack of sets: each set contains the `let!` names defined at that ancestor scope level.
+    ancestor_let_bang_names: Vec<HashSet<Vec<u8>>>,
+}
 
-        let block = match call.block() {
-            Some(b) => b,
-            None => return,
-        };
-        let block_node = match block.as_block_node() {
-            Some(b) => b,
-            None => return,
-        };
+impl<'pr> LetSetupVisitor<'_> {
+    fn process_example_group(&mut self, block_node: &ruby_prism::BlockNode<'pr>) {
         let body = match block_node.body() {
             Some(b) => b,
             None => return,
@@ -71,6 +69,7 @@ impl Cop for LetSetup {
         // Collect let! names and all identifiers used in the same scope
         let mut let_bang_decls: Vec<(Vec<u8>, usize, usize)> = Vec::new();
         let mut used_names: HashSet<Vec<u8>> = HashSet::new();
+        let mut this_scope_let_bang_names: HashSet<Vec<u8>> = HashSet::new();
 
         for stmt in stmts.body().iter() {
             if let Some(c) = stmt.as_call_node() {
@@ -78,7 +77,8 @@ impl Cop for LetSetup {
                 if m == b"let!" && c.receiver().is_none() {
                     if let Some(let_name) = extract_let_name(&c) {
                         let loc = c.location();
-                        let (line, col) = source.offset_to_line_col(loc.start_offset());
+                        let (line, col) = self.source.offset_to_line_col(loc.start_offset());
+                        this_scope_let_bang_names.insert(let_name.clone());
                         let_bang_decls.push((let_name, line, col));
                     }
                 }
@@ -94,15 +94,56 @@ impl Cop for LetSetup {
         }
 
         for (let_name, line, col) in &let_bang_decls {
+            // Skip if this let! overrides an outer let! with the same name
+            if self.overrides_outer_let_bang(let_name) {
+                continue;
+            }
             if !used_names.contains(let_name) {
-                diagnostics.push(self.diagnostic(
-                    source,
+                self.diagnostics.push(self.cop.diagnostic(
+                    self.source,
                     *line,
                     *col,
                     "Do not use `let!` to setup objects not referenced in tests.".to_string(),
                 ));
             }
         }
+
+        // Push this scope's let! names onto the ancestor stack, then recurse into children
+        self.ancestor_let_bang_names.push(this_scope_let_bang_names);
+        for stmt in stmts.body().iter() {
+            self.visit(&stmt);
+        }
+        self.ancestor_let_bang_names.pop();
+    }
+
+    fn overrides_outer_let_bang(&self, name: &[u8]) -> bool {
+        self.ancestor_let_bang_names
+            .iter()
+            .any(|scope| scope.contains(name))
+    }
+}
+
+impl<'pr> Visit<'pr> for LetSetupVisitor<'_> {
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        let name = node.name().as_slice();
+        if !is_example_group(name) {
+            // Not an example group — continue default traversal
+            ruby_prism::visit_call_node(self, node);
+            return;
+        }
+
+        let block = match node.block() {
+            Some(b) => b,
+            None => return,
+        };
+        let block_node = match block.as_block_node() {
+            Some(b) => b,
+            None => return,
+        };
+
+        // Process this example group (handles let! detection + nested recursion)
+        self.process_example_group(&block_node);
+        // Don't call visit_call_node default — we already recursed into children
     }
 }
 
