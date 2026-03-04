@@ -76,6 +76,9 @@ After all selected cops are fixed:
    ```
    Corpus validation is the acceptance gate: unit tests passing is necessary
    but not sufficient. All fixed cops must report `PASS` with zero excess offenses.
+   Use `--rerun` only for cops changed in the current batch. For untouched cops,
+   prefer artifact mode (`python3 scripts/check-cop.py Department/CopName --verbose`)
+   when the latest corpus oracle run is current.
 
 3. Handle regressions: if a change increases FP count (even if unit tests pass),
    revert the code change but add a detailed investigation comment to the cop
@@ -167,7 +170,8 @@ Do not leave retained progress only in a worktree branch.
 - Never use `git stash` or `git stash pop`.
 - **Do not run nitrocop or rubocop directly on corpus repos** — they require special env vars
   (BUNDLE_GEMFILE, BUNDLE_PATH, GIT_CEILING_DIRECTORIES) that only `check-cop.py` sets up
-  correctly. Use `check-cop.py --rerun` to verify corpus behavior.
+  correctly. Use `check-cop.py --rerun` for modified cops and `check-cop.py --verbose`
+  (artifact mode) for untouched cops.
 - Do not copy identifiers from private repos into fixtures or source.
 - Prefer generic minimal repros and generic naming in tests.
 

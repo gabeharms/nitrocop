@@ -70,11 +70,14 @@ Read reduced repros from `/tmp/nitrocop-reduce/` and capture root-cause hypothes
 
 4. Re-run targeted tests and ensure they pass.
 
-5. Verify with corpus (acceptance gate):
+5. Verify with corpus (acceptance gate for cops changed in this loop):
    ```bash
    python3 scripts/check-cop.py Department/CopName --verbose --rerun
    ```
    Corpus validation is the acceptance gate. Unit tests passing is necessary but not sufficient.
+   Use `--rerun` only for cops whose behavior may have changed (cop source or related parsing/config logic).
+   For untouched cops, prefer artifact mode (`python3 scripts/check-cop.py Department/CopName --verbose`)
+   when the latest corpus oracle run is current.
 
 6. Handle regressions:
    - If FP increases (even with passing tests), revert the code change.
@@ -191,7 +194,8 @@ Do not leave retained progress only in a worktree branch.
 - Never use `git stash` or `git stash pop`.
 - **Do not run nitrocop or rubocop directly on corpus repos** — they require special env vars
   (BUNDLE_GEMFILE, BUNDLE_PATH, GIT_CEILING_DIRECTORIES) that only `check-cop.py` sets up
-  correctly. Use `check-cop.py --rerun` to verify corpus behavior.
+  correctly. Use `check-cop.py --rerun` for modified cops and `check-cop.py --verbose`
+  (artifact mode) for untouched cops.
 - Use local corpus files under `vendor/corpus/` when available.
 - Do not copy identifiers from private repositories into source, fixtures, or commit messages.
 

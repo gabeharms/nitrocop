@@ -135,7 +135,9 @@ directly on main.
    If needed, read the actual source files from `vendor/corpus/<repo_id>/<path>` to see more context.
    **DO NOT run nitrocop or rubocop directly on corpus repos** — they require special
    env vars (BUNDLE_GEMFILE, BUNDLE_PATH, GIT_CEILING_DIRECTORIES) that only `check-cop.py`
-   sets up correctly. If you need to verify corpus behavior, use `check-cop.py --rerun`.
+   sets up correctly. If you need to verify corpus behavior, use `check-cop.py --rerun`
+   for the cop you modified; use `check-cop.py --verbose` for untouched cops when the
+   latest corpus oracle run is current.
 
 3. **Add test cases (TDD)**:
    - For FP fixes: add the false-positive pattern to `tests/fixtures/cops/<dept>/<cop_name>/no_offense.rb`
@@ -189,7 +191,8 @@ directly on main.
    python3 scripts/check-cop.py Department/CopName --verbose --rerun
    ```
    **Corpus validation is the acceptance gate** — unit tests passing is necessary but
-   NOT sufficient.
+   NOT sufficient. Use `--rerun` only for cops changed in this batch; for untouched
+   cops, use artifact mode (`--verbose`).
 
 5. **Handle regressions**: if a fix increases FP count (even if unit tests pass), revert
    the code change but **add a detailed investigation comment** to the cop source file
