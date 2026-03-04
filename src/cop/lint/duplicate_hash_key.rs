@@ -5,6 +5,31 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Returns true if a method name is a known arithmetic/comparison operator that
+/// preserves literal-ness (e.g. `1 + 2`). Excludes `[]` and other method calls.
+fn is_literal_binary_operator(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"+" | b"-"
+            | b"*"
+            | b"/"
+            | b"%"
+            | b"**"
+            | b"=="
+            | b"!="
+            | b"<"
+            | b">"
+            | b"<="
+            | b">="
+            | b"<=>"
+            | b"<<"
+            | b">>"
+            | b"&"
+            | b"|"
+            | b"^"
+    )
+}
+
 /// Returns true if a node is a pure literal (no method calls or variable references).
 /// Matches RuboCop's behavior: only flag duplicate keys when the key is entirely literal.
 fn is_literal(node: &ruby_prism::Node<'_>) -> bool {
@@ -73,11 +98,15 @@ fn is_literal(node: &ruby_prism::Node<'_>) -> bool {
         {
             return is_literal(&call.receiver().unwrap());
         }
-        if let Some(recv) = call.receiver() {
-            if let Some(args) = call.arguments() {
-                let arg_list: Vec<_> = args.arguments().iter().collect();
-                if arg_list.len() == 1 && call.block().is_none() {
-                    return is_literal(&recv) && is_literal(&arg_list[0]);
+        // Binary operators on literals (e.g., `1 + 2`, `false <=> true`) are literal,
+        // but method calls like `[]` are not — they could return anything.
+        if is_literal_binary_operator(name) {
+            if let Some(recv) = call.receiver() {
+                if let Some(args) = call.arguments() {
+                    let arg_list: Vec<_> = args.arguments().iter().collect();
+                    if arg_list.len() == 1 && call.block().is_none() {
+                        return is_literal(&recv) && is_literal(&arg_list[0]);
+                    }
                 }
             }
         }

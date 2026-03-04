@@ -5,6 +5,27 @@ use crate::parse::source::SourceFile;
 
 pub struct TrailingCommaInArguments;
 
+/// Collect effective element locations, expanding any KeywordHashNode into its
+/// individual assoc elements. This matches RuboCop's behavior where keyword args
+/// are treated as separate elements for the no_elements_on_same_line? check.
+fn effective_element_locations<'a>(
+    arg_list: impl Iterator<Item = ruby_prism::Node<'a>>,
+) -> Vec<(usize, usize)> {
+    let mut locations = Vec::new();
+    for arg in arg_list {
+        if let Some(kw_hash) = arg.as_keyword_hash_node() {
+            for elem in kw_hash.elements().iter() {
+                let loc = elem.location();
+                locations.push((loc.start_offset(), loc.end_offset()));
+            }
+        } else {
+            let loc = arg.location();
+            locations.push((loc.start_offset(), loc.end_offset()));
+        }
+    }
+    locations
+}
+
 /// Check if a byte range contains only whitespace and exactly one comma.
 /// Returns false if there are other non-whitespace characters (e.g., heredoc content).
 /// Comments (starting with #) are treated as whitespace.
@@ -108,8 +129,19 @@ impl Cop for TrailingCommaInArguments {
         let call_is_multiline = close_line > call_start_line;
 
         // For single-argument calls where closing bracket is on the same line as
-        // the end of the argument, RuboCop does not consider it multiline
-        let effective_args = arg_list.len();
+        // the end of the argument, RuboCop does not consider it multiline.
+        // Expand KeywordHashNode to count individual keyword args.
+        let effective_args = {
+            let mut count = 0usize;
+            for arg in arg_list.iter() {
+                if let Some(kw_hash) = arg.as_keyword_hash_node() {
+                    count += kw_hash.elements().len();
+                } else {
+                    count += 1;
+                }
+            }
+            count
+        };
         if effective_args == 1 {
             let last_arg_end_line = source.offset_to_line_col(last_end).0;
             if close_line == last_arg_end_line {
@@ -161,16 +193,14 @@ impl Cop for TrailingCommaInArguments {
                 // each pair of consecutive elements (plus closing bracket) must be
                 // on separate lines. If any two share a line, no trailing comma needed.
                 let all_on_own_line = if style == "comma" {
+                    // Expand KeywordHashNode to individual elements so that
+                    // keyword args sharing a line are correctly detected.
+                    let elem_locs = effective_element_locations(arg_list.iter());
                     let mut lines: Vec<(usize, usize)> = Vec::new(); // (last_line, next_first_line)
-                    let args_vec: Vec<_> = arg_list.iter().collect();
-                    for i in 0..args_vec.len() {
-                        let end_line = source
-                            .offset_to_line_col(args_vec[i].location().end_offset())
-                            .0;
-                        let next_start_line = if i + 1 < args_vec.len() {
-                            source
-                                .offset_to_line_col(args_vec[i + 1].location().start_offset())
-                                .0
+                    for i in 0..elem_locs.len() {
+                        let end_line = source.offset_to_line_col(elem_locs[i].1).0;
+                        let next_start_line = if i + 1 < elem_locs.len() {
+                            source.offset_to_line_col(elem_locs[i + 1].0).0
                         } else {
                             close_line
                         };
@@ -314,6 +344,42 @@ mod tests {
             diags.len(),
             1,
             "comma style should flag when each arg is on its own line"
+        );
+    }
+
+    #[test]
+    fn comma_style_keyword_args_sharing_line_no_offense() {
+        // Keyword args form a single KeywordHashNode in Prism, but the
+        // no_elements_on_same_line check must expand it to individual elements.
+        let source =
+            b"Retriable.retriable(\n  on: StandardError,\n  tries: 7, base_interval: 1.0\n)\n";
+        let diags = run_cop_full_with_config(&TrailingCommaInArguments, source, comma_config());
+        assert!(
+            diags.is_empty(),
+            "comma style should not flag when keyword args share a line"
+        );
+    }
+
+    #[test]
+    fn comma_style_keyword_args_each_own_line_offense() {
+        // Each keyword arg on its own line — should require trailing comma.
+        let source = b"foo(\n  on: StandardError,\n  tries: 7\n)\n";
+        let diags = run_cop_full_with_config(&TrailingCommaInArguments, source, comma_config());
+        assert_eq!(
+            diags.len(),
+            1,
+            "comma style should flag when each keyword arg is on its own line"
+        );
+    }
+
+    #[test]
+    fn comma_style_mixed_args_keyword_sharing_line_no_offense() {
+        // Positional arg + keyword args where keywords share a line
+        let source = b"foo(\n  1,\n  a: 2, b: 3\n)\n";
+        let diags = run_cop_full_with_config(&TrailingCommaInArguments, source, comma_config());
+        assert!(
+            diags.is_empty(),
+            "comma style should not flag when keyword args share a line (mixed args)"
         );
     }
 }

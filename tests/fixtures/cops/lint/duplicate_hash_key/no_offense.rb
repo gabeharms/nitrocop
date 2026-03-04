@@ -10,3 +10,6 @@ hash = { a: 1, **other }
 { Time.now => "first", Time.now => "second" }
 { counter += 1 => "a", counter += 1 => "b" }
 { some_method_call(x, y) => 1, some_method_call(x, y) => 4 }
+
+# [] calls on constants are not literal (could return different values)
+{ Registry::Lookup['foo'] => FooHandler, Registry::Lookup['foo'] => BarHandler }

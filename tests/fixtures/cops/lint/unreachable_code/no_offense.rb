@@ -13,3 +13,12 @@ def baz
   end
   2
 end
+
+# fail/raise with a block is a DSL method call (e.g. FactoryBot), not Kernel#fail
+FactoryBot.define do
+  factory :item do
+    success { true }
+    fail { false }
+    error { false }
+  end
+end

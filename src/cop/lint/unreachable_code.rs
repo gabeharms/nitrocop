@@ -50,7 +50,12 @@ fn is_flow_breaking(node: &ruby_prism::Node<'_>) -> bool {
 fn is_raise_call(node: &ruby_prism::Node<'_>) -> bool {
     if let Some(call) = node.as_call_node() {
         let name = call.name().as_slice();
-        if (name == b"raise" || name == b"fail") && call.receiver().is_none() {
+        // Kernel#raise/fail never accept blocks — a block means this is a DSL
+        // method call (e.g. FactoryBot `fail { false }`), not flow-breaking.
+        if (name == b"raise" || name == b"fail")
+            && call.receiver().is_none()
+            && call.block().is_none()
+        {
             return true;
         }
     }
