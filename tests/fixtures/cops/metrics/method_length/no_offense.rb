@@ -32,18 +32,40 @@ def with_branch
   end
 end
 
-# Heredoc content lines count toward method length (RuboCop's
-# CodeLengthCalculator includes them via source_from_node_with_heredoc).
-# This heredoc has 8 content lines => 10 total body lines (at Max:10).
-def heredoc_method
+# RuboCop counts a method body that is only a heredoc expression as one line.
+# Even with large heredoc content, this should not trigger MethodLength.
+def heredoc_only_method
   <<~SQL
-    SELECT *
-    FROM users
-    WHERE active = true
-    AND created_at > '2024-01-01'
-    ORDER BY name ASC
-    LIMIT 100
-    OFFSET 0
+    line1
+    line2
+    line3
+    line4
+    line5
+    line6
+    line7
+    line8
+    line9
+    line10
+    line11
+    line12
+    line13
+    line14
+    line15
+    line16
+    line17
+    line18
+    line19
+    line20
+    line21
+    line22
+    line23
+    line24
+    line25
+    line26
+    line27
+    line28
+    line29
+    line30
   SQL
 end
 

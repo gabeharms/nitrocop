@@ -27,6 +27,11 @@ use crate::parse::source::SourceFile;
 /// directives (`# rubocop:disable MethodLength`) that RuboCop resolves to this
 /// cop. nitrocop now resolves short names in `parse::directives` to align with
 /// RuboCop's directive handling.
+///
+/// Additional FP root cause: methods whose body is only a heredoc expression.
+/// In Parser AST, bare heredoc bodies are `str`/`dstr` nodes whose source range
+/// is only the opener line (`<<~SQL`), so RuboCop counts them as one line.
+/// nitrocop previously counted full heredoc content lines for this shape.
 pub struct MethodLength;
 
 /// Parsed config values for MethodLength.
@@ -200,6 +205,13 @@ fn count_method_lines(
         None => return 0,
     };
 
+    // Parser/RuboCop behavior: when a method body is a single heredoc
+    // expression, code length is based on the heredoc opener node source,
+    // so it counts as one line.
+    if is_single_heredoc_expression(source, &body) {
+        return 1;
+    }
+
     // RuboCop uses `body.source.lines` which starts at the first statement.
     // count_body_lines_ex counts from start_line+1 to end_line-1, so we need
     // start_line = body_first_line - 1. We achieve this by using the offset of
@@ -231,10 +243,9 @@ fn count_method_lines(
 
     // Collect foldable ranges from CountAsOne config. Heredocs are only
     // folded when "heredoc" is explicitly in CountAsOne (default: []).
-    // RuboCop's CodeLengthCalculator counts heredoc content lines toward
-    // method length by default (via source_from_node_with_heredoc). Prism
-    // includes heredoc content in the body's byte range, so lines are
-    // naturally counted. We only fold them when CountAsOne says to.
+    // For non-bare-heredoc bodies, RuboCop includes heredoc content lines via
+    // source_from_node_with_heredoc. We replicate that here and only fold when
+    // CountAsOne says to.
     let mut all_foldable: Vec<(usize, usize)> = Vec::new();
     if let Some(cao) = &cfg.count_as_one {
         if !cao.is_empty() {
@@ -273,6 +284,39 @@ fn extract_define_method_name(call: &ruby_prism::CallNode<'_>) -> Option<String>
         return Some(String::from_utf8_lossy(s.unescaped()).into_owned());
     }
     None
+}
+
+fn is_single_heredoc_expression(source: &SourceFile, body: &ruby_prism::Node<'_>) -> bool {
+    if is_heredoc_node(source, body) {
+        return true;
+    }
+
+    if let Some(stmts) = body.as_statements_node() {
+        let mut iter = stmts.body().iter();
+        if let Some(first) = iter.next() {
+            return iter.next().is_none() && is_heredoc_node(source, &first);
+        }
+    }
+
+    false
+}
+
+fn is_heredoc_node(source: &SourceFile, node: &ruby_prism::Node<'_>) -> bool {
+    if let Some(s) = node.as_string_node() {
+        return s
+            .opening_loc()
+            .map(|o| source.as_bytes()[o.start_offset()..o.end_offset()].starts_with(b"<<"))
+            .unwrap_or(false);
+    }
+
+    if let Some(s) = node.as_interpolated_string_node() {
+        return s
+            .opening_loc()
+            .map(|o| source.as_bytes()[o.start_offset()..o.end_offset()].starts_with(b"<<"))
+            .unwrap_or(false);
+    }
+
+    false
 }
 
 #[cfg(test)]

@@ -77,10 +77,10 @@ define_method(:another_dynamic) { |x|
   k = 11
 }
 
-# Heredoc content lines count toward method length
-def heredoc_method
+# Heredoc content counts when wrapped in another expression (assignment).
+def heredoc_assignment_method
 ^^^ Metrics/MethodLength: Method has too many lines. [12/10]
-  <<~SQL
+  query = <<~SQL
     SELECT *
     FROM users
     WHERE active = true
