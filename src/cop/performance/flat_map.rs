@@ -87,8 +87,23 @@ impl Cop for FlatMap {
         };
 
         // The inner call should have a block (literal block or block-pass argument)
-        if chain.inner_call.block().is_none() {
-            return;
+        let inner_block = match chain.inner_call.block() {
+            Some(b) => b,
+            None => return,
+        };
+
+        // RuboCop's NodePattern `(block ...)` doesn't match `numblock` or `itblock` nodes.
+        // In Prism, numbered-parameter blocks (_1, _2) and it-keyword blocks use
+        // NumberedParametersNode / ItParametersNode inside a regular BlockNode.
+        // Skip these to match RuboCop behavior.
+        if let Some(block_node) = inner_block.as_block_node() {
+            if let Some(params) = block_node.parameters() {
+                if params.as_numbered_parameters_node().is_some()
+                    || params.as_it_parameters_node().is_some()
+                {
+                    return;
+                }
+            }
         }
 
         // Skip if the inner call has regular positional arguments (e.g., Parallel.map(items, opts, &block)).

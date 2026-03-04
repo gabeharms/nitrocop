@@ -15,3 +15,6 @@ arr.map { |item| item.children }.flatten
 items.collect(&:children).flatten
 [1, 2, 3].map { |x| [x, x] }.flatten!
 items.collect { |x| [x, x] }.flatten!
+items.map { _1.foo }.flatten(1)
+items.map { it.foo }.flatten(1)
+items.collect { _1.children }.flatten(1)
