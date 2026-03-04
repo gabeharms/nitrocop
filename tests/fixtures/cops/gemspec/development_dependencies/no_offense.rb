@@ -13,4 +13,14 @@ Gem::Specification.new do |spec|
   end
 
   deps.each { |d| spec.add_development_dependency(d) }
+
+  # Many version args (>2 extra) should not trigger offense per RuboCop's NodePattern limit
+  s.add_development_dependency('simplecov', '~> 0.17', '!= 0.18.0', '!= 0.18.1', '!= 0.18.2', '!= 0.18.3', '!= 0.18.4',
+                               '!= 0.18.5', '!= 0.19.0', '!= 0.19.1')
+
+  # .freeze suffixed strings are (send (str ...) :freeze) in AST, not bare (str ...),
+  # so RuboCop's NodePattern doesn't match them
+  s.add_development_dependency(%q<rails>.freeze, ["~> 4.2"])
+  s.add_development_dependency('rspec'.freeze, '~> 3.0')
+  s.add_development_dependency("rake".freeze)
 end

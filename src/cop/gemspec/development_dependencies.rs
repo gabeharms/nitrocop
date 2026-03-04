@@ -46,6 +46,12 @@ impl Cop for DevelopmentDependencies {
                 if !has_string_literal_arg(after_method) {
                     continue;
                 }
+                // RuboCop's NodePattern is (send _ :add_development_dependency (str ...) _? _?)
+                // which matches at most 3 total arguments (gem name + up to 2 version constraints).
+                // Skip lines with more than 3 args to avoid false positives.
+                if count_top_level_args(after_method) > 3 {
+                    continue;
+                }
                 if is_gem_allowed(after_method, &allowed_gems) {
                     continue;
                 }
@@ -61,6 +67,10 @@ impl Cop for DevelopmentDependencies {
 }
 
 /// Check if the first argument after the method call is a string literal.
+/// Recognizes standard quotes ('...', "...") and percent string literals
+/// (%q<...>, %Q(...), %[...], etc.) which parse to `(str ...)` in RuboCop's AST.
+/// Excludes `.freeze` suffixed strings which are `(send (str ...) :freeze)` in AST,
+/// not bare `(str ...)` nodes, so RuboCop's NodePattern doesn't match them.
 fn has_string_literal_arg(after_method: &str) -> bool {
     let trimmed = after_method.trim_start();
     let trimmed = if let Some(stripped) = trimmed.strip_prefix('(') {
@@ -68,7 +78,129 @@ fn has_string_literal_arg(after_method: &str) -> bool {
     } else {
         trimmed
     };
-    trimmed.starts_with('\'') || trimmed.starts_with('"')
+    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+        let quote = trimmed.as_bytes()[0];
+        // Find end of string literal and check for .freeze
+        if let Some(end) = trimmed[1..].find(|c: char| c as u8 == quote) {
+            let after_string = &trimmed[end + 2..];
+            if after_string.starts_with(".freeze") {
+                return false;
+            }
+        }
+        return true;
+    }
+    if is_percent_string(trimmed) {
+        return !has_freeze_suffix(trimmed);
+    }
+    false
+}
+
+/// Check if the string starts with a Ruby percent string literal.
+/// Matches: %q<...>, %Q<...>, %<...>, %(, %[, %{, etc.
+fn is_percent_string(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'%') {
+        return false;
+    }
+    if bytes.len() < 2 {
+        return false;
+    }
+    let next = match bytes[1] {
+        b'q' | b'Q' => {
+            if bytes.len() < 3 {
+                return false;
+            }
+            bytes[2]
+        }
+        other => other,
+    };
+    matches!(next, b'<' | b'(' | b'[' | b'{')
+}
+
+/// Check if a percent string literal has a `.freeze` suffix.
+/// E.g., `%q<rails>.freeze` -> true, `%q<rails>` -> false.
+fn has_freeze_suffix(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'%') || bytes.len() < 3 {
+        return false;
+    }
+    let start = match bytes[1] {
+        b'q' | b'Q' => 3,
+        _ => 2,
+    };
+    if start > bytes.len() {
+        return false;
+    }
+    let opener = bytes[start - 1];
+    let closer = match opener {
+        b'<' => b'>',
+        b'(' => b')',
+        b'[' => b']',
+        b'{' => b'}',
+        _ => return false,
+    };
+    // Find the closing delimiter
+    if let Some(end) = s[start..].find(|c: char| c as u8 == closer) {
+        let after = &s[start + end + 1..];
+        after.starts_with(".freeze")
+    } else {
+        false
+    }
+}
+
+/// Count top-level arguments in a method call (commas not inside brackets/parens).
+/// Returns the number of arguments (1 for a single arg, 2 for two, etc.).
+fn count_top_level_args(after_method: &str) -> usize {
+    let trimmed = after_method.trim_start();
+    let content = if let Some(stripped) = trimmed.strip_prefix('(') {
+        stripped
+    } else {
+        trimmed
+    };
+    let mut depth = 0usize;
+    let mut count = 1;
+    for ch in content.chars() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => count += 1,
+            '\n' => break,
+            _ => {}
+        }
+    }
+    count
+}
+
+/// Extract the content of a percent string literal (e.g., `%q<erubis>` -> `erubis`).
+fn extract_percent_string_content(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'%') || bytes.len() < 3 {
+        return None;
+    }
+    let start = match bytes[1] {
+        b'q' | b'Q' => 3,
+        _ => 2,
+    };
+    if start > bytes.len() {
+        return None;
+    }
+    let opener = bytes[start - 1];
+    let closer = match opener {
+        b'<' => b'>',
+        b'(' => b')',
+        b'[' => b']',
+        b'{' => b'}',
+        _ => return None,
+    };
+    let content = &s[start..];
+    content
+        .find(|c: char| c as u8 == closer)
+        .map(|end| &content[..end])
 }
 
 /// Check if the gem name following the method call is in the allowed list.
@@ -89,6 +221,8 @@ fn is_gem_allowed(after_method: &str, allowed_gems: &[String]) -> bool {
         let rest = &trimmed[1..];
         rest.find(|c: char| c as u8 == quote)
             .map(|end| &rest[..end])
+    } else if is_percent_string(trimmed) {
+        extract_percent_string_content(trimmed)
     } else {
         None
     };
