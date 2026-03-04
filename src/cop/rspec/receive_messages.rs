@@ -4,6 +4,9 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Investigation: 149 FPs caused by matching `receive('string_arg')` calls.
+/// RuboCop only groups `receive(:symbol_arg)` stubs for the `receive_messages`
+/// suggestion. Fixed by requiring the first arg to `receive()` to be a symbol node.
 pub struct ReceiveMessages;
 
 struct StubInfo {
@@ -168,10 +171,12 @@ fn extract_allow_receive_info(
         let method = current.name().as_slice();
         match method {
             b"receive" if current.receiver().is_none() => {
-                // Found the receive call
+                // Found the receive call — only match symbol args (RuboCop
+                // ignores string args like receive('method_name'))
                 if let Some(args) = current.arguments() {
                     let arg_list: Vec<_> = args.arguments().iter().collect();
                     if !arg_list.is_empty() {
+                        arg_list[0].as_symbol_node()?;
                         let msg_loc = arg_list[0].location();
                         receive_msg = source
                             .byte_slice(msg_loc.start_offset(), msg_loc.end_offset(), "")

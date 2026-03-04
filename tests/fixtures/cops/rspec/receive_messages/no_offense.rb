@@ -7,3 +7,8 @@ before do
   allow(Service).to receive(:foo) { baz }
   allow(Service).to receive(:bar) { bar }
 end
+# String args to receive() should not trigger receive_messages
+before(:each) do
+  allow(self).to receive('action_name').and_return(action_name)
+  allow(self).to receive('current_page?').and_return(false)
+end
