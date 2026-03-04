@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+
+use ruby_prism::Visit;
+
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
@@ -8,81 +12,26 @@ pub struct GemComment;
 
 /// ## Corpus investigation (2026-03-03)
 ///
-/// Corpus oracle reported FP=10, FN=16 (after prior fixes).
-///
 /// ### FP=10 — FIXED (commit 0a40768)
 ///
 /// All 10 FPs were from `extract_gem_name` (in `mod.rs`) matching lines where the gem
 /// "name" was a variable, interpolation, or method call. The function found the first
 /// quoted string anywhere on the line, which picked up argument values rather than gem
-/// names. Examples:
-///   - `gem db_gem, get_env("DB_GEM_VERSION")` → extracted "DB_GEM_VERSION"
-///   - `gem plugin_name, :git => "https://..."` → extracted URL fragment
-///   - `gem "social_stream-#{ g }"` → extracted interpolated string
-///   - `gem ENV.fetch('MODEL_PARSER', nil)` → extracted "MODEL_PARSER"
-///   - `gem tty_gem["name"], tty_gem["version"]` → extracted "name"
+/// names. Fix: `extract_gem_name` now requires the first non-whitespace character after
+/// `gem ` to be a quote, and rejects names containing `#{` (interpolation).
 ///
-/// Fix: `extract_gem_name` now requires the first non-whitespace character after `gem `
-/// to be a quote (`'` or `"`), and rejects names containing `#{` (interpolation).
+/// ### FN=16 — FIXED (AST-based modifier detection in check_source)
 ///
-/// ### FN=16 — DEFERRED (needs `check_lines` → `check_source` rewrite)
+/// All 16 FNs were gem declarations inside modifier `if`/`unless` with a preceding
+/// comment. RuboCop's `ast_with_comments` associates the preceding comment with the
+/// outermost AST node (the IfNode), not the inner gem SendNode. So `commented?(gem_node)`
+/// returns false and the offense is reported.
 ///
-/// All 16 FNs share the same pattern: a gem declaration with a trailing modifier
-/// `if`/`unless` that has a comment on the preceding line. nitrocop sees the comment
-/// and considers the gem as documented, but RuboCop still flags it as missing a comment.
-///
-/// Affected repos (16 FN across 15 repos):
-///   - refinery/Gemfile:8,11 — `gem 'rails' if ...` / `gem 'mutex_m' if ...`
-///   - apipie-rails/Gemfile:17 — `gem 'net-smtp' if Gem.ruby_version >= ...`
-///   - asciidoctor-pdf/Gemfile:22 — `gem 'rouge' unless ENV['ROUGE_VERSION'] == 'false'`
-///   - asciidoctor/Gemfile:16 — `gem 'pygments.rb' if ENV.key? 'PYGMENTS_VERSION'`
-///   - mysql2/Gemfile:28 — `gem 'mysql' if Gem::Version.new(RUBY_VERSION) < ...`
-///   - carrierwave/Gemfile:8 — `gem "fog-google" if RUBY_VERSION.to_f < 2.7`
-///   - draper/Gemfile:32 — `gem 'mongoid' unless rails_version == 'edge'`
-///   - endoflife.date/Gemfile:23 — `gem "wdm" if Gem.win_platform?`
-///   - jekyll/Gemfile:27 — `gem "mutex_m" if RUBY_VERSION >= "3.4"`
-///   - opal/Gemfile:18 — `gem 'puma' unless RUBY_ENGINE == 'truffleruby'`
-///   - rack-contrib/Gemfile:22 — `gem 'cgi' if RUBY_VERSION >= '2.7.0' && ...`
-///   - rubocop/Gemfile:18 — `gem 'ruby-lsp' if RUBY_VERSION >= '3.0'`
-///   - grape-swagger/Gemfile:44 — `gem 'ostruct' if Gem::Version.new(...)`
-///   - stripe-ruby/Gemfile:27 — `gem "rubocop" if RUBY_VERSION >= "2.7"`
-///   - activerecord-import/Gemfile:30 — `gem "seamless_database_pool" if ...`
-///
-/// Root cause analysis:
-///
-/// nitrocop uses a line-based heuristic: "if the line above is a comment, skip."
-/// RuboCop uses AST-level comment association via `preceding_comment?` which calls
-/// `processed_source.comment_at_line(node.first_line - 1)`. The key difference:
-/// RuboCop resolves the gem call's AST node position, which for modifier if/unless
-/// is the LINE OF THE GEM CALL, not the if/unless wrapper. When there's a modifier
-/// conditional, the AST node for `gem 'x' if cond` starts at the `gem` keyword.
-/// RuboCop then checks `comment_at_line(gem_line - 1)`.
-///
-/// So in principle RuboCop should also find the preceding comment. The discrepancy
-/// likely comes from one of:
-///   1. The comment is associated with the if/unless node in RuboCop's AST rather
-///      than the gem send node, so `comment_at_line` sees it as belonging to the
-///      conditional, not the gem.
-///   2. RuboCop's `gem_declarations` node search `(send nil? :gem str ...)` may not
-///      match some of these (e.g., `gem 'x', ENV['Y'] if ...` where the 2nd arg is
-///      not a `str` node) — but the FN means RuboCop IS matching them.
-///   3. Some comments are multi-line (e.g., carrierwave has `# See https://...` then
-///      `# ...restriction.`), and RuboCop might require the comment to be on the
-///      immediately preceding line with no gap.
-///
-/// Previous fix attempt (reverted): tried ignoring preceding comments for gems with
-/// modifier conditionals. This eliminated all FN but caused 13 new FP (gems with
-/// modifier conditionals that genuinely had no comment were now also skipped).
-/// Score went from FP=0/FN=1 to FP=13/FN=0.
-///
-/// To fix correctly, this cop needs to be rewritten from `check_lines` to
-/// `check_source` (AST-based), using Prism's comment API to associate comments with
-/// gem CallNodes. The AST approach would:
-///   1. Find all `gem 'name'` CallNodes (like DuplicatedGem's visitor does)
-///   2. For each, check `parse_result.comments()` for a comment on `node.line - 1`
-///   3. Handle modifier if/unless wrapping (the CallNode is inside an IfNode —
-///      use the CallNode's location, not the IfNode's)
-///   4. Also handle inline comments (comment on the same line as the gem call)
+/// Fix: uses a hybrid approach. The gem detection and comment checking use the proven
+/// line-based logic (handles all edge cases correctly). An AST visitor collects the set
+/// of 1-based line numbers where gem CallNodes are inside modifier if/unless (detected
+/// via `end_keyword_loc().is_none()`). For those lines, preceding-line comments are not
+/// counted as gem documentation — only inline comments on the same line count.
 impl Cop for GemComment {
     fn name(&self) -> &'static str {
         "Bundler/GemComment"
@@ -96,9 +45,11 @@ impl Cop for GemComment {
         &["**/*.gemfile", "**/Gemfile", "**/gems.rb"]
     }
 
-    fn check_lines(
+    fn check_source(
         &self,
         source: &SourceFile,
+        parse_result: &ruby_prism::ParseResult<'_>,
+        _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
@@ -107,6 +58,16 @@ impl Cop for GemComment {
         let only_for = config.get_string_array("OnlyFor").unwrap_or_default();
         let check_version_specifiers = only_for.iter().any(|s| s == "version_specifiers");
 
+        // Use AST visitor to find gem lines inside modifier if/unless
+        let mut visitor = ModifierGemVisitor {
+            source,
+            modifier_gem_lines: HashSet::new(),
+            in_modifier_conditional: false,
+        };
+        visitor.visit(&parse_result.node());
+        let modifier_gem_lines = visitor.modifier_gem_lines;
+
+        // Line-based gem detection and comment checking (proven approach)
         let lines: Vec<&[u8]> = source.lines().collect();
         let mut in_block_comment = false;
 
@@ -138,9 +99,15 @@ impl Cop for GemComment {
                     continue;
                 }
 
+                let line_num = i + 1; // 1-based
+
+                // Check if this gem line is inside a modifier if/unless
+                let is_modifier = modifier_gem_lines.contains(&line_num);
+
                 // Check if the preceding line is a comment, or this line has an inline comment
                 let has_comment = has_inline_comment(line_str)
-                    || (i > 0
+                    || (!is_modifier
+                        && i > 0
                         && std::str::from_utf8(lines[i - 1])
                             .unwrap_or("")
                             .trim()
@@ -150,7 +117,6 @@ impl Cop for GemComment {
                         ));
 
                 if !has_comment {
-                    let line_num = i + 1;
                     diagnostics.push(self.diagnostic(
                         source,
                         line_num,
@@ -159,6 +125,53 @@ impl Cop for GemComment {
                     ));
                 }
             }
+        }
+    }
+}
+
+/// AST visitor that collects 1-based line numbers of gem CallNodes
+/// that are directly inside a modifier if/unless.
+struct ModifierGemVisitor<'a> {
+    source: &'a SourceFile,
+    modifier_gem_lines: HashSet<usize>,
+    in_modifier_conditional: bool,
+}
+
+impl<'pr> Visit<'pr> for ModifierGemVisitor<'_> {
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        if self.in_modifier_conditional
+            && node.receiver().is_none()
+            && node.name().as_slice() == b"gem"
+        {
+            let loc = node.location();
+            let (line, _) = self.source.offset_to_line_col(loc.start_offset());
+            self.modifier_gem_lines.insert(line);
+        }
+        ruby_prism::visit_call_node(self, node);
+    }
+
+    fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
+        // Modifier if: no end keyword and has if keyword (excludes ternary)
+        let is_modifier = node.end_keyword_loc().is_none() && node.if_keyword_loc().is_some();
+        if is_modifier {
+            let prev = self.in_modifier_conditional;
+            self.in_modifier_conditional = true;
+            ruby_prism::visit_if_node(self, node);
+            self.in_modifier_conditional = prev;
+        } else {
+            ruby_prism::visit_if_node(self, node);
+        }
+    }
+
+    fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
+        let is_modifier = node.end_keyword_loc().is_none();
+        if is_modifier {
+            let prev = self.in_modifier_conditional;
+            self.in_modifier_conditional = true;
+            ruby_prism::visit_unless_node(self, node);
+            self.in_modifier_conditional = prev;
+        } else {
+            ruby_prism::visit_unless_node(self, node);
         }
     }
 }

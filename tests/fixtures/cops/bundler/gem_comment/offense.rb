@@ -12,3 +12,15 @@ gem 'puma'
 # frozen_string_literal: true
 gem 'foo'
 ^ Bundler/GemComment: Missing gem description comment.
+
+# This comment is about the condition, not the gem
+gem 'conditional_gem' if ENV['USE_IT']
+^ Bundler/GemComment: Missing gem description comment.
+
+# Version 2.1 introduces breaking change baz
+gem "fog-google", "~> 1.13.0" if RUBY_VERSION.to_f < 2.7
+^ Bundler/GemComment: Missing gem description comment.
+
+# Some browsers have problems with WEBrick
+gem 'puma_alt' unless RUBY_ENGINE == 'truffleruby'
+^ Bundler/GemComment: Missing gem description comment.

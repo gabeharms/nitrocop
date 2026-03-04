@@ -17,3 +17,11 @@ gem plugin_name, :git => "https://example.com"
 gem "social_stream-#{ g }"
 gem ENV.fetch('MODEL_PARSER', nil)
 gem tty_gem["name"], tty_gem["version"]
+
+# Comment on a non-modifier if gem is fine
+if ENV['USE_IT']
+  # Required for special feature
+  gem 'special_gem'
+end
+
+gem 'inline_comment_gem' if ENV['USE_IT'] # Needed for compatibility
