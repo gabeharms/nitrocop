@@ -3,6 +3,16 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Investigation (2026-03-03)
+///
+/// Found 7 FPs. Two were empty else with comments — fixed by implementing
+/// `AllowComments` config which was read but unused (dc856393).
+///
+/// Remaining 5 FPs are `else nil` cases. These are likely config-related: if
+/// a style gem sets `EnforcedStyle: empty` (not `both`), `else nil` wouldn't
+/// be flagged. The cop detection logic for `else nil` is correct — the issue
+/// is that nitrocop may not be loading the effective config. Needs config
+/// resolution investigation.
 pub struct EmptyElse;
 
 impl Cop for EmptyElse {

@@ -5,6 +5,13 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Investigation (2026-03-03)
+///
+/// Found 1 FP: `def send!(name: name)` pattern. This IS a genuine circular
+/// reference (Ruby warns about it too). RuboCop doesn't flag it because the
+/// project's style gem likely disables this cop. Not a cop logic bug — this is
+/// a config resolution issue where nitrocop may not be loading the effective
+/// `Enabled: false` from the inherited gem config.
 pub struct CircularArgumentReference;
 
 impl Cop for CircularArgumentReference {

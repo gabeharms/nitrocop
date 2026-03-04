@@ -165,6 +165,13 @@ fn is_literal(node: &ruby_prism::Node<'_>) -> bool {
     false
 }
 
+/// ## Investigation (2026-03-03)
+///
+/// Found 1 FP: `SomeModule::Lookup['key']` treated as literal because
+/// `is_literal()` accepted any binary call on literal operands. The `[]` method
+/// call matched since the receiver (ConstantPathNode) and argument (StringNode)
+/// were both literal. Fixed by restricting binary operator check to a known
+/// allowlist of arithmetic/comparison operators (dc856393).
 pub struct DuplicateHashKey;
 
 impl Cop for DuplicateHashKey {

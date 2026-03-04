@@ -3,6 +3,12 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// ## Investigation (2026-03-03)
+///
+/// Found 1 FP: FactoryBot `fail { false }` treated as `Kernel#fail`
+/// (flow-breaking). `Kernel#fail` never accepts blocks, so any `fail`/`raise`
+/// with a block is a DSL method call. Fixed by adding `call.block().is_none()`
+/// check to `is_raise_call` (dc856393).
 pub struct UnreachableCode;
 
 impl Cop for UnreachableCode {

@@ -3,6 +3,12 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Investigation (2026-03-03)
+///
+/// Found 4 FPs: `[0]` and `[ ]` single-element character classes. These ARE
+/// genuinely redundant — the cop detection is correct. RuboCop doesn't flag
+/// them because the project's style gem likely disables this cop. Not a cop
+/// logic bug — this is a config resolution issue.
 pub struct RedundantRegexpCharacterClass;
 
 impl Cop for RedundantRegexpCharacterClass {

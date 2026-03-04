@@ -3,6 +3,17 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Investigation (2026-03-03)
+///
+/// Found 12 FPs with `EnforcedStyleForMultiline: comma`. Root cause: Prism
+/// collapses keyword args into a single KeywordHashNode. The
+/// `no_elements_on_same_line` check iterated over top-level args, so with
+/// 1 KeywordHashNode the consecutive-pairs check vacuously passed. Fix: expand
+/// KeywordHashNode into individual assoc elements for line comparisons (dc856393).
+///
+/// 1 remaining FP: heredoc arg `body: <<~BODY,` — the trailing comma is after
+/// the heredoc marker, but the cop scans between the heredoc body end and `)`,
+/// finding no comma. Needs heredoc-aware comma detection (separate fix).
 pub struct TrailingCommaInArguments;
 
 /// Collect effective element locations, expanding any KeywordHashNode into its
