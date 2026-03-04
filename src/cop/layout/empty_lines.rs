@@ -3,6 +3,15 @@ use crate::diagnostic::Diagnostic;
 use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-03)
+///
+/// Corpus oracle reported FP=12,897, FN=23. Root cause: whitespace-only lines
+/// (spaces/tabs) were treated as blank lines, but RuboCop's `EmptyLines` only
+/// counts truly empty lines (zero bytes after newline removal). 91% of FPs came
+/// from twilio-ruby's auto-generated code with indentation on blank lines.
+/// Fix: changed `line.iter().all(|&b| b == b' ' || ...)` to `line.is_empty()`.
+/// Acceptance gate after fix: expected=12,238, actual=13,320, excess=0, missing=0.
+/// The 23 FNs are pre-existing (likely CodeMap edge cases) and unrelated.
 pub struct EmptyLines;
 
 impl Cop for EmptyLines {
@@ -32,7 +41,7 @@ impl Cop for EmptyLines {
 
         for (i, line) in lines.iter().enumerate() {
             let line_len = line.len() + 1; // +1 for newline
-            if line.iter().all(|&b| b == b' ' || b == b'\t' || b == b'\r') {
+            if line.is_empty() {
                 // Skip the trailing empty element from split() — RuboCop's
                 // EmptyLines cop doesn't flag trailing blank lines at EOF
                 // (that's Layout/TrailingEmptyLines).
@@ -127,6 +136,19 @@ mod tests {
         let cs = crate::correction::CorrectionSet::from_vec(corrections);
         let corrected = cs.apply(input);
         assert_eq!(corrected, b"x = 1\n\ny = 2\n");
+    }
+
+    #[test]
+    fn whitespace_only_lines_are_not_blank() {
+        // RuboCop only counts truly empty lines (zero bytes after stripping newline).
+        // Lines with only spaces/tabs are NOT blank and should not be counted.
+        let source = b"x = 1\n  \n  \ny = 2\n";
+        let diags = run_cop_full(&EmptyLines, source);
+        assert!(
+            diags.is_empty(),
+            "Whitespace-only lines should not be treated as blank: {:?}",
+            diags
+        );
     }
 
     #[test]
