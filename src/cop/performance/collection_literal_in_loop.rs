@@ -38,6 +38,17 @@ use std::sync::LazyLock;
 ///      excludes literals that are part of the loop receiver expression
 ///      (e.g., `[1,2].sort.each { }` — `[1,2]` is a descendant of receiver
 ///      `[1,2].sort`). Implemented via byte-range containment check.
+///   8. Chained iterator FN fix: The receiver exclusion was too aggressive —
+///      it excluded a literal if it was contained in ANY enclosing loop
+///      receiver's byte range. But RuboCop uses `any?` over ancestors: if
+///      ANY enclosing loop accepts the literal, the offense fires. Fixed by
+///      tracking keyword vs enumerable loop depth separately and changing
+///      the exclusion logic to require ALL enclosing enumerable loops to
+///      exclude the literal (not just any one). This fixed 31 FNs where
+///      literals inside chained iterator blocks (e.g.,
+///      `items.reject { %i[a b].include?(x) }.each { }`) were incorrectly
+///      excluded because the literal was byte-contained in the `.each`
+///      receiver expression.
 pub struct CollectionLiteralInLoop;
 
 const ENUMERABLE_METHODS: &[&[u8]] = &[
@@ -291,6 +302,7 @@ impl Cop for CollectionLiteralInLoop {
             source,
             diagnostics: Vec::new(),
             loop_depth: 0,
+            keyword_loop_depth: 0,
             loop_receiver_sources: Vec::new(),
             min_size,
             target_ruby_version,
@@ -308,6 +320,10 @@ struct CollectionLiteralVisitor<'a, 'src> {
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
     loop_depth: usize,
+    /// Depth contributed by keyword loops (while/until/for/Kernel.loop).
+    /// These never have a receiver exclusion, so a literal inside a keyword
+    /// loop is always flagged.
+    keyword_loop_depth: usize,
     /// Source byte ranges of receivers of enclosing enumerable loop calls.
     /// Used to implement RuboCop's value-equality exclusion: if a literal's
     /// source bytes match an enclosing loop receiver, it is NOT considered
@@ -323,19 +339,25 @@ struct CollectionLiteralVisitor<'a, 'src> {
 impl<'pr> Visit<'pr> for CollectionLiteralVisitor<'_, '_> {
     fn visit_while_node(&mut self, node: &ruby_prism::WhileNode<'pr>) {
         self.loop_depth += 1;
+        self.keyword_loop_depth += 1;
         ruby_prism::visit_while_node(self, node);
+        self.keyword_loop_depth -= 1;
         self.loop_depth -= 1;
     }
 
     fn visit_until_node(&mut self, node: &ruby_prism::UntilNode<'pr>) {
         self.loop_depth += 1;
+        self.keyword_loop_depth += 1;
         ruby_prism::visit_until_node(self, node);
+        self.keyword_loop_depth -= 1;
         self.loop_depth -= 1;
     }
 
     fn visit_for_node(&mut self, node: &ruby_prism::ForNode<'pr>) {
         self.loop_depth += 1;
+        self.keyword_loop_depth += 1;
         ruby_prism::visit_for_node(self, node);
+        self.keyword_loop_depth -= 1;
         self.loop_depth -= 1;
     }
 
@@ -343,15 +365,16 @@ impl<'pr> Visit<'pr> for CollectionLiteralVisitor<'_, '_> {
         let method_name = node.name().as_slice();
 
         // Check if this call has a block and is a loop-like method
-        let is_loop_call = if let Some(block) = node.block() {
+        let loop_kind = if let Some(block) = node.block() {
             if block.as_block_node().is_some() {
-                self.is_loop_method(node)
+                self.loop_method_kind(node)
             } else {
-                false
+                LoopKind::None
             }
         } else {
-            false
+            LoopKind::None
         };
+        let is_loop_call = !matches!(loop_kind, LoopKind::None);
 
         // Check if this call's receiver is a collection literal inside a loop
         if self.loop_depth > 0 {
@@ -364,6 +387,9 @@ impl<'pr> Visit<'pr> for CollectionLiteralVisitor<'_, '_> {
         // before visiting receiver/arguments, not just the block body.
         if is_loop_call {
             self.loop_depth += 1;
+            if matches!(loop_kind, LoopKind::KernelLoop) {
+                self.keyword_loop_depth += 1;
+            }
             // Track the receiver's source bytes for value-equality exclusion.
             // RuboCop's `node_within_enumerable_loop?` checks
             // `receiver != node` using AST value equality — if the literal
@@ -403,6 +429,9 @@ impl<'pr> Visit<'pr> for CollectionLiteralVisitor<'_, '_> {
 
         if is_loop_call {
             self.loop_depth -= 1;
+            if matches!(loop_kind, LoopKind::KernelLoop) {
+                self.keyword_loop_depth -= 1;
+            }
             if node.receiver().is_some() {
                 self.loop_receiver_sources.pop();
             }
@@ -410,28 +439,37 @@ impl<'pr> Visit<'pr> for CollectionLiteralVisitor<'_, '_> {
     }
 }
 
+/// Distinguishes Kernel.loop (no receiver exclusion, like keyword loops)
+/// from enumerable iterator methods (which have receiver exclusion).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoopKind {
+    None,
+    KernelLoop,
+    Enumerable,
+}
+
 impl CollectionLiteralVisitor<'_, '_> {
-    /// Check if a call node is a loop-like method (Kernel.loop or enumerable method).
+    /// Check if a call node is a loop-like method and return its kind.
     /// RuboCop's `enumerable_loop?` pattern only matches `send`, not `csend` (safe
     /// navigation `&.`), so `items&.each { }` is NOT treated as a loop.
-    fn is_loop_method(&self, call: &ruby_prism::CallNode<'_>) -> bool {
+    fn loop_method_kind(&self, call: &ruby_prism::CallNode<'_>) -> LoopKind {
         let method_name = call.name().as_slice();
 
         // Check for Kernel.loop or bare `loop`
         // Handle both simple constant (Kernel) and qualified constant (::Kernel)
         if method_name == b"loop" {
             match call.receiver() {
-                None => return true,
+                None => return LoopKind::KernelLoop,
                 Some(recv) => {
                     if let Some(cr) = recv.as_constant_read_node() {
                         if cr.name().as_slice() == b"Kernel" {
-                            return true;
+                            return LoopKind::KernelLoop;
                         }
                     }
                     if let Some(cp) = recv.as_constant_path_node() {
                         if let Some(cp_name) = cp.name() {
                             if cp_name.as_slice() == b"Kernel" {
-                                return true;
+                                return LoopKind::KernelLoop;
                             }
                         }
                     }
@@ -443,35 +481,61 @@ impl CollectionLiteralVisitor<'_, '_> {
         // pattern only matches `send`, not `csend`.
         if let Some(op) = call.call_operator_loc() {
             if op.as_slice() == b"&." {
-                return false;
+                return LoopKind::None;
             }
         }
 
         // Enumerable methods
-        self.enumerable_methods.contains(method_name)
+        if self.enumerable_methods.contains(method_name) {
+            LoopKind::Enumerable
+        } else {
+            LoopKind::None
+        }
     }
 
-    /// Check if a literal node matches or is a descendant of any enclosing
-    /// loop receiver. This implements RuboCop's two exclusion checks:
+    /// Check if a literal should be excluded from offense reporting.
     ///
-    ///   1. `receiver != node` — value equality (same source text)
-    ///   2. `!receiver.descendants.include?(node)` — node is part of receiver
+    /// RuboCop's `parent_is_loop?` returns true if ANY ancestor loop accepts
+    /// the literal. For enumerable loops, a loop accepts the literal if:
+    ///   1. `receiver != node` (value equality — same source text means excluded)
+    ///   2. `!receiver.descendants.include?(node)` (literal is not part of receiver)
     ///
-    /// Both are approximated via byte-range checks: exact match OR containment.
-    fn matches_enclosing_loop_receiver(&self, node_start: usize, node_end: usize) -> bool {
+    /// A keyword loop (while/until/for/Kernel.loop) always accepts any literal.
+    ///
+    /// So the literal should be excluded (no offense) only if ALL enclosing
+    /// enumerable loops reject it AND there are no keyword loops.
+    fn excluded_by_all_loop_receivers(&self, node_start: usize, node_end: usize) -> bool {
+        // If we're inside any keyword loop, the literal is always accepted
+        // by that loop — never excluded.
+        if self.keyword_loop_depth > 0 {
+            return false;
+        }
+
+        // If there are no enumerable loop receivers, we're in a bare `loop`
+        // call or similar — no exclusion.
+        if self.loop_receiver_sources.is_empty() {
+            return false;
+        }
+
+        // Check each enclosing enumerable loop receiver. If ANY receiver
+        // does NOT exclude this literal, then that loop accepts it and the
+        // offense should fire (return false = not excluded).
         let node_bytes = &self.source.as_bytes()[node_start..node_end];
         for &(recv_start, recv_end) in &self.loop_receiver_sources {
-            // Exact match (value equality: receiver == node)
             let recv_bytes = &self.source.as_bytes()[recv_start..recv_end];
+            // Exact match (value equality: receiver == node) → this loop excludes
             if node_bytes == recv_bytes {
-                return true;
+                continue;
             }
-            // Containment (node is a descendant of receiver)
+            // Containment (node is a descendant of receiver) → this loop excludes
             if node_start >= recv_start && node_end <= recv_end {
-                return true;
+                continue;
             }
+            // This loop does NOT exclude the literal → offense should fire
+            return false;
         }
-        false
+        // ALL enumerable loops excluded the literal
+        true
     }
 
     fn check_call(&mut self, call: &ruby_prism::CallNode<'_>, method_name: &[u8]) {
@@ -502,7 +566,7 @@ impl CollectionLiteralVisitor<'_, '_> {
             let loc = recv.location();
             // RuboCop value-equality exclusion: if this literal's source matches
             // an enclosing loop receiver, skip it.
-            if self.matches_enclosing_loop_receiver(loc.start_offset(), loc.end_offset()) {
+            if self.excluded_by_all_loop_receivers(loc.start_offset(), loc.end_offset()) {
                 return;
             }
             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
@@ -527,7 +591,7 @@ impl CollectionLiteralVisitor<'_, '_> {
                 return;
             }
             let loc = recv.location();
-            if self.matches_enclosing_loop_receiver(loc.start_offset(), loc.end_offset()) {
+            if self.excluded_by_all_loop_receivers(loc.start_offset(), loc.end_offset()) {
                 return;
             }
             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
@@ -998,6 +1062,69 @@ mod tests {
         crate::testutil::assert_cop_offenses_full(
             &CollectionLiteralInLoop,
             b"records.each do |record|\n  ['en', 'pt', 'fr'].each do |locale|\n  ^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\n    puts locale\n  end\nend\n",
+        );
+    }
+
+    #[test]
+    fn detects_inside_chained_reject_each() {
+        // %i[...].include? inside reject block, chained with .each
+        crate::testutil::assert_cop_offenses_full(
+            &CollectionLiteralInLoop,
+            b"frame_types.reject { |frame| %i[headers rst_stream priority].include?(frame[:type]) }.each do |type|\n                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\n  puts type\nend\n",
+        );
+    }
+
+    #[test]
+    fn detects_percent_w_inject_inside_map() {
+        // %w(...).inject inside a map block
+        crate::testutil::assert_cop_offenses_full(
+            &CollectionLiteralInLoop,
+            b"items.map do |host_str|\n  %w(user password path).inject({}) do |hash, key|\n  ^^^^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\n    hash\n  end\nend\n",
+        );
+    }
+
+    #[test]
+    fn detects_inside_select_chained_with_each() {
+        // %i[...].include? inside select block chained with .each
+        crate::testutil::assert_cop_offenses_full(
+            &CollectionLiteralInLoop,
+            b"MODELS.select { |m| %i[openai ollama].include?(m[:provider]) }.each do |m|\n                    ^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\n  puts m\nend\n",
+        );
+    }
+
+    #[test]
+    fn detects_string_array_include_inside_reject_chain() {
+        // ["~~", "~~*"].include? inside reject chained with .each
+        crate::testutil::assert_cop_offenses_full(
+            &CollectionLiteralInLoop,
+            b"where.reject { |c| [\"~~\", \"~~*\"].include?(c[:op]) }.each do |c|\n                   ^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\n  puts c\nend\n",
+        );
+    }
+
+    #[test]
+    fn detects_percent_w_each_inside_loop() {
+        // %w[...].each inside an outer each loop
+        crate::testutil::assert_cop_offenses_full(
+            &CollectionLiteralInLoop,
+            b"results.each do |r|\n  %w[strings numbers booleans].each do |a|\n  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\n    puts a\n  end\nend\n",
+        );
+    }
+
+    #[test]
+    fn detects_string_array_map_inside_each() {
+        // [".json", ".jsonc"].map inside an each block
+        crate::testutil::assert_cop_offenses_full(
+            &CollectionLiteralInLoop,
+            b"folders.each do |path|\n  [\".json\", \".jsonc\"].map do |ext|\n  ^^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\n    path + ext\n  end\nend\n",
+        );
+    }
+
+    #[test]
+    fn detects_symbol_array_include_inside_take_while() {
+        // [:text_color, :sig_color].include? inside take_while
+        crate::testutil::assert_cop_offenses_full(
+            &CollectionLiteralInLoop,
+            b"items.take_while { |d| [:text_color, :sig_color].include?(d[0]) }\n                       ^^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.\n",
         );
     }
 

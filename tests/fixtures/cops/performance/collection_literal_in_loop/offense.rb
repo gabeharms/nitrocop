@@ -79,3 +79,13 @@ records.each do |record|
 end
 [1,2].zip([0].cycle){|a| arr << a}
           ^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.
+data.reject { |r| %i[alpha beta gamma].include?(r[:type]) }.each do |r|
+                  ^^^^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.
+  puts r
+end
+items.select { |m| %w(user admin guest).include?(m[:role]) }.map do |m|
+                   ^^^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.
+  m[:name]
+end
+results.select { |r| ["active", "pending"].include?(r[:status]) }.take(3)
+                     ^^^^^^^^^^^^^^^^^^^^^^ Performance/CollectionLiteralInLoop: Avoid immutable Array literals in loops. It is better to extract it into a local variable or a constant.
