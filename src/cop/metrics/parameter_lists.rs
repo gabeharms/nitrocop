@@ -329,4 +329,79 @@ mod tests {
             "Should not fire for optional parameters under limit"
         );
     }
+
+    #[test]
+    fn struct_new_multi_child_not_exempt() {
+        use crate::testutil::run_cop_full;
+        // Struct.new with multiple body statements: initialize should NOT be exempt
+        let source = b"Entry = Struct.new(:a, :b, :c, :d, :e, :f) do\n  LEVEL = 3\n\n  def initialize(a, b, c, d, e, f)\n    super\n  end\nend\n";
+        let diags = run_cop_full(&ParameterLists, source);
+        assert!(
+            !diags.is_empty(),
+            "Struct.new with multiple children should flag initialize"
+        );
+    }
+
+    #[test]
+    fn data_define_multi_child_not_exempt() {
+        use crate::testutil::run_cop_full;
+        // Data.define with multiple body statements: initialize should NOT be exempt
+        let source = b"Item = Data.define(:a, :b, :c, :d, :e, :f) do\n  def initialize(a:, b:, c:, d:, e:, f:)\n    super\n  end\n\n  def to_s\n    a.to_s\n  end\nend\n";
+        let diags = run_cop_full(&ParameterLists, source);
+        assert!(
+            !diags.is_empty(),
+            "Data.define with multiple children should flag initialize"
+        );
+    }
+
+    #[test]
+    fn cbase_struct_new_multi_child_not_exempt() {
+        use crate::testutil::run_cop_full;
+        // ::Struct.new with multiple body statements
+        let source = b"Item = ::Struct.new(:a, :b, :c) do\n  def initialize(a, b, c, d, e, f, g, h)\n    super\n  end\n\n  def each\n    yield\n  end\nend\n";
+        let diags = run_cop_full(&ParameterLists, source);
+        assert!(
+            !diags.is_empty(),
+            "::Struct.new with multiple children should flag initialize"
+        );
+    }
+
+    #[test]
+    fn multiline_block_params_location() {
+        use crate::testutil::run_cop_full;
+        // Multi-line block params: offense should be reported on the pipe line
+        let source = b"handler.call do |\n  a: nil, b: nil, c: nil,\n  d: nil, e: nil,\n  f: nil, **|\n  a\nend\n";
+        let diags = run_cop_full(&ParameterLists, source);
+        assert!(
+            !diags.is_empty(),
+            "Should flag multi-line block params over limit"
+        );
+        // The offense should be on line 1 (the `|` line), not line 2
+        assert_eq!(
+            diags[0].location.line, 1,
+            "Offense should be on line 1 (pipe line), got line {}",
+            diags[0].location.line
+        );
+    }
+
+    #[test]
+    fn capybara_style_block_params_location() {
+        use crate::testutil::run_cop_full;
+        // Reproduce capybara's indented multi-line block params where pipe is at EOL
+        let source = b"  describe_node_filters do |\n    options: nil, disabled_options: nil, enabled_options: nil,\n    selected: nil, with_selected: nil,\n    disabled: nil, **|\n    desc = +''\n  end\n";
+        let diags = run_cop_full(&ParameterLists, source);
+        for d in &diags {
+            eprintln!(
+                "Offense at line {} col {}: {}",
+                d.location.line, d.location.column, d.message
+            );
+        }
+        assert!(!diags.is_empty(), "Should flag block params over limit");
+        // RuboCop reports on line 1 (the 'do |' line where the pipe is)
+        assert_eq!(
+            diags[0].location.line, 1,
+            "Should report on line 1 (do | line), got line {}",
+            diags[0].location.line
+        );
+    }
 }
