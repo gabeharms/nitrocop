@@ -38,4 +38,10 @@ Gem::Specification.new do |spec|
        ^^^^^^^^^^^^^^ Gemspec/DependencyVersion: Dependency version is required.
   spec.add_dependency 'builder'#, '~> 2.3.1'
        ^^^^^^^^^^^^^^ Gemspec/DependencyVersion: Dependency version is required.
+  # Version inside ternary expression is not a direct str arg
+  spec.add_development_dependency "support", RUBY_ENGINE == "jruby" ? "~> 7.0.0" : "~> 8.1"
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^ Gemspec/DependencyVersion: Dependency version is required.
+  # Version inside || fallback is not a direct str arg
+  spec.add_dependency 'http', ENV['HTTP_VERSION'] || '>= 1.10.0'
+       ^^^^^^^^^^^^^^ Gemspec/DependencyVersion: Dependency version is required.
 end

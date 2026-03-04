@@ -45,13 +45,18 @@ use crate::parse::source::SourceFile;
 /// Fix 3: Truncate at `if`/`unless` statement modifiers — version-like strings
 /// in conditions (e.g., `if RUBY_VERSION >= '2.7'`) are not version args.
 ///
-/// Result: FP=0, FN≈61 (of which ~54 are from vendor/-excluded repos in CI
-/// corpus, ~4 from `||` fallback patterns like `ENV['K'] || '>= 1.0'`, ~3 from
-/// ternary expressions like `cond ? '~> 1.0' : '~> 2.0'`). The `||` and ternary
-/// patterns produce non-`str` AST nodes that RuboCop's NodePattern doesn't match,
-/// but they're indistinguishable from direct strings in text-based analysis without
-/// a full Ruby parser. Real FN (excluding vendor-excluded noise) is ~9 of 3,621
-/// total offenses = 99.75% match rate.
+/// Fix 4: Strip trailing Ruby comments — `'gem'#, '~> 1.0'` has the version in
+/// a comment, not as an actual argument.
+///
+/// Fix 5: Truncate at `||`, `&&`, and ternary `?` operators — version strings
+/// in fallback expressions (`ENV['K'] || '>= 1.0'`) or ternary values
+/// (`cond ? '~> 1.0' : '~> 2.0'`) are not direct str args.
+///
+/// Result: FP=0, FN≈53. Of these, ~52 are file-discovery issues (gemspecs under
+/// vendor/cache/ or vendor/gems/ paths not scanned by the local corpus runner).
+/// Only 1 remaining cop-logic FN: `RUBY_VERSION < '2.1.0' ? ...` where `'2.1.0'`
+/// in the comparison matches as a version-like string before the ternary operator.
+/// This is indistinguishable from a real version arg without AST parsing.
 pub struct DependencyVersion;
 
 const DEP_METHODS: &[&str] = &[
@@ -295,9 +300,14 @@ fn has_any_version_string(s: &str) -> bool {
     false
 }
 
-/// Truncate a string at the first ` if ` or ` unless ` keyword that appears
-/// outside of quotes. This strips Ruby statement modifiers so that conditional
-/// expressions like `if RUBY_VERSION >= '2.7.0'` aren't scanned for version strings.
+/// Truncate a string at the first non-argument expression boundary found
+/// outside of quotes. This strips:
+/// - Ruby statement modifiers (` if `, ` unless `)
+/// - Logical operators (` || `, ` && `)
+/// - Ternary operator (` ? ` preceded by space, not method-name `?`)
+///
+/// These introduce expressions whose string contents are NOT direct method
+/// arguments, so they shouldn't be scanned for version specifications.
 fn truncate_at_statement_modifier(s: &str) -> &str {
     let bytes = s.as_bytes();
     let mut pos = 0;
@@ -313,13 +323,21 @@ fn truncate_at_statement_modifier(s: &str) -> &str {
                 pos += 1; // skip closing quote
             }
         } else if bytes[pos] == b' ' {
-            // Check for ` if ` or ` unless `
             let rest = &s[pos..];
+            // Statement modifiers
             if rest.starts_with(" if ")
                 || rest.starts_with(" unless ")
                 || rest.starts_with(" if\t")
                 || rest.starts_with(" unless\t")
             {
+                return &s[..pos];
+            }
+            // Logical operators
+            if rest.starts_with(" || ") || rest.starts_with(" && ") {
+                return &s[..pos];
+            }
+            // Ternary operator: ` ? ` (space before ? distinguishes from method? names)
+            if rest.starts_with(" ? ") {
                 return &s[..pos];
             }
             pos += 1;
@@ -551,5 +569,39 @@ mod tests {
         assert!(has_any_version_string(
             "'rubocop', '1.50.0' unless ENV['CI']"
         ));
+    }
+
+    #[test]
+    fn version_in_ternary_not_counted() {
+        // Ternary operator — version strings are after `?`, not direct args
+        assert!(!has_any_version_string(
+            "\"support\", RUBY_ENGINE == \"jruby\" ? \"~> 7.0.0\" : \"~> 8.1\""
+        ));
+    }
+
+    #[test]
+    fn version_in_logical_or_not_counted() {
+        // Version after || — fallback expression, not a direct arg
+        assert!(!has_any_version_string(
+            "'http', ENV['HTTP_VERSION'] || '>= 1.10.0'"
+        ));
+    }
+
+    #[test]
+    fn commented_out_version_not_counted() {
+        // Comment after gem name — version in comment should be ignored
+        let source = crate::parse::source::SourceFile::from_bytes(
+            "example.gemspec",
+            b"Gem::Specification.new do |s|\n  s.add_dependency 'webmock'#, '< 2' # used in vcr\nend\n"
+                .to_vec(),
+        );
+        let config = crate::cop::CopConfig::default();
+        let mut diags = vec![];
+        DependencyVersion.check_lines(&source, &config, &mut diags, None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "should flag dep with commented-out version: {diags:?}"
+        );
     }
 }
