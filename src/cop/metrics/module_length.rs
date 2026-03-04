@@ -4,6 +4,16 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-04)
+///
+/// Corpus oracle reported FP=1, FN=0.
+///
+/// FP=1 came from a short-form disable directive
+/// (`# rubocop:disable ModuleLength`) that RuboCop resolves to this cop. The
+/// prior directive matcher only handled fully-qualified names.
+///
+/// Fix applied in this batch: short cop name resolution in
+/// `parse::directives` (framework-level), which this cop now benefits from.
 pub struct ModuleLength;
 
 /// Check if a module's body is exactly one class or module node (namespace module).

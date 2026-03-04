@@ -181,12 +181,19 @@ impl DisabledRanges {
 
     /// Returns true if `cop_name` is disabled at `line`.
     ///
-    /// Checks the exact cop name, legacy aliases (renamed cops), its department
-    /// prefix, and "all".
+    /// Checks the exact cop name, short cop name (without department), legacy
+    /// aliases (renamed cops), its department prefix, and "all".
     pub fn is_disabled(&self, cop_name: &str, line: usize) -> bool {
         // Check exact cop name
         if self.check_ranges(cop_name, line) {
             return true;
+        }
+
+        // Check short cop name (e.g., "MethodLength" for "Metrics/MethodLength")
+        if let Some(short_name) = short_cop_name(cop_name) {
+            if self.check_ranges(short_name, line) {
+                return true;
+            }
         }
 
         // Check legacy cop names that were renamed to this cop
@@ -195,6 +202,11 @@ impl DisabledRanges {
             for old_name in old_names {
                 if self.check_ranges(old_name, line) {
                     return true;
+                }
+                if let Some(old_short_name) = short_cop_name(old_name) {
+                    if self.check_ranges(old_short_name, line) {
+                        return true;
+                    }
                 }
             }
         }
@@ -222,12 +234,26 @@ impl DisabledRanges {
             suppressed = true;
         }
 
+        // Check short cop name (e.g., "MethodLength" for "Metrics/MethodLength")
+        if let Some(short_name) = short_cop_name(cop_name) {
+            if self.check_ranges(short_name, line) {
+                self.mark_directives_used(short_name, line);
+                suppressed = true;
+            }
+        }
+
         // Check legacy cop names that were renamed to this cop
         if let Some(old_names) = REVERSE_RENAMED_COPS.get(cop_name) {
             for old_name in old_names {
                 if self.check_ranges(old_name, line) {
                     self.mark_directives_used(old_name, line);
                     suppressed = true;
+                }
+                if let Some(old_short_name) = short_cop_name(old_name) {
+                    if self.check_ranges(old_short_name, line) {
+                        self.mark_directives_used(old_short_name, line);
+                        suppressed = true;
+                    }
                 }
             }
         }
@@ -282,6 +308,10 @@ impl DisabledRanges {
         }
         false
     }
+}
+
+fn short_cop_name(cop_name: &str) -> Option<&str> {
+    cop_name.split_once('/').map(|(_, short)| short)
 }
 
 #[cfg(test)]
@@ -344,6 +374,15 @@ mod tests {
         // Enable line itself is still in the disabled range
         assert!(dr.is_disabled("Metrics/MethodLength", 3));
         // Line after enable is no longer disabled
+        assert!(!dr.is_disabled("Metrics/MethodLength", 4));
+    }
+
+    #[test]
+    fn short_cop_name_disable() {
+        let src = "# rubocop:disable MethodLength\nx = 1\n# rubocop:enable MethodLength\ny = 2\n";
+        let dr = disabled_ranges(src);
+        assert!(dr.is_disabled("Metrics/MethodLength", 2));
+        assert!(dr.is_disabled("Metrics/MethodLength", 3));
         assert!(!dr.is_disabled("Metrics/MethodLength", 4));
     }
 
@@ -450,7 +489,7 @@ mod tests {
 
     #[test]
     fn unused_directive_reported() {
-        let mut dr = disabled_ranges("x = 1 # rubocop:disable Foo/Bar\ny = 2\n");
+        let dr = disabled_ranges("x = 1 # rubocop:disable Foo/Bar\ny = 2\n");
         // Never call check_and_mark_used -> directive stays unused
         let unused: Vec<_> = dr.unused_directives().collect();
         assert_eq!(unused.len(), 1);
@@ -471,6 +510,17 @@ mod tests {
     }
 
     #[test]
+    fn short_cop_name_marked_used() {
+        let mut dr = disabled_ranges("x = 1 # rubocop:disable MethodLength\ny = 2\n");
+        assert!(dr.check_and_mark_used("Metrics/MethodLength", 1));
+        let unused: Vec<_> = dr.unused_directives().collect();
+        assert!(
+            unused.is_empty(),
+            "short cop directive should be marked used"
+        );
+    }
+
+    #[test]
     fn all_disable_marked_used() {
         let mut dr = disabled_ranges("# rubocop:disable all\nx = 1\n# rubocop:enable all\ny = 2\n");
         assert!(dr.check_and_mark_used("Style/Foo", 2));
@@ -480,7 +530,7 @@ mod tests {
 
     #[test]
     fn block_directive_unused() {
-        let mut dr = disabled_ranges(
+        let dr = disabled_ranges(
             "# rubocop:disable Foo/Bar\nx = 1\ny = 2\n# rubocop:enable Foo/Bar\nz = 3\n",
         );
         // No diagnostics suppressed

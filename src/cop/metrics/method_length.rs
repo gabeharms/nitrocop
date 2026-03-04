@@ -18,6 +18,15 @@ use crate::parse::source::SourceFile;
 /// Fix: for BeginNode bodies, use the first child statement's location instead.
 ///
 /// Remaining excess (9,721) is within file-drop noise (8,174 from jruby).
+///
+/// ## Corpus investigation (2026-03-04)
+///
+/// Corpus oracle currently reports FP-heavy divergence for this cop.
+///
+/// In this batch, additional suppression mismatches were traced to short-form
+/// directives (`# rubocop:disable MethodLength`) that RuboCop resolves to this
+/// cop. nitrocop now resolves short names in `parse::directives` to align with
+/// RuboCop's directive handling.
 pub struct MethodLength;
 
 /// Parsed config values for MethodLength.

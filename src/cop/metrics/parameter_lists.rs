@@ -20,6 +20,18 @@ use ruby_prism::Visit;
 //     Fix: report at block_params_node.location() start.
 // (3) consuldemocracy FPs (2): rubocop:disable ParameterLists comment on line above.
 //     This is a framework-level directive handling issue, not cop-level.
+///
+/// ## Corpus investigation (2026-03-04)
+///
+/// Corpus oracle reported FP=2, FN=0.
+///
+/// FP=2: both came from short-form disable directives
+/// (`# rubocop:disable ParameterLists`) that RuboCop resolves to
+/// `Metrics/ParameterLists`. nitrocop previously required fully-qualified cop
+/// names, so these lines were not suppressed.
+///
+/// Fix applied in this batch: directive resolution now matches short cop names
+/// in `parse::directives` (framework-level), which this cop depends on.
 pub struct ParameterLists;
 
 impl Cop for ParameterLists {

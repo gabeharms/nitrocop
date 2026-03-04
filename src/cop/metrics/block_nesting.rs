@@ -4,6 +4,14 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-04)
+///
+/// Corpus oracle reported FP=1, FN=0.
+///
+/// The remaining FP example was investigated (ransack `value.rb:62`). This
+/// batch did not change cop-local nesting rules; instead it fixed framework
+/// directive matching for short-form disables in `parse::directives` and
+/// revalidated this cop with corpus gates.
 pub struct BlockNesting;
 
 impl Cop for BlockNesting {
