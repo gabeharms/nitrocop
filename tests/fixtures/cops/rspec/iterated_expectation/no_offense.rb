@@ -21,3 +21,13 @@ found_files.each do |file|
   expect(file).to include('/dir1/')
   expect(file).not_to include('/dir2/')
 end
+# .each with arguments — not flagged (RuboCop pattern matches .each without args only)
+@result.each(as: :array) do |row|
+  expect(row).to be_an_instance_of(Array)
+end
+# .to with a do..end block — not flagged (block on .to changes AST shape)
+records.each do |record|
+  expect(record).to receive(:process) do |msg|
+    expect(msg.lines).to eq(["a message"])
+  end
+end

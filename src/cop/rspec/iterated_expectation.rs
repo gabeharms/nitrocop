@@ -7,6 +7,12 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (2026-03):
+/// FP1: `.each(as: :array)` — RuboCop's `(send _ :each)` pattern only matches `.each` without
+/// arguments. Fixed by checking `call.arguments().is_none()`.
+/// FP2: `.to receive(:x) do |msg| ... end` — when `.to` has a block, the AST is
+/// `(block (send ...) ...)` not `(send ...)`, so RuboCop's pattern doesn't match.
+/// Fixed by checking `call.block().is_none()` in `is_expectation_with_param`.
 pub struct IteratedExpectation;
 
 impl Cop for IteratedExpectation {
@@ -54,6 +60,11 @@ impl Cop for IteratedExpectation {
 
         // Must have a receiver (the array/collection)
         if call.receiver().is_none() {
+            return;
+        }
+
+        // RuboCop pattern is `(send _ :each)` — no arguments on .each
+        if call.arguments().is_some() {
             return;
         }
 
@@ -145,6 +156,13 @@ fn is_expectation_with_param(node: &ruby_prism::Node<'_>, param_name: &[u8]) -> 
     //   (send (send nil? :expect (lvar %)) :to ...)
     let method = call.name().as_slice();
     if method != b"to" {
+        return false;
+    }
+
+    // A `.to` call with a block (e.g. `expect(x).to receive(:y) do |msg| ... end`)
+    // changes the AST shape from `(send ...)` to `(block (send ...) ...)`, so
+    // RuboCop's `(send ...)` pattern doesn't match it.
+    if call.block().is_some() {
         return false;
     }
 
