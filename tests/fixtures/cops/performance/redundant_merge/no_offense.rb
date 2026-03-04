@@ -34,3 +34,20 @@ result = hash.merge!(a: 1)
 hash.merge!(a: 1) { |key, old, new| old }
 hash.merge!(a: 1, b: 2) { |key, old, new| old }
 values.merge!(max_age: max_age) { |_key, v1, v2| v1 || v2 }
+# merge! as last expression in class body — value used as class return
+class AppEngine
+  config.action_dispatch.rescue_responses.merge!(
+    "NotFoundError" => :not_found,
+  )
+end
+# merge! with multiple pairs as last expression in class body — value used
+class Redis
+  Client::ERROR_MAPPING.merge!(
+    CircuitOpenError => Redis::CircuitOpenError,
+    ResourceBusyError => Redis::ResourceBusyError,
+  )
+end
+# merge! as last expression in module body — value used
+module Config
+  DEFAULTS.merge!(timeout: 30, retries: 3)
+end

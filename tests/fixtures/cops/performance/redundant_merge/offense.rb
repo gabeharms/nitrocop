@@ -38,3 +38,12 @@ DEFAULTS.merge!(key: value)
 # self receiver — pure, should be flagged
 self.merge!(key: value)
 ^^^^^^^^^^^^^^^^^^^^^^^ Performance/RedundantMerge: Use `[]=` instead of `merge!` with a single key-value pair.
+# merge! on accumulator inside each_with_object — value not truly used
+ENUM.each_with_object({}) do |e, h|
+  h.merge!(e => e)
+  ^^^^^^^^^^^^^^^^^ Performance/RedundantMerge: Use `[]=` instead of `merge!` with a single key-value pair.
+end
+items.each_with_object({}) { |style, memo| memo.merge!(style["name"] => style["value"]) }
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/RedundantMerge: Use `[]=` instead of `merge!` with a single key-value pair.
+config.each_with_object({}) { |key, filter| filter.merge!(key => []) }
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/RedundantMerge: Use `[]=` instead of `merge!` with a single key-value pair.

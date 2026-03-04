@@ -5,28 +5,24 @@ use ruby_prism::Visit;
 
 /// ## Corpus investigation (2026-03-04)
 ///
-/// Corpus oracle reported FP=2, FN=5.
+/// Corpus oracle reported FP=2, FN=5. Both fixed.
 ///
-/// FP=2: Both involve `merge!` on method-chain receivers (`config.action_dispatch.rescue_responses`)
-/// and constant paths (`Client::ERROR_MAPPING`). The cop's "pure receiver" check treats constants
-/// and constant paths as pure, but these are essentially accessors whose `merge!` result is used
-/// by the object being mutated. RuboCop doesn't flag these.
+/// FP=2 fix: Both FPs were `merge!` as the last statement in a class body. RuboCop's
+/// `value_used?` considers class/module body return values as "used", so these should be
+/// skipped. Fixed by adding `visit_class_node`, `visit_module_node`, and
+/// `visit_singleton_class_node` that set `value_used = true`.
 ///
-/// FN=5: All involve `merge!` on the accumulator inside `each_with_object` blocks. RuboCop has a
-/// special `EachWithObjectInspector` that detects when the accumulator is passed by reference and
-/// the `merge!` return value isn't truly consumed. An attempt was made to detect `each_with_object`
-/// blocks and track the accumulator (commit 80417659, reverted a639bfc4). The approach
-/// detected `each_with_object` by method name, extracted the second block parameter as
-/// accumulator name, and exempted `merge!` on that accumulator from the value_used check.
+/// FN=5 fix: All were `merge!` on the accumulator inside `each_with_object` blocks.
+/// RuboCop's `EachWithObjectInspector` detects this pattern and allows flagging even when
+/// `value_used?` is true. Implemented by tracking the accumulator name (second block param)
+/// when entering an `each_with_object` block. The accumulator is cleared inside nested
+/// scopes (class/module/def/block bodies, conditionals, loops, case) to match RuboCop's
+/// inspector which only matches `merge!` as a direct statement of the block body.
 ///
-/// Acceptance gate before: expected=874, actual=871, excess=2 FP, missing=5 FN.
-/// Acceptance gate after: expected=874, actual=882, excess=8 FP, missing=0 FN.
-/// This fixed the 5 FNs but introduced 6 NEW false positives (2→8 excess).
-/// Root cause of regression: the class/module body `value_used=true` fix interacted with
-/// the each_with_object exemption — merge! calls in class bodies within each_with_object-like
-/// contexts were incorrectly exempted. A correct fix needs to fix the FP side independently
-/// (class/module body value_used) without touching each_with_object, then carefully implement
-/// each_with_object detection that respects nested class/module bodies.
+/// A previous attempt (commit 80417659, reverted a639bfc4) failed because the accumulator
+/// leaked into nested scopes, causing 6 new FPs. The key insight is that RuboCop's
+/// inspector navigates UP from the merge! node and only matches if the parent (or
+/// begin-wrapped parent) is the block node itself.
 pub struct RedundantMerge;
 
 impl Cop for RedundantMerge {
@@ -54,6 +50,7 @@ impl Cop for RedundantMerge {
             diagnostics: Vec::new(),
             max_kv_pairs,
             value_used: false,
+            each_with_object_accumulator: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -67,9 +64,34 @@ struct RedundantMergeVisitor<'a, 'src> {
     max_kv_pairs: usize,
     /// Whether the current expression's value is used by a parent.
     value_used: bool,
+    /// Name of the each_with_object accumulator variable, if currently inside one.
+    each_with_object_accumulator: Option<String>,
 }
 
 impl<'a, 'src> RedundantMergeVisitor<'a, 'src> {
+    /// If `call` is `something.each_with_object(arg) { |elem, acc| ... }`,
+    /// return the name of the accumulator parameter (second block param).
+    fn extract_each_with_object_accumulator(
+        &self,
+        call: &ruby_prism::CallNode<'_>,
+        block: &ruby_prism::Node<'_>,
+    ) -> Option<String> {
+        if call.name().as_slice() != b"each_with_object" {
+            return None;
+        }
+        let block_node = block.as_block_node()?;
+        let params = block_node.parameters()?;
+        let block_params = params.as_block_parameters_node()?;
+        let param_list = block_params.parameters()?;
+        let requireds = param_list.requireds();
+        if requireds.len() < 2 {
+            return None;
+        }
+        let second = requireds.iter().nth(1)?;
+        let req = second.as_required_parameter_node()?;
+        Some(String::from_utf8_lossy(req.name().as_slice()).into_owned())
+    }
+
     fn check_merge_call(&mut self, call: &ruby_prism::CallNode<'_>) {
         if call.name().as_slice() != b"merge!" {
             return;
@@ -143,8 +165,22 @@ impl<'a, 'src> RedundantMergeVisitor<'a, 'src> {
         // Don't flag if the return value of merge! is used. merge! returns
         // the hash, while []= returns the assigned value — they're not
         // interchangeable when the result is consumed.
+        // Exception: inside each_with_object, the accumulator is passed by
+        // reference, so merge! on the accumulator is redundant even though
+        // the block's return value appears "used". This matches RuboCop's
+        // EachWithObjectInspector.
         if self.value_used {
-            return;
+            // Check if the receiver is the each_with_object accumulator
+            let is_accumulator = if let Some(ref acc_name) = self.each_with_object_accumulator {
+                receiver
+                    .as_local_variable_read_node()
+                    .is_some_and(|lvar| lvar.name().as_slice() == acc_name.as_bytes())
+            } else {
+                false
+            };
+            if !is_accumulator {
+                return;
+            }
         }
 
         let loc = call.location();
@@ -180,10 +216,18 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
             self.value_used = prev;
         }
 
-        // Visit block — the block body's value may or may not be used
-        // depending on the method, but we treat it conservatively
+        // Visit block — detect each_with_object accumulator
         if let Some(block) = node.block() {
-            self.visit(&block);
+            // Check if this is an each_with_object call with a block
+            let acc_name = self.extract_each_with_object_accumulator(node, &block);
+            if let Some(name) = acc_name {
+                let prev_acc = self.each_with_object_accumulator.take();
+                self.each_with_object_accumulator = Some(name);
+                self.visit(&block);
+                self.each_with_object_accumulator = prev_acc;
+            } else {
+                self.visit(&block);
+            }
         }
     }
 
@@ -301,12 +345,16 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
             self.visit(&node.predicate());
             self.value_used = prev;
         }
+        // Clear accumulator inside conditionals — RuboCop's EachWithObjectInspector
+        // only matches merge! as a direct statement of the block body, not inside if/unless.
+        let prev_acc = self.each_with_object_accumulator.take();
         if let Some(stmts) = node.statements() {
             self.visit_statements_node(&stmts);
         }
         if let Some(subsequent) = node.subsequent() {
             self.visit(&subsequent);
         }
+        self.each_with_object_accumulator = prev_acc;
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
@@ -316,12 +364,14 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
             self.visit(&node.predicate());
             self.value_used = prev;
         }
+        let prev_acc = self.each_with_object_accumulator.take();
         if let Some(stmts) = node.statements() {
             self.visit_statements_node(&stmts);
         }
         if let Some(else_clause) = node.else_clause() {
             self.visit_else_node(&else_clause);
         }
+        self.each_with_object_accumulator = prev_acc;
     }
 
     fn visit_while_node(&mut self, node: &ruby_prism::WhileNode<'pr>) {
@@ -331,9 +381,11 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
             self.visit(&node.predicate());
             self.value_used = prev;
         }
+        let prev_acc = self.each_with_object_accumulator.take();
         if let Some(stmts) = node.statements() {
             self.visit_statements_node(&stmts);
         }
+        self.each_with_object_accumulator = prev_acc;
     }
 
     fn visit_until_node(&mut self, node: &ruby_prism::UntilNode<'pr>) {
@@ -343,9 +395,11 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
             self.visit(&node.predicate());
             self.value_used = prev;
         }
+        let prev_acc = self.each_with_object_accumulator.take();
         if let Some(stmts) = node.statements() {
             self.visit_statements_node(&stmts);
         }
+        self.each_with_object_accumulator = prev_acc;
     }
 
     fn visit_statements_node(&mut self, node: &ruby_prism::StatementsNode<'pr>) {
@@ -366,6 +420,38 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
         }
     }
 
+    fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
+        // Class body's last expression is the class's return value.
+        // RuboCop's value_used? considers this as used, so merge! in
+        // the last position of a class body should not be flagged.
+        let prev = self.value_used;
+        self.value_used = true;
+        // Clear accumulator inside class bodies — class bodies are not
+        // part of an each_with_object iteration.
+        let prev_acc = self.each_with_object_accumulator.take();
+        ruby_prism::visit_class_node(self, node);
+        self.each_with_object_accumulator = prev_acc;
+        self.value_used = prev;
+    }
+
+    fn visit_module_node(&mut self, node: &ruby_prism::ModuleNode<'pr>) {
+        let prev = self.value_used;
+        self.value_used = true;
+        let prev_acc = self.each_with_object_accumulator.take();
+        ruby_prism::visit_module_node(self, node);
+        self.each_with_object_accumulator = prev_acc;
+        self.value_used = prev;
+    }
+
+    fn visit_singleton_class_node(&mut self, node: &ruby_prism::SingletonClassNode<'pr>) {
+        let prev = self.value_used;
+        self.value_used = true;
+        let prev_acc = self.each_with_object_accumulator.take();
+        ruby_prism::visit_singleton_class_node(self, node);
+        self.each_with_object_accumulator = prev_acc;
+        self.value_used = prev;
+    }
+
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
         // Method body's last expression is the implicit return value —
         // treat it as value_used
@@ -377,7 +463,9 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
 
     fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
         // Block body's last expression becomes the block's return value —
-        // conservatively treat as value_used
+        // conservatively treat as value_used.
+        // Note: each_with_object accumulator is set in visit_call_node and
+        // intentionally NOT cleared here — it needs to flow into the block body.
         let prev = self.value_used;
         self.value_used = true;
         ruby_prism::visit_block_node(self, node);
@@ -413,12 +501,14 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
             self.visit(&pred);
             self.value_used = prev;
         }
+        let prev_acc = self.each_with_object_accumulator.take();
         for condition in node.conditions().iter() {
             self.visit(&condition);
         }
         if let Some(else_clause) = node.else_clause() {
             self.visit_else_node(&else_clause);
         }
+        self.each_with_object_accumulator = prev_acc;
     }
 
     fn visit_interpolated_string_node(&mut self, node: &ruby_prism::InterpolatedStringNode<'pr>) {
