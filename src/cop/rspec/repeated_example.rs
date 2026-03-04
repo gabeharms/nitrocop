@@ -8,6 +8,13 @@ use crate::parse::source::SourceFile;
 use std::collections::HashMap;
 
 /// RSpec/RepeatedExample: Don't repeat examples (same body) within an example group.
+///
+/// **Investigation (2026-03-04):** 88 FPs caused by `its()` calls with different string
+/// attributes but same block body being treated as duplicates. The `example_body_signature()`
+/// function was skipping the first string arg (treating it as a description like `it`), but
+/// for `its`, the first string arg is the attribute accessor (e.g., `its('Server.Version')`).
+/// Fix: include the first string arg in the signature when the method is `its`.
+/// FN=893 not addressed — likely missing patterns beyond this fix.
 pub struct RepeatedExample;
 
 impl Cop for RepeatedExample {
@@ -77,7 +84,7 @@ impl Cop for RepeatedExample {
             if let Some(c) = stmt.as_call_node() {
                 let m = c.name().as_slice();
                 if is_rspec_example(m) || m == b"its" {
-                    if let Some(sig) = example_body_signature(source, &c) {
+                    if let Some(sig) = example_body_signature(source, &c, m) {
                         let loc = c.location();
                         let (line, col) = source.offset_to_line_col(loc.start_offset());
                         body_map.entry(sig).or_default().push((line, col));
@@ -108,15 +115,25 @@ impl Cop for RepeatedExample {
 
 /// Build a signature from the example's block body + metadata (excluding description).
 /// Two examples with same body and metadata are duplicates.
-fn example_body_signature(source: &SourceFile, call: &ruby_prism::CallNode<'_>) -> Option<Vec<u8>> {
+/// For `its()` calls, the first string arg is an attribute accessor (not a description),
+/// so it must be included in the signature to distinguish `its('x')` from `its('y')`.
+fn example_body_signature(
+    source: &SourceFile,
+    call: &ruby_prism::CallNode<'_>,
+    method_name: &[u8],
+) -> Option<Vec<u8>> {
     let mut sig = Vec::new();
 
-    // Include metadata args (skip the first string/symbol description if present)
+    // Include metadata args (skip the first string/symbol description if present).
+    // For `its()`, the first string arg is an attribute accessor, not a description,
+    // so we include it in the signature.
+    let is_its = method_name == b"its";
     if let Some(args) = call.arguments() {
         let arg_list: Vec<_> = args.arguments().iter().collect();
         for (i, arg) in arg_list.iter().enumerate() {
-            // Skip first argument if it's a string (description)
+            // Skip first argument if it's a string (description) — but not for `its()`
             if i == 0
+                && !is_its
                 && (arg.as_string_node().is_some() || arg.as_interpolated_string_node().is_some())
             {
                 continue;

@@ -13,6 +13,13 @@ describe 'doing z' do
   its(:y) { is_expected.to be_present }
 end
 
+# its() with different string attributes but same block body are NOT duplicates
+# The first string arg to its() is an attribute accessor, not a description
+describe docker_container(name: 'an-echo-server') do
+  its('Server.Version') { should cmp >= '1.12' }
+  its('Client.Version') { should cmp >= '1.12' }
+end
+
 # Repeated examples inside shared_examples are NOT checked by RuboCop
 # (shared_examples is a SharedGroup, not an ExampleGroup)
 shared_examples 'common' do
