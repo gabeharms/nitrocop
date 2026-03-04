@@ -38,14 +38,3 @@ DEFAULTS.merge!(key: value)
 # self receiver — pure, should be flagged
 self.merge!(key: value)
 ^^^^^^^^^^^^^^^^^^^^^^^ Performance/RedundantMerge: Use `[]=` instead of `merge!` with a single key-value pair.
-# merge! inside each_with_object — accumulator is not value-used
-items.each_with_object({}) do |item, memo|
-  memo.merge!(item => true)
-  ^^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/RedundantMerge: Use `[]=` instead of `merge!` with a single key-value pair.
-end
-records.each_with_object({}) do |r, h|
-  h.merge!(r => r)
-  ^^^^^^^^^^^^^^^^^ Performance/RedundantMerge: Use `[]=` instead of `merge!` with a single key-value pair.
-end
-data.each_with_object({}) { |e, acc| acc.merge!(e => e) }
-                                     ^^^^^^^^^^^^^^^^^^^ Performance/RedundantMerge: Use `[]=` instead of `merge!` with a single key-value pair.

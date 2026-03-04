@@ -34,16 +34,3 @@ result = hash.merge!(a: 1)
 hash.merge!(a: 1) { |key, old, new| old }
 hash.merge!(a: 1, b: 2) { |key, old, new| old }
 values.merge!(max_age: max_age) { |_key, v1, v2| v1 || v2 }
-# merge! on method chain receiver inside class body — value used as class return
-class Engine
-  config.dispatch.responses.merge!(
-    "NotFoundError" => :not_found,
-  )
-end
-# merge! on constant path receiver inside module body — value used as module return
-module Extension
-  MAPPING.merge!(
-    CircuitError => ResourceError,
-    BusyError => TimeoutError,
-  )
-end

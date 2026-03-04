@@ -3,22 +3,6 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
-/// Performance/RedundantMerge — flags `hash.merge!(k: v)` that can be replaced with `hash[k] = v`.
-///
-/// ## Investigation findings (2026-03-04)
-///
-/// **FP root cause**: merge! inside class/module bodies was not recognized as "value used".
-/// In Ruby, the last expression in a class/module body IS the return value of the
-/// class/module definition, so `class Foo; hash.merge!(k: v); end` has its merge! result
-/// used. Added `visit_class_node` and `visit_module_node` overrides that set
-/// `value_used = true` for the body.
-///
-/// **FN root cause**: merge! on the accumulator variable inside `each_with_object` blocks
-/// was incorrectly skipped because `visit_block_node` conservatively set `value_used = true`
-/// for all block bodies. RuboCop has a special `EachWithObjectInspector` that detects when
-/// the merge! receiver's root variable is the accumulator parameter of `each_with_object`,
-/// in which case the value is NOT considered used (the accumulator is passed by reference).
-/// Fixed by detecting `each_with_object` blocks and tracking the accumulator parameter name.
 pub struct RedundantMerge;
 
 impl Cop for RedundantMerge {
@@ -46,7 +30,6 @@ impl Cop for RedundantMerge {
             diagnostics: Vec::new(),
             max_kv_pairs,
             value_used: false,
-            each_with_object_accum: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -60,49 +43,9 @@ struct RedundantMergeVisitor<'a, 'src> {
     max_kv_pairs: usize,
     /// Whether the current expression's value is used by a parent.
     value_used: bool,
-    /// Name of the each_with_object accumulator parameter, if we're inside one.
-    each_with_object_accum: Option<Vec<u8>>,
 }
 
 impl<'a, 'src> RedundantMergeVisitor<'a, 'src> {
-    /// Unwind a receiver through method calls/indexing to find the root local variable name.
-    /// e.g. `hash[:a].bar` -> `hash`, `memo` -> `memo`
-    fn root_receiver_local_name<'n>(node: &ruby_prism::Node<'n>) -> Option<&'n [u8]> {
-        if let Some(lvar) = node.as_local_variable_read_node() {
-            return Some(lvar.name().as_slice());
-        }
-        if let Some(call) = node.as_call_node() {
-            if let Some(recv) = call.receiver() {
-                return Self::root_receiver_local_name(&recv);
-            }
-        }
-        None
-    }
-
-    /// Check if the receiver is the each_with_object accumulator variable.
-    fn is_each_with_object_accum(&self, receiver: &ruby_prism::Node<'_>) -> bool {
-        if let Some(ref accum_name) = self.each_with_object_accum {
-            if let Some(root_name) = Self::root_receiver_local_name(receiver) {
-                return root_name == accum_name.as_slice();
-            }
-        }
-        false
-    }
-
-    /// Extract the second parameter name from a block's parameter list.
-    fn extract_second_block_param(block: &ruby_prism::BlockNode<'_>) -> Option<Vec<u8>> {
-        let params = block.parameters()?;
-        let block_params = params.as_block_parameters_node()?;
-        let param_node = block_params.parameters()?;
-        let requireds: Vec<_> = param_node.requireds().iter().collect();
-        if requireds.len() == 2 {
-            let req = requireds[1].as_required_parameter_node()?;
-            Some(req.name().as_slice().to_vec())
-        } else {
-            None
-        }
-    }
-
     fn check_merge_call(&mut self, call: &ruby_prism::CallNode<'_>) {
         if call.name().as_slice() != b"merge!" {
             return;
@@ -176,9 +119,7 @@ impl<'a, 'src> RedundantMergeVisitor<'a, 'src> {
         // Don't flag if the return value of merge! is used. merge! returns
         // the hash, while []= returns the assigned value — they're not
         // interchangeable when the result is consumed.
-        // Exception: inside each_with_object, the accumulator's merge! is not
-        // truly "value used" — the accumulator is passed by reference.
-        if self.value_used && !self.is_each_with_object_accum(&receiver) {
+        if self.value_used {
             return;
         }
 
@@ -215,20 +156,9 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
             self.value_used = prev;
         }
 
-        // Visit block — detect each_with_object and track the accumulator parameter
+        // Visit block — the block body's value may or may not be used
+        // depending on the method, but we treat it conservatively
         if let Some(block) = node.block() {
-            if node.name().as_slice() == b"each_with_object" {
-                if let Some(block_node) = block.as_block_node() {
-                    let accum_name = Self::extract_second_block_param(&block_node);
-                    if accum_name.is_some() {
-                        let prev_accum = self.each_with_object_accum.take();
-                        self.each_with_object_accum = accum_name;
-                        self.visit(&block);
-                        self.each_with_object_accum = prev_accum;
-                        return;
-                    }
-                }
-            }
             self.visit(&block);
         }
     }
@@ -418,30 +348,6 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
         let prev = self.value_used;
         self.value_used = true;
         ruby_prism::visit_def_node(self, node);
-        self.value_used = prev;
-    }
-
-    fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
-        // Class body's last expression is the return value of the class definition.
-        // Treat as value_used so merge! in class bodies isn't flagged.
-        let prev = self.value_used;
-        self.value_used = true;
-        ruby_prism::visit_class_node(self, node);
-        self.value_used = prev;
-    }
-
-    fn visit_module_node(&mut self, node: &ruby_prism::ModuleNode<'pr>) {
-        // Module body's last expression is the return value of the module definition.
-        let prev = self.value_used;
-        self.value_used = true;
-        ruby_prism::visit_module_node(self, node);
-        self.value_used = prev;
-    }
-
-    fn visit_singleton_class_node(&mut self, node: &ruby_prism::SingletonClassNode<'pr>) {
-        let prev = self.value_used;
-        self.value_used = true;
-        ruby_prism::visit_singleton_class_node(self, node);
         self.value_used = prev;
     }
 
