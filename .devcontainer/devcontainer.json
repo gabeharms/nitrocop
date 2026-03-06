@@ -1,0 +1,21 @@
+{
+  "name": "nitrocop",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "mounts": [
+    "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly",
+    "source=/run/host-services/ssh-auth.sock,target=/ssh-agent,type=bind"
+  ],
+  "containerEnv": {
+    "CC": "clang",
+    "COLORTERM": "truecolor",
+    "TERM": "xterm-256color",
+    "SSH_AUTH_SOCK": "/ssh-agent",
+    "GIT_CONFIG_GLOBAL": "/home/vscode/.gitconfig-local",
+    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:DEVCONTAINER_CLAUDE_CODE_OAUTH_TOKEN}",
+    "GITHUB_TOKEN": "${localEnv:DEVCONTAINER_GITHUB_TOKEN}",
+    "MISE_GITHUB_TOKEN": "${localEnv:DEVCONTAINER_GITHUB_TOKEN}"
+  },
+  "postCreateCommand": ".devcontainer/setup.sh",
+  "postStartCommand": "sudo chmod 666 /ssh-agent 2>/dev/null || true",
+  "remoteUser": "vscode"
+}

@@ -48,3 +48,10 @@ docs/INTERNAL_*
 # Environment
 .env
 .env.*
+
+# Devcontainer personal config (keep example files tracked)
+.devcontainer/.claude/*
+!.devcontainer/.claude/settings.example.json
+!.devcontainer/.claude/statusline.sh
+.devcontainer/.codex/*
+!.devcontainer/.codex/config.example.toml
