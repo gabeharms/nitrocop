@@ -1,4 +1,4 @@
-use crate::cop::node_type::{CALL_NODE, REGULAR_EXPRESSION_NODE, STRING_NODE};
+use crate::cop::node_type::{CALL_NODE, STRING_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
@@ -15,95 +15,11 @@ use crate::parse::source::SourceFile;
 /// - RuboCop only flags `gsub`/`gsub!`, NOT `sub`/`sub!`.
 /// - Message format: "Use `tr` instead of `gsub`." / "Use `delete` instead of `gsub`."
 ///   with bang variants for `gsub!`.
-/// - 338 FNs from regex first-arg patterns: `gsub(/\n/, '')`, `gsub(/ /, '-')`, etc.
-///   RuboCop accepts single-character deterministic regex literals (matching LITERAL_REGEX).
-///   After `interpret_string_escapes`, the regex content must be exactly 1 char.
+/// - FN fix: removed receiver().is_none() guard — RuboCop flags bare gsub (implicit self).
+/// - FN fix: added regex literal handling. RuboCop's `DETERMINISTIC_REGEX` accepts regex
+///   args that are simple single-char literals (no metacharacters, no flags, no char classes).
+///   Escapes like `\t`, `\n`, `\u00A0` are fine (they represent literal chars).
 pub struct StringReplacement;
-
-/// Check if a regex pattern (raw bytes between `/`...`/`) represents a single
-/// deterministic literal character, matching RuboCop's `DETERMINISTIC_REGEX`
-/// filtered to length == 1 after `interpret_string_escapes`.
-///
-/// Returns `true` for: `/a/`, `/ /`, `/\n/`, `/\t/`, `/\\/`, `/\./`, `/\y/`, etc.
-/// Returns `false` for: `/\d/`, `/[abc]/`, `/a*/`, `/a|b/`, `//`, `/ab/`, etc.
-fn is_single_char_deterministic_regex(content: &[u8]) -> bool {
-    if content.is_empty() {
-        return false;
-    }
-    if content[0] == b'\\' {
-        // Escaped sequence: must be exactly 2 bytes and not a regex metachar class
-        if content.len() != 2 {
-            return false;
-        }
-        let next = content[1];
-        // Regex metachar classes that are NOT literal: \A, \b, \B, \d, \D, \g, \G,
-        // \h, \H, \k, \p, \P, \R, \w, \W, \X, \s, \S, \z, \Z, \0-\9
-        !is_regex_escape_metachar(next)
-    } else {
-        // Unescaped single char: must be 1 byte and a literal char
-        content.len() == 1 && is_literal_char(content[0])
-    }
-}
-
-/// Characters in RuboCop's literal allowlist: `[\w\s\-,"'!#%&<>=;:`~/]`
-fn is_literal_char(b: u8) -> bool {
-    matches!(
-        b,
-        b'a'..=b'z'
-            | b'A'..=b'Z'
-            | b'0'..=b'9'
-            | b'_'
-            | b' '
-            | b'\t'
-            | b'\n'
-            | b'\r'
-            | 0x0C
-            | b'-'
-            | b','
-            | b'"'
-            | b'\''
-            | b'!'
-            | b'#'
-            | b'%'
-            | b'&'
-            | b'<'
-            | b'>'
-            | b'='
-            | b';'
-            | b':'
-            | b'`'
-            | b'~'
-            | b'/'
-    )
-}
-
-/// Regex metachar classes: `\d`, `\s`, `\w`, `\A`, `\b`, `\B`, etc.
-/// and digit escapes `\0`-`\9`. These are NOT literal when escaped.
-fn is_regex_escape_metachar(b: u8) -> bool {
-    matches!(
-        b,
-        b'A' | b'b'
-            | b'B'
-            | b'd'
-            | b'D'
-            | b'g'
-            | b'G'
-            | b'h'
-            | b'H'
-            | b'k'
-            | b'p'
-            | b'P'
-            | b'R'
-            | b'w'
-            | b'W'
-            | b'X'
-            | b's'
-            | b'S'
-            | b'z'
-            | b'Z'
-            | b'0'..=b'9'
-    )
-}
 
 impl Cop for StringReplacement {
     fn name(&self) -> &'static str {
@@ -115,7 +31,7 @@ impl Cop for StringReplacement {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[CALL_NODE, REGULAR_EXPRESSION_NODE, STRING_NODE]
+        &[CALL_NODE, STRING_NODE]
     }
 
     fn check_node(
@@ -139,10 +55,7 @@ impl Cop for StringReplacement {
             _ => return,
         };
 
-        // Must have a receiver (str.gsub)
-        if call.receiver().is_none() {
-            return;
-        }
+        // RuboCop matches any receiver including nil (bare gsub call, implicit self)
 
         let arguments = match call.arguments() {
             Some(a) => a,
@@ -164,34 +77,30 @@ impl Cop for StringReplacement {
             None => return,
         };
 
-        // First arg: either a StringNode or a RegularExpressionNode with a single literal char
+        // First arg: string literal or deterministic regex literal
         let first_is_single_char = if let Some(first) = first_node.as_string_node() {
             let first_str = first.unescaped();
             let first_text = String::from_utf8_lossy(first_str);
             first_text.chars().count() == 1
         } else if let Some(regex) = first_node.as_regular_expression_node() {
-            // Reject if regex has flags (e.g., /a/i)
-            let closing = regex.closing_loc().as_slice();
-            if closing.len() > 1 {
-                return;
-            }
-            let content = regex.content_loc().as_slice();
-            is_single_char_deterministic_regex(content)
+            is_deterministic_single_char_regex(regex)
         } else {
-            return;
+            false
         };
 
         if !first_is_single_char {
             return;
         }
 
-        // Second arg must be a StringNode with 0 or 1 characters
+        // Second arg must be a string literal
         let second = match second_node.as_string_node() {
             Some(s) => s,
             None => return,
         };
 
         let second_str = second.unescaped();
+
+        // Second arg must be empty or a single character
         let second_text = String::from_utf8_lossy(second_str);
         let second_char_count = second_text.chars().count();
         if second_char_count > 1 {
@@ -199,15 +108,19 @@ impl Cop for StringReplacement {
         }
 
         let (prefer, current) = if second_char_count == 0 {
+            // Empty replacement → delete
             if is_bang {
                 ("delete!", "gsub!")
             } else {
                 ("delete", "gsub")
             }
-        } else if is_bang {
-            ("tr!", "gsub!")
         } else {
-            ("tr", "gsub")
+            // Single char replacement → tr
+            if is_bang {
+                ("tr!", "gsub!")
+            } else {
+                ("tr", "gsub")
+            }
         };
 
         // RuboCop points at the method name through end of args (node.loc.selector → end)
@@ -220,6 +133,101 @@ impl Cop for StringReplacement {
             format!("Use `{prefer}` instead of `{current}`."),
         ));
     }
+}
+
+/// Check if a regex node represents a deterministic single-character pattern.
+/// RuboCop's DETERMINISTIC_REGEX rejects patterns containing metacharacters
+/// (`.`, `*`, `+`, `?`, `[`, `]`, `(`, `)`, `{`, `}`, `|`, `^`, `$`)
+/// and regex-specific escape sequences (`\d`, `\s`, `\w`, `\b`, `\A`, `\Z`, etc.).
+/// Simple escapes like `\t`, `\n`, `\r`, `\uXXXX`, `\xHH` are fine — they produce literal chars.
+fn is_deterministic_single_char_regex(regex: ruby_prism::RegularExpressionNode<'_>) -> bool {
+    // No flags allowed (e.g., /a/i)
+    let closing = regex.closing_loc().as_slice();
+    if closing.len() > 1 {
+        return false;
+    }
+
+    let content = regex.content_loc().as_slice();
+
+    // Empty regex is not a single char
+    if content.is_empty() {
+        return false;
+    }
+
+    // Check source content for regex metacharacters
+    // Walk the raw source bytes to check for metacharacters and classify escapes
+    let mut i = 0;
+    let mut char_count = 0;
+    while i < content.len() {
+        if char_count > 1 {
+            return false;
+        }
+        let b = content[i];
+        match b {
+            // Regex metacharacters — non-deterministic
+            b'.' | b'*' | b'+' | b'?' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'|' | b'^'
+            | b'$' => return false,
+            b'\\' => {
+                // Escape sequence
+                if i + 1 >= content.len() {
+                    return false;
+                }
+                let next = content[i + 1];
+                match next {
+                    // Regex-specific char classes — non-deterministic
+                    b'd' | b'D' | b's' | b'S' | b'w' | b'W' | b'b' | b'B' | b'A' | b'Z' | b'z'
+                    | b'G' | b'h' | b'H' | b'R' | b'p' | b'P' => return false,
+                    // Unicode escape: \uXXXX or \u{...} — counts as one char
+                    b'u' => {
+                        i += 2;
+                        if i < content.len() && content[i] == b'{' {
+                            // \u{XXXX} form
+                            while i < content.len() && content[i] != b'}' {
+                                i += 1;
+                            }
+                            if i < content.len() {
+                                i += 1; // skip '}'
+                            }
+                        } else {
+                            // \uXXXX form — skip 4 hex digits
+                            let end = std::cmp::min(i + 4, content.len());
+                            i = end;
+                        }
+                        char_count += 1;
+                        continue;
+                    }
+                    // Hex escape: \xHH — one char
+                    b'x' => {
+                        i += 2;
+                        let end = std::cmp::min(i + 2, content.len());
+                        i = end;
+                        char_count += 1;
+                        continue;
+                    }
+                    // Simple escapes: \t, \n, \r, \\, \y, etc. — one char each
+                    _ => {
+                        i += 2;
+                        char_count += 1;
+                        continue;
+                    }
+                }
+            }
+            _ => {
+                // Regular character — advance by UTF-8 char width
+                if b < 0x80 {
+                    i += 1;
+                } else if b < 0xE0 {
+                    i += 2;
+                } else if b < 0xF0 {
+                    i += 3;
+                } else {
+                    i += 4;
+                }
+                char_count += 1;
+            }
+        }
+    }
+    char_count == 1
 }
 
 #[cfg(test)]
