@@ -52,18 +52,21 @@ use crate::parse::source::SourceFile;
 /// points to the `elsif` keyword, making `node.else?` return true. nitrocop
 /// only scored +2 when the subsequent was an ElseNode, missing the elsif case.
 ///
-/// An attempt was made to fix this by scoring +2 for any non-ternary,
-/// non-elsif IfNode with any subsequent (commit 044592b8, reverted).
-/// The fix correctly detects elsif via `if_keyword_loc().as_slice() == b"elsif"`.
-/// However, when combined with the corpus environment (missing bundle symlinks
-/// in worktree caused false 130K readings on BlockLength, masking the true
-/// PerceivedComplexity validation). When re-validated with proper env, the fix
-/// showed 0 excess over CI baseline and reduced FN from 397 to 241 (156 recovered).
+/// Fix attempted: score +2 for any non-ternary, non-elsif IfNode with any
+/// subsequent (commit 044592b8, reverted). The fix correctly detects elsif
+/// via `if_keyword_loc().as_slice() == b"elsif"`.
 ///
-/// The fix was reverted during batch integration due to initial false FAIL readings.
-/// It should be re-applied and re-validated in a follow-up batch. The approach is
-/// correct: score +2 for top-level `if` with any subsequent, +1 for elsif always.
-/// Remaining 241 FN likely have other root causes (not if/elsif related).
+/// Corpus validation result: recovers all 397 FN (0 missing) but introduces
+/// 154 net FP (nitrocop 19,248 vs RuboCop 19,094), failing acceptance gate
+/// with 76 excess over CI baseline (after 422 file-drop noise adjustment).
+/// The fix is theoretically correct per RuboCop's scoring semantics, but
+/// the higher if/elsif scores expose over-counting in other areas that were
+/// previously compensated by the under-counting of if/elsif chains.
+///
+/// A correct fix needs to simultaneously address the other over-counting
+/// sources (investigate the 154 FP locations) so the net effect is 0 excess.
+/// The if/elsif approach itself is correct; the problem is combinatorial
+/// interaction with other scoring differences.
 pub struct PerceivedComplexity;
 
 /// Known iterating method names that make blocks count toward complexity.

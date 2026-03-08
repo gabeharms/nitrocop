@@ -150,6 +150,27 @@ def method_with_non_iterating_each_line(data)
   end
 end
 
+# if/elsif without else: outer if counts +1 (no ElseNode), elsif counts +1
+# Base 1 + 1 (if) + 1 (elsif) + 1 (if) + 1 (if) + 2 (if/else) = 7 <= 8
+def method_with_elsif_under_threshold(x)
+  if x == 1
+    :a
+  elsif x == 2
+    :b
+  end
+  if x == 3
+    :c
+  end
+  if x == 4
+    :d
+  end
+  if x == 5
+    :e
+  else
+    :f
+  end
+end
+
 # Pattern matching guards (in :x if guard) should NOT double-count.
 # The `in` clause counts as +1, but the `if` guard inside the InNode
 # pattern should be suppressed (RuboCop uses if_guard/unless_guard types
