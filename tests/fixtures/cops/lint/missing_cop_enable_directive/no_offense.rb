@@ -15,3 +15,8 @@ code = <<~RUBY
   very_long_line = 1
 RUBY
 puts code
+
+# Directives can include an inline explanation after the cop name.
+# rubocop:disable Development/NoEvalCop This eval takes static inputs at load-time
+eval(source)
+# rubocop:enable Development/NoEvalCop

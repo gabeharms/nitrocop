@@ -5,6 +5,21 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=19, FN=2.
+///
+/// FP=19 / FN=2: the core range tracking was correct, but directive parsing was
+/// too literal. Real-world code uses both `rubocop:disable` and
+/// `rubocop: disable`, and disable comments often carry a trailing explanation
+/// (`# rubocop:disable Rails/FindEach # reason`, `... NoEvalCop explanation`).
+/// Our parser kept that explanatory text as part of the cop name, so later
+/// clean `rubocop:enable` directives did not match and we reported missing
+/// enables incorrectly.
+///
+/// Local rerun after the parser fix improved the cop from the CI nitrocop
+/// baseline of 158 offenses to 146. That still leaves 5 excess offenses versus
+/// RuboCop, so additional directive-range semantics remain to be investigated.
 pub struct MissingCopEnableDirective;
 
 impl Cop for MissingCopEnableDirective {
@@ -154,11 +169,7 @@ fn parse_directive(line: &str) -> Option<(&str, Vec<String>, usize)> {
     let hash_pos = line.find('#')?;
     let after_hash = &line[hash_pos + 1..].trim_start();
 
-    if !after_hash.starts_with("rubocop:") {
-        return None;
-    }
-
-    let after_prefix = &after_hash["rubocop:".len()..];
+    let after_prefix = after_hash.strip_prefix("rubocop:")?.trim_start();
 
     // Extract action
     let action_end = after_prefix
@@ -170,18 +181,13 @@ fn parse_directive(line: &str) -> Option<(&str, Vec<String>, usize)> {
         return None;
     }
 
-    let cops_str = after_prefix[action_end..].trim();
-    // Strip `-- comment` suffix
-    let cops_str = match cops_str.find(" -- ") {
-        Some(idx) => &cops_str[..idx],
-        None => cops_str,
-    };
-
-    let cops: Vec<String> = cops_str
+    let cops: Vec<String> = after_prefix[action_end..]
         .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter_map(parse_cop_token)
         .collect();
+    if cops.is_empty() {
+        return None;
+    }
 
     // We need to return a reference to the action string within the original line.
     // Since we trimmed, use the computed action.
@@ -197,6 +203,19 @@ fn parse_directive(line: &str) -> Option<(&str, Vec<String>, usize)> {
     Some((action_str, cops, hash_pos))
 }
 
+fn parse_cop_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim_start();
+    let end = trimmed
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '/' || c == '_'))
+        .unwrap_or(trimmed.len());
+    let token = trimmed[..end].trim_end_matches('.');
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +225,6 @@ mod tests {
         missing_enable_cop = "missing_enable_cop.rb",
         missing_enable_dept = "missing_enable_dept.rb",
         missing_enable_two = "missing_enable_two.rb",
+        missing_enable_spaced = "missing_enable_spaced.rb",
     );
 }
