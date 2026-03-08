@@ -5,6 +5,27 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// Checks for underscore-prefixed variables that are actually used.
+///
+/// RuboCop uses VariableForce to track variable scoping across all scope types
+/// (def, block, lambda, top-level). This implementation replicates that behavior
+/// by visiting each scope type and checking parameters and local variable writes
+/// within that scope for reads.
+///
+/// Key behaviors matching RuboCop:
+/// - Flags underscore-prefixed method params, block params, and local variable
+///   assignments that are subsequently read in the same scope.
+/// - Respects block parameter shadowing: if a block redefines a param with the
+///   same name, reads inside the block are attributed to the block param, not
+///   the outer scope variable.
+/// - Handles `AllowKeywordBlockArguments` config to skip keyword block params.
+/// - Skips variables implicitly forwarded via bare `super` or `binding`.
+/// - Handles top-level scope (variables outside any def/block).
+///
+/// Historical FP root cause: The ReadCollector traversed into blocks without
+/// respecting scope boundaries, causing reads of block-local params to be
+/// misattributed to outer scope variables with the same name. Also, block and
+/// lambda scopes were not checked at all, causing FNs.
 pub struct UnderscorePrefixedVariableName;
 
 impl Cop for UnderscorePrefixedVariableName {
@@ -26,41 +47,49 @@ impl Cop for UnderscorePrefixedVariableName {
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allow_keyword_block_args = config.get_bool("AllowKeywordBlockArguments", false);
-        let mut visitor = DefFinder {
+        let mut visitor = ScopeFinder {
             cop: self,
             source,
             allow_keyword_block_args,
             diagnostics: Vec::new(),
         };
+        // Check top-level scope first
+        visitor.check_scope_body(&parse_result.node(), None, false);
+        // Then visit nested scopes
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
     }
 }
 
-struct DefFinder<'a, 'src> {
+struct ScopeFinder<'a, 'src> {
     cop: &'a UnderscorePrefixedVariableName,
     source: &'src SourceFile,
-    // Currently only def nodes are checked; block keyword arg handling
-    // will use this field when block scope support is added.
-    #[allow(dead_code)]
     allow_keyword_block_args: bool,
     diagnostics: Vec<Diagnostic>,
 }
 
-impl<'pr> Visit<'pr> for DefFinder<'_, '_> {
+impl<'pr> Visit<'pr> for ScopeFinder<'_, '_> {
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
         self.check_def(node);
-        // Don't recurse into nested defs
+        // Don't recurse into nested defs — each is its own scope
+    }
+
+    fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
+        self.check_block(node);
+        // Don't recurse — nested blocks are checked when we visit the block's body
+    }
+
+    fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
+        self.check_lambda(node);
     }
 }
 
-impl DefFinder<'_, '_> {
+impl ScopeFinder<'_, '_> {
     fn check_def(&mut self, def_node: &ruby_prism::DefNode<'_>) {
-        // Collect underscore-prefixed param names with their offsets
-        let mut underscore_vars: Vec<(String, usize)> = Vec::new();
+        let mut underscore_vars: Vec<UnderscoreVar> = Vec::new();
 
         if let Some(params) = def_node.parameters() {
-            collect_underscore_params(&params, &mut underscore_vars);
+            collect_underscore_params(&params, &mut underscore_vars, false);
         }
 
         // Collect underscore-prefixed local variable writes in the body
@@ -74,30 +103,162 @@ impl DefFinder<'_, '_> {
             return;
         }
 
-        // Collect all local variable reads in the body
+        // Collect all local variable reads in the body, respecting block scoping
         let mut reads = HashSet::new();
         if let Some(body) = def_node.body() {
-            let mut read_collector = ReadCollector { reads: &mut reads };
-            read_collector.visit(&body);
+            collect_reads_scope_aware(&body, &mut reads);
         }
 
         // Check for implicit forwarding (bare `super` or `binding`)
-        let mut fwd_checker = ForwardingChecker {
-            has_forwarding: false,
+        let has_forwarding = if let Some(body) = def_node.body() {
+            check_forwarding(&body)
+        } else {
+            false
         };
+
+        self.emit_diagnostics(&underscore_vars, &reads, has_forwarding);
+
+        // Visit body for nested scopes (blocks, lambdas, nested defs)
         if let Some(body) = def_node.body() {
-            fwd_checker.visit(&body);
+            self.visit(&body);
+        }
+    }
+
+    fn check_block(&mut self, block_node: &ruby_prism::BlockNode<'_>) {
+        let mut underscore_vars: Vec<UnderscoreVar> = Vec::new();
+
+        if let Some(params) = block_node.parameters() {
+            if let Some(params_node) = params.as_block_parameters_node() {
+                if let Some(inner_params) = params_node.parameters() {
+                    collect_underscore_params(&inner_params, &mut underscore_vars, true);
+                }
+            }
         }
 
-        for (name, offset) in &underscore_vars {
-            // If there's bare super/binding and the var is NOT explicitly read,
-            // don't flag it (it's implicitly forwarded)
-            if fwd_checker.has_forwarding && !reads.contains(name.as_str()) {
+        // Collect local variable writes in the block body
+        if let Some(body) = block_node.body() {
+            let mut write_collector = WriteCollector { writes: Vec::new() };
+            write_collector.visit(&body);
+            underscore_vars.extend(write_collector.writes);
+        }
+
+        if underscore_vars.is_empty() {
+            // Still need to visit body for nested scopes
+            if let Some(body) = block_node.body() {
+                self.visit(&body);
+            }
+            return;
+        }
+
+        // Collect reads in body, respecting nested block scoping
+        let mut reads = HashSet::new();
+        if let Some(body) = block_node.body() {
+            collect_reads_scope_aware(&body, &mut reads);
+        }
+
+        // Filter out allowed keyword block arguments
+        if self.allow_keyword_block_args {
+            underscore_vars.retain(|v| !v.is_keyword_block_arg);
+        }
+
+        self.emit_diagnostics(&underscore_vars, &reads, false);
+
+        // Visit body for nested scopes
+        if let Some(body) = block_node.body() {
+            self.visit(&body);
+        }
+    }
+
+    fn check_lambda(&mut self, lambda_node: &ruby_prism::LambdaNode<'_>) {
+        let mut underscore_vars: Vec<UnderscoreVar> = Vec::new();
+
+        if let Some(params) = lambda_node.parameters() {
+            if let Some(params_node) = params.as_block_parameters_node() {
+                if let Some(inner_params) = params_node.parameters() {
+                    collect_underscore_params(&inner_params, &mut underscore_vars, true);
+                }
+            }
+        }
+
+        // Collect local variable writes in the lambda body
+        if let Some(body) = lambda_node.body() {
+            let mut write_collector = WriteCollector { writes: Vec::new() };
+            write_collector.visit(&body);
+            underscore_vars.extend(write_collector.writes);
+        }
+
+        if underscore_vars.is_empty() {
+            if let Some(body) = lambda_node.body() {
+                self.visit(&body);
+            }
+            return;
+        }
+
+        // Collect reads in body
+        let mut reads = HashSet::new();
+        if let Some(body) = lambda_node.body() {
+            collect_reads_scope_aware(&body, &mut reads);
+        }
+
+        // Filter out allowed keyword block arguments (lambdas are block-like)
+        if self.allow_keyword_block_args {
+            underscore_vars.retain(|v| !v.is_keyword_block_arg);
+        }
+
+        self.emit_diagnostics(&underscore_vars, &reads, false);
+
+        // Visit body for nested scopes
+        if let Some(body) = lambda_node.body() {
+            self.visit(&body);
+        }
+    }
+
+    /// Check top-level scope: variables outside any def/block/lambda.
+    fn check_scope_body(
+        &mut self,
+        node: &ruby_prism::Node<'_>,
+        _params: Option<&ruby_prism::ParametersNode<'_>>,
+        _is_block: bool,
+    ) {
+        // Collect top-level local variable writes
+        let mut underscore_vars: Vec<UnderscoreVar> = Vec::new();
+        let mut write_collector = WriteCollector { writes: Vec::new() };
+        write_collector.visit(node);
+        underscore_vars.extend(write_collector.writes);
+
+        if underscore_vars.is_empty() {
+            return;
+        }
+
+        // Collect reads at top level, respecting scoping
+        let mut reads = HashSet::new();
+        collect_reads_scope_aware(node, &mut reads);
+
+        self.emit_diagnostics(&underscore_vars, &reads, false);
+    }
+
+    fn emit_diagnostics(
+        &mut self,
+        underscore_vars: &[UnderscoreVar],
+        reads: &HashSet<String>,
+        has_forwarding: bool,
+    ) {
+        // Deduplicate: only flag the first occurrence of each variable name
+        let mut seen_names: HashSet<&str> = HashSet::new();
+
+        for var in underscore_vars {
+            if !seen_names.insert(&var.name) {
                 continue;
             }
 
-            if reads.contains(name.as_str()) {
-                let (line, col) = self.source.offset_to_line_col(*offset);
+            // If there's bare super/binding and the var is NOT explicitly read,
+            // don't flag it (it's implicitly forwarded)
+            if has_forwarding && !reads.contains(var.name.as_str()) {
+                continue;
+            }
+
+            if reads.contains(var.name.as_str()) {
+                let (line, col) = self.source.offset_to_line_col(var.offset);
                 self.diagnostics.push(self.cop.diagnostic(
                     self.source,
                     line,
@@ -109,15 +270,26 @@ impl DefFinder<'_, '_> {
     }
 }
 
+struct UnderscoreVar {
+    name: String,
+    offset: usize,
+    is_keyword_block_arg: bool,
+}
+
 fn collect_underscore_params(
     params: &ruby_prism::ParametersNode<'_>,
-    out: &mut Vec<(String, usize)>,
+    out: &mut Vec<UnderscoreVar>,
+    is_block: bool,
 ) {
     for param in params.requireds().iter() {
         if let Some(req) = param.as_required_parameter_node() {
             let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
             if name.starts_with('_') && name != "_" {
-                out.push((name.to_string(), req.location().start_offset()));
+                out.push(UnderscoreVar {
+                    name: name.to_string(),
+                    offset: req.location().start_offset(),
+                    is_keyword_block_arg: false,
+                });
             }
         }
     }
@@ -126,7 +298,11 @@ fn collect_underscore_params(
         if let Some(opt) = param.as_optional_parameter_node() {
             let name = std::str::from_utf8(opt.name().as_slice()).unwrap_or("");
             if name.starts_with('_') && name != "_" {
-                out.push((name.to_string(), opt.name_loc().start_offset()));
+                out.push(UnderscoreVar {
+                    name: name.to_string(),
+                    offset: opt.name_loc().start_offset(),
+                    is_keyword_block_arg: false,
+                });
             }
         }
     }
@@ -137,9 +313,40 @@ fn collect_underscore_params(
                 let name = std::str::from_utf8(name_const.as_slice()).unwrap_or("");
                 if name.starts_with('_') && name != "_" {
                     if let Some(name_loc) = rest_param.name_loc() {
-                        out.push((name.to_string(), name_loc.start_offset()));
+                        out.push(UnderscoreVar {
+                            name: name.to_string(),
+                            offset: name_loc.start_offset(),
+                            is_keyword_block_arg: false,
+                        });
                     }
                 }
+            }
+        }
+    }
+
+    // Keyword parameters (required and optional)
+    for param in params.keywords().iter() {
+        if let Some(req_kw) = param.as_required_keyword_parameter_node() {
+            let name = std::str::from_utf8(req_kw.name().as_slice()).unwrap_or("");
+            // Keyword param names include trailing colon in some representations
+            let clean_name = name.trim_end_matches(':');
+            if clean_name.starts_with('_') && clean_name != "_" {
+                out.push(UnderscoreVar {
+                    name: clean_name.to_string(),
+                    offset: req_kw.name_loc().start_offset(),
+                    is_keyword_block_arg: is_block,
+                });
+            }
+        }
+        if let Some(opt_kw) = param.as_optional_keyword_parameter_node() {
+            let name = std::str::from_utf8(opt_kw.name().as_slice()).unwrap_or("");
+            let clean_name = name.trim_end_matches(':');
+            if clean_name.starts_with('_') && clean_name != "_" {
+                out.push(UnderscoreVar {
+                    name: clean_name.to_string(),
+                    offset: opt_kw.name_loc().start_offset(),
+                    is_keyword_block_arg: is_block,
+                });
             }
         }
     }
@@ -147,44 +354,161 @@ fn collect_underscore_params(
 
 /// Collects underscore-prefixed local variable writes.
 struct WriteCollector {
-    writes: Vec<(String, usize)>,
+    writes: Vec<UnderscoreVar>,
 }
 
 impl<'pr> Visit<'pr> for WriteCollector {
     fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
         let name = std::str::from_utf8(node.name().as_slice()).unwrap_or("");
         if name.starts_with('_') && name != "_" {
-            self.writes
-                .push((name.to_string(), node.name_loc().start_offset()));
+            self.writes.push(UnderscoreVar {
+                name: name.to_string(),
+                offset: node.name_loc().start_offset(),
+                is_keyword_block_arg: false,
+            });
         }
-        // Visit the value expression
+        // Visit the value expression (but not for collecting writes in nested scopes)
         self.visit(&node.value());
     }
 
-    // Don't cross into nested defs/classes/modules
+    // Don't cross into nested defs/classes/modules/blocks/lambdas
     fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
     fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
     fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+    fn visit_block_node(&mut self, _node: &ruby_prism::BlockNode<'pr>) {}
+    fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
 }
 
-/// Collects all local variable reads.
-struct ReadCollector<'a> {
+/// Collects local variable reads while respecting block/lambda parameter scoping.
+///
+/// When a block or lambda declares a parameter with the same name as an outer
+/// variable, reads of that name inside the block refer to the block parameter,
+/// not the outer variable. This collector tracks such shadowed names and excludes
+/// them from the outer scope's read set.
+fn collect_reads_scope_aware(node: &ruby_prism::Node<'_>, reads: &mut HashSet<String>) {
+    let mut collector = ScopeAwareReadCollector {
+        reads,
+        shadowed: HashSet::new(),
+    };
+    collector.visit(node);
+}
+
+struct ScopeAwareReadCollector<'a> {
     reads: &'a mut HashSet<String>,
+    shadowed: HashSet<String>,
 }
 
-impl<'pr> Visit<'pr> for ReadCollector<'_> {
+impl<'pr> Visit<'pr> for ScopeAwareReadCollector<'_> {
     fn visit_local_variable_read_node(&mut self, node: &ruby_prism::LocalVariableReadNode<'pr>) {
         let name = std::str::from_utf8(node.name().as_slice()).unwrap_or("");
-        self.reads.insert(name.to_string());
+        // Only record reads for names not shadowed by an inner block param
+        if !self.shadowed.contains(name) {
+            self.reads.insert(name.to_string());
+        }
     }
 
-    // Don't cross into nested defs/classes/modules
+    fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
+        // Collect param names that shadow outer variables
+        let block_params = collect_block_param_names(node);
+
+        // Save old shadowed set, add block params
+        let old_shadowed = self.shadowed.clone();
+        self.shadowed.extend(block_params);
+
+        // Visit the block body with updated shadow set
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+
+        // Restore old shadowed set
+        self.shadowed = old_shadowed;
+    }
+
+    fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
+        let lambda_params = collect_lambda_param_names(node);
+
+        let old_shadowed = self.shadowed.clone();
+        self.shadowed.extend(lambda_params);
+
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+
+        self.shadowed = old_shadowed;
+    }
+
+    // Don't cross into nested defs/classes/modules — they have their own scope
     fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
     fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
     fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+}
+
+fn collect_block_param_names(block_node: &ruby_prism::BlockNode<'_>) -> HashSet<String> {
+    let mut names = HashSet::new();
+    if let Some(params) = block_node.parameters() {
+        if let Some(params_node) = params.as_block_parameters_node() {
+            if let Some(inner) = params_node.parameters() {
+                collect_all_param_names(&inner, &mut names);
+            }
+        }
+    }
+    names
+}
+
+fn collect_lambda_param_names(lambda_node: &ruby_prism::LambdaNode<'_>) -> HashSet<String> {
+    let mut names = HashSet::new();
+    if let Some(params) = lambda_node.parameters() {
+        if let Some(params_node) = params.as_block_parameters_node() {
+            if let Some(inner) = params_node.parameters() {
+                collect_all_param_names(&inner, &mut names);
+            }
+        }
+    }
+    names
+}
+
+fn collect_all_param_names(params: &ruby_prism::ParametersNode<'_>, names: &mut HashSet<String>) {
+    for param in params.requireds().iter() {
+        if let Some(req) = param.as_required_parameter_node() {
+            let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
+            names.insert(name.to_string());
+        }
+    }
+    for param in params.optionals().iter() {
+        if let Some(opt) = param.as_optional_parameter_node() {
+            let name = std::str::from_utf8(opt.name().as_slice()).unwrap_or("");
+            names.insert(name.to_string());
+        }
+    }
+    if let Some(rest) = params.rest() {
+        if let Some(rest_param) = rest.as_rest_parameter_node() {
+            if let Some(name_const) = rest_param.name() {
+                let name = std::str::from_utf8(name_const.as_slice()).unwrap_or("");
+                names.insert(name.to_string());
+            }
+        }
+    }
+    for param in params.keywords().iter() {
+        if let Some(req_kw) = param.as_required_keyword_parameter_node() {
+            let name = std::str::from_utf8(req_kw.name().as_slice()).unwrap_or("");
+            names.insert(name.trim_end_matches(':').to_string());
+        }
+        if let Some(opt_kw) = param.as_optional_keyword_parameter_node() {
+            let name = std::str::from_utf8(opt_kw.name().as_slice()).unwrap_or("");
+            names.insert(name.trim_end_matches(':').to_string());
+        }
+    }
 }
 
 /// Checks for bare `super` (ForwardingSuperNode) or `binding` calls without args.
+fn check_forwarding(node: &ruby_prism::Node<'_>) -> bool {
+    let mut checker = ForwardingChecker {
+        has_forwarding: false,
+    };
+    checker.visit(node);
+    checker.has_forwarding
+}
+
 struct ForwardingChecker {
     has_forwarding: bool,
 }
