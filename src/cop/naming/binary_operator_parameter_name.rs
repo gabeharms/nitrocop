@@ -3,6 +3,17 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Naming/BinaryOperatorParameterName
+///
+/// Investigation (2026-03-08): 21 FN, all in SciRuby/daru's offsets.rb which
+/// uses `# rubocop:disable Style/OpMethod` (the pre-rename name). The cop
+/// detection logic was correct. Root cause: nitrocop's disable directive
+/// system was resolving renamed cop names via REVERSE_RENAMED_COPS, treating
+/// `Style/OpMethod` as equivalent to `Naming/BinaryOperatorParameterName`.
+/// RuboCop does NOT do this — obsoletion.yml renames only apply to config
+/// keys, not inline disable comments. Fixed by removing the
+/// REVERSE_RENAMED_COPS lookup from DisabledRanges::is_disabled() and
+/// check_and_mark_used().
 pub struct BinaryOperatorParameterName;
 
 const BINARY_OPERATORS: &[&[u8]] = &[
