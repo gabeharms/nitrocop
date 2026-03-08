@@ -18,7 +18,18 @@ pub struct MethodParameterName;
 /// offense counts (0 for both tools). check-cop.py confirms: Excess=0 after
 /// adjusting for file-drop noise of 1,712. No implementation fix needed.
 ///
-/// The 388 FN are genuine missed detections (not investigated further in this batch).
+/// ## FN=358 fix (2026-03-08)
+///
+/// Root causes of false negatives:
+/// 1. Missing uppercase/camelCase check — RuboCop's UncommunicativeName mixin
+///    flags any param containing uppercase chars. Nitrocop had zero implementation.
+/// 2. `_`-prefixed params skipped entirely — RuboCop strips leading underscores
+///    and checks the basename. Nitrocop returned early for all `_`-prefixed names.
+/// 3. `ForbiddenNames` config read but unused (underscore-prefixed variable).
+/// 4. `AllowNamesEndingInNumbers` config read but unused.
+///
+/// Fix: strip leading underscores to get basename, add uppercase check, wire up
+/// ForbiddenNames and AllowNamesEndingInNumbers.
 const DEFAULT_ALLOWED: &[&str] = &[
     "as", "at", "by", "cc", "db", "id", "if", "in", "io", "ip", "of", "on", "os", "pp", "to",
 ];
@@ -48,9 +59,9 @@ impl Cop for MethodParameterName {
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let min_length = config.get_usize("MinNameLength", 3);
-        let _allow_numbers = config.get_bool("AllowNamesEndingInNumbers", true);
+        let allow_numbers = config.get_bool("AllowNamesEndingInNumbers", true);
         let allowed_names = config.get_string_array("AllowedNames");
-        let _forbidden_names = config.get_string_array("ForbiddenNames");
+        let forbidden_names = config.get_string_array("ForbiddenNames");
 
         let def_node = match node.as_def_node() {
             Some(d) => d,
@@ -64,6 +75,7 @@ impl Cop for MethodParameterName {
 
         let allowed: Vec<String> = allowed_names
             .unwrap_or_else(|| DEFAULT_ALLOWED.iter().map(|s| s.to_string()).collect());
+        let forbidden: Vec<String> = forbidden_names.unwrap_or_default();
 
         // Check required parameters
         for param in params.requireds().iter() {
@@ -76,6 +88,8 @@ impl Cop for MethodParameterName {
                     &req.location(),
                     min_length,
                     &allowed,
+                    &forbidden,
+                    allow_numbers,
                     diagnostics,
                 );
             }
@@ -92,6 +106,8 @@ impl Cop for MethodParameterName {
                     &opt.name_loc(),
                     min_length,
                     &allowed,
+                    &forbidden,
+                    allow_numbers,
                     diagnostics,
                 );
             }
@@ -114,6 +130,8 @@ impl Cop for MethodParameterName {
                     &kw.name_loc(),
                     min_length,
                     &allowed,
+                    &forbidden,
+                    allow_numbers,
                     diagnostics,
                 );
             }
@@ -131,6 +149,8 @@ impl Cop for MethodParameterName {
                     &kw.name_loc(),
                     min_length,
                     &allowed,
+                    &forbidden,
+                    allow_numbers,
                     diagnostics,
                 );
             }
@@ -148,6 +168,8 @@ impl Cop for MethodParameterName {
                         &rest_param.location(),
                         min_length,
                         &allowed,
+                        &forbidden,
+                        allow_numbers,
                         diagnostics,
                     );
                 }
@@ -166,6 +188,8 @@ impl Cop for MethodParameterName {
                         &kw_rest_param.location(),
                         min_length,
                         &allowed,
+                        &forbidden,
+                        allow_numbers,
                         diagnostics,
                     );
                 }
@@ -183,6 +207,8 @@ impl Cop for MethodParameterName {
                     &block.location(),
                     min_length,
                     &allowed,
+                    &forbidden,
+                    allow_numbers,
                     diagnostics,
                 );
             }
@@ -190,6 +216,7 @@ impl Cop for MethodParameterName {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_param(
     cop: &MethodParameterName,
     source: &SourceFile,
@@ -197,27 +224,64 @@ fn check_param(
     loc: &ruby_prism::Location<'_>,
     min_length: usize,
     allowed: &[String],
+    forbidden: &[String],
+    allow_numbers: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let name_str = std::str::from_utf8(name).unwrap_or("");
 
-    // Skip _-prefixed names (unused params)
-    if name_str.starts_with('_') {
+    // Strip leading underscores to get basename (RuboCop checks the basename).
+    // Skip if the entire name is just underscores (e.g. `_`).
+    let basename = name_str.trim_start_matches('_');
+    if basename.is_empty() {
         return;
     }
 
-    // Check allowed names
-    if allowed.iter().any(|a| a == name_str) {
+    // Check allowed names (against basename, matching RuboCop)
+    if allowed.iter().any(|a| a == basename) {
         return;
     }
 
-    if name.len() < min_length {
-        let (line, column) = source.offset_to_line_col(loc.start_offset());
+    let (line, column) = source.offset_to_line_col(loc.start_offset());
+
+    // RuboCop emits multiple offenses per param: forbidden, case, length, numbers.
+    // Check forbidden names
+    if forbidden.iter().any(|f| f == basename) {
+        diagnostics.push(cop.diagnostic(
+            source,
+            line,
+            column,
+            format!("Do not use `{basename}` as a name for a method parameter."),
+        ));
+    }
+
+    // Check uppercase characters
+    if basename.chars().any(|c| c.is_uppercase()) {
+        diagnostics.push(cop.diagnostic(
+            source,
+            line,
+            column,
+            "Only use lowercase characters for method parameter.".to_string(),
+        ));
+    }
+
+    // Check minimum length (against full name including underscores, matching RuboCop)
+    if basename.len() < min_length {
         diagnostics.push(cop.diagnostic(
             source,
             line,
             column,
             format!("Method parameter must be at least {min_length} characters long."),
+        ));
+    }
+
+    // Check names ending in numbers
+    if !allow_numbers && basename.ends_with(|c: char| c.is_ascii_digit()) {
+        diagnostics.push(cop.diagnostic(
+            source,
+            line,
+            column,
+            "Do not end method parameter with a number.".to_string(),
         ));
     }
 }

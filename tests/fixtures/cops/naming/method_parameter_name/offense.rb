@@ -17,3 +17,19 @@ end
 def with_block(&cb)
                ^^^ Naming/MethodParameterName: Method parameter must be at least 3 characters long.
 end
+def camel(fooBar)
+          ^^^^^^ Naming/MethodParameterName: Only use lowercase characters for method parameter.
+end
+def camel_kw(number_One:)
+             ^^^^^^^^^^ Naming/MethodParameterName: Only use lowercase characters for method parameter.
+end
+def camel_opt(varTwo = 1)
+              ^^^^^^ Naming/MethodParameterName: Only use lowercase characters for method parameter.
+end
+def underscore_short(_a, _b)
+                     ^^ Naming/MethodParameterName: Method parameter must be at least 3 characters long.
+                         ^^ Naming/MethodParameterName: Method parameter must be at least 3 characters long.
+end
+def underscore_upper(_fooBar)
+                     ^^^^^^^ Naming/MethodParameterName: Only use lowercase characters for method parameter.
+end

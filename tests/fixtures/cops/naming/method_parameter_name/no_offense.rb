@@ -14,3 +14,7 @@ def with_kwrest(**kwargs)
 end
 def with_block(&block)
 end
+def underscore_valid(_name, _count)
+end
+def just_underscore(_)
+end
