@@ -164,6 +164,20 @@ impl MemoizedInstanceVariableName {
             return;
         }
 
+        // For single-statement block bodies, follow the "last child" chain
+        if body_nodes.len() == 1 {
+            if let Some(or_write) = get_last_child_or_write(last) {
+                diagnostics.extend(self.check_or_write(
+                    source,
+                    or_write,
+                    base_name,
+                    method_name_str,
+                    enforced_style,
+                ));
+                return;
+            }
+        }
+
         // Check defined? memoization pattern
         if body_nodes.len() >= 2 {
             if let Some(ivar_base) = extract_defined_memoized_ivar(&body_nodes) {
@@ -282,6 +296,132 @@ impl MemoizedInstanceVariableName {
 
         diags
     }
+}
+
+/// Get the "last child" of a node in the Parser AST sense: one level of
+/// `node.children.last`. This replicates how RuboCop's
+/// `body.children.last == node` reaches through different node types.
+///
+/// In Parser AST, `children.last` on different node types:
+/// - `if` → else branch (last of [cond, then, else])
+/// - `case` → else clause (last of [expr, when..., else])
+/// - `ensure` → ensure body (last of [body, ensure_body])
+/// - `block` → block body (last of [send, args, body])
+///
+/// Returns the "last child" Node, which may itself need StatementsNode
+/// unwrapping to reach the final value.
+fn get_last_child_or_write<'pr>(
+    node: &ruby_prism::Node<'pr>,
+) -> Option<ruby_prism::InstanceVariableOrWriteNode<'pr>> {
+    // Direct match
+    if let Some(or_write) = node.as_instance_variable_or_write_node() {
+        return Some(or_write);
+    }
+
+    // StatementsNode → last statement (Prism wrapper, not a Parser operation)
+    if let Some(stmts) = node.as_statements_node() {
+        let body: Vec<_> = stmts.body().iter().collect();
+        return body.last().and_then(|n| get_last_child_or_write(n));
+    }
+
+    // Now apply ONE level of Parser's children.last:
+
+    // IfNode → subsequent (else branch only, NOT elsif)
+    // Parser: `if` children = [cond, then, else], last = else
+    // For `if/else`, children.last is the else body.
+    // For `if/elsif/else`, children.last is the elsif node (another IfNode).
+    // RuboCop only checks one level: body.children.last == node.
+    // So ||= inside elsif/else is NOT caught (2+ levels deep).
+    if let Some(if_node) = node.as_if_node() {
+        if let Some(subsequent) = if_node.subsequent() {
+            if let Some(else_node) = subsequent.as_else_node() {
+                return unwrap_stmts_to_or_write(else_node.statements());
+            }
+            // elsif case: don't recurse — RuboCop doesn't catch ||= through elsif chains
+        }
+        return None;
+    }
+
+    // ElseNode → statements (reached when body itself is an ElseNode, unlikely but safe)
+    if let Some(else_node) = node.as_else_node() {
+        return unwrap_stmts_to_or_write(else_node.statements());
+    }
+
+    // UnlessNode → statements (the unless body)
+    // Parser: `unless cond body` = `if cond nil body`, last = body
+    if let Some(unless_node) = node.as_unless_node() {
+        return unwrap_stmts_to_or_write(unless_node.statements());
+    }
+
+    // CaseNode → else_clause
+    // Parser: `case` children = [expr, when..., else], last = else
+    if let Some(case_node) = node.as_case_node() {
+        if let Some(else_clause) = case_node.else_clause() {
+            return unwrap_stmts_to_or_write(else_clause.statements());
+        }
+        return None;
+    }
+
+    // BeginNode (rescue/ensure) → ensure_clause
+    // Parser: `(ensure body ensure_body)` children.last = ensure_body
+    if let Some(begin_node) = node.as_begin_node() {
+        if let Some(ensure_clause) = begin_node.ensure_clause() {
+            return unwrap_stmts_to_or_write(ensure_clause.statements());
+        }
+        return None;
+    }
+
+    // CallNode with block → block body
+    // Parser: `block` children = [send, args, body], last = body
+    if let Some(call_node) = node.as_call_node() {
+        if let Some(block) = call_node.block() {
+            if let Some(block_node) = block.as_block_node() {
+                if let Some(body) = block_node.body() {
+                    return unwrap_to_or_write(&body);
+                }
+            }
+        }
+        return None;
+    }
+
+    // ParenthesesNode → body
+    if let Some(parens) = node.as_parentheses_node() {
+        if let Some(body) = parens.body() {
+            return unwrap_to_or_write(&body);
+        }
+        return None;
+    }
+
+    None
+}
+
+/// Unwrap a Node that may be a StatementsNode or a direct ||= node.
+/// This handles the Prism→Parser mapping where Parser doesn't wrap
+/// single values in a StatementsNode.
+fn unwrap_to_or_write<'pr>(
+    node: &ruby_prism::Node<'pr>,
+) -> Option<ruby_prism::InstanceVariableOrWriteNode<'pr>> {
+    if let Some(or_write) = node.as_instance_variable_or_write_node() {
+        return Some(or_write);
+    }
+    if let Some(stmts) = node.as_statements_node() {
+        let body: Vec<_> = stmts.body().iter().collect();
+        if let Some(last) = body.last() {
+            return last.as_instance_variable_or_write_node();
+        }
+    }
+    None
+}
+
+/// Helper: extract ||= from an optional StatementsNode.
+/// Checks if the last (or only) statement is an ||= node.
+fn unwrap_stmts_to_or_write<'pr>(
+    stmts: Option<ruby_prism::StatementsNode<'pr>>,
+) -> Option<ruby_prism::InstanceVariableOrWriteNode<'pr>> {
+    let stmts = stmts?;
+    let body: Vec<_> = stmts.body().iter().collect();
+    let last = body.last()?;
+    last.as_instance_variable_or_write_node()
 }
 
 /// Extract the ivar name from a `defined?` memoization pattern.
@@ -420,8 +560,11 @@ impl Cop for MemoizedInstanceVariableName {
             None => return,
         };
 
-        // Look for @var ||= pattern — only when it's the entire body or the last statement.
-        // This is a memoization pattern; a `||=` in the middle of a method is just assignment.
+        // Look for @var ||= pattern — only when it's the entire body or the
+        // "last child" in the RuboCop sense. RuboCop checks body.children.last == node,
+        // which traverses one level into any node type (if → else, case → else,
+        // ensure → ensure body, block → body, etc). We replicate this with
+        // get_last_child_or_write which recursively follows the chain.
 
         // Body could be a bare InstanceVariableOrWriteNode (single statement)
         if let Some(or_write) = body.as_instance_variable_or_write_node() {
@@ -432,6 +575,21 @@ impl Cop for MemoizedInstanceVariableName {
                 method_name_str,
                 enforced_style,
             ));
+            return;
+        }
+
+        // Body could be a BeginNode (rescue/ensure) — check via recursive last child
+        if body.as_begin_node().is_some() {
+            if let Some(or_write) = get_last_child_or_write(&body) {
+                diagnostics.extend(self.check_or_write(
+                    source,
+                    or_write,
+                    base_name,
+                    method_name_str,
+                    enforced_style,
+                ));
+            }
+            return;
         }
 
         let stmts = match body.as_statements_node() {
@@ -444,7 +602,7 @@ impl Cop for MemoizedInstanceVariableName {
             return;
         }
 
-        // Only check the last statement — vendor requires ||= be the sole or last statement
+        // Check the last statement directly for ||=
         let last = &body_nodes[body_nodes.len() - 1];
         if let Some(or_write) = last.as_instance_variable_or_write_node() {
             diagnostics.extend(self.check_or_write(
@@ -455,6 +613,27 @@ impl Cop for MemoizedInstanceVariableName {
                 enforced_style,
             ));
             return;
+        }
+
+        // For SINGLE-STATEMENT bodies: follow the "last child" chain through
+        // the statement to find ||= inside if/else, unless, case, block, etc.
+        //
+        // In Parser AST, single-statement bodies have no `begin` wrapper,
+        // so `body.children.last` digs into the statement's children.
+        // For multi-statement bodies, `body.children.last` just returns the
+        // last statement — no further traversal. We only apply the
+        // "children.last" traversal for single-statement bodies.
+        if body_nodes.len() == 1 {
+            if let Some(or_write) = get_last_child_or_write(last) {
+                diagnostics.extend(self.check_or_write(
+                    source,
+                    or_write,
+                    base_name,
+                    method_name_str,
+                    enforced_style,
+                ));
+                return;
+            }
         }
 
         // Also check the `defined?` memoization pattern:

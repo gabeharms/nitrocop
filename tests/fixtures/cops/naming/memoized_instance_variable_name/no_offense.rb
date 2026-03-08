@@ -76,3 +76,85 @@ end
 def self.records
   @records ||= fetch_records
 end
+
+# Conditional memoization: ||= in else branch with matching name
+def url_helpers
+  if supports_path
+    generate_url_helpers(true)
+  else
+    @url_helpers ||= generate_url_helpers(false)
+  end
+end
+
+# unless modifier with matching name
+def list_users
+  @list_users ||= @user_provider.list_users unless @user_provider.nil?
+end
+
+# case/when/else with matching name
+def size
+  case @value
+  when String
+    @value.bytesize
+  else
+    @size ||= Marshal.dump(@value).bytesize
+  end
+end
+
+# block wrapping with matching name
+def ensure_subscribed
+  @mutex.synchronize do
+    @ensure_subscribed ||= do_subscribe
+  end
+end
+
+# ensure block with matching name
+def infer_decoder
+  compute_decoder
+rescue => e
+  warn(e)
+ensure
+  @infer_decoder ||= :itself.to_proc
+end
+
+# ternary with matching name
+def encode_language(value = nil)
+  value ? @encode_language = value : @encode_language ||= 'en'
+end
+
+# NOT memoization: ||= is not the last statement in the else branch
+def get_config
+  if default?
+    use_defaults
+  else
+    @cached ||= compute
+    finalize(@cached)
+  end
+end
+
+# NOT memoization: ||= inside block body with other statements after it
+def wrapped
+  mutex.synchronize do
+    @cached ||= compute
+    process(@cached)
+  end
+end
+
+# NOT memoization: ||= inside elsif/else chain (2+ levels deep)
+def nested
+  if a
+    x
+  elsif b
+    y
+  else
+    @cached ||= compute
+  end
+end
+
+# NOT memoization: ||= inside multi-statement block (last statement of multi-stmt body)
+def parsed_data
+  validate_input
+  handle_errors do
+    @data ||= load_data
+  end
+end
