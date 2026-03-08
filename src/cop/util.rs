@@ -1088,6 +1088,7 @@ pub const RSPEC_EXAMPLES: &[&str] = &[
     "fspecify",
     "fexample",
     "fscenario",
+    "focus",
     "pending",
     "skip",
 ];

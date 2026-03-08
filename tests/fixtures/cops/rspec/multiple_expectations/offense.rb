@@ -55,6 +55,14 @@ RSpec.describe Foo do
   end
 end
 
+# focus is a focused example alias (like fit/fspecify)
+  focus 'uses expect twice with focus' do
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/MultipleExpectations: Example has too many expectations [2/1].
+    expect(foo).to eq(bar)
+    expect(baz).to eq(bar)
+  end
+end
+
 # aggregate_failures: false overrides inherited aggregate_failures
 describe Foo, aggregate_failures: true do
   it 'overrides with false', aggregate_failures: false do

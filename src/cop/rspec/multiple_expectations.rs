@@ -12,6 +12,13 @@ use crate::parse::source::SourceFile;
 ///   `is_expected`. RuboCop's `Expectations.all` also includes `should`, `should_not`,
 ///   `should_receive`, `should_not_receive`, and `are_expected` (all without receiver,
 ///   i.e. implicit subject style). Added all missing expectation methods.
+/// - **27 FPs (zammad, openproject)**: When `RSpec.shared_examples` or `RSpec.shared_context`
+///   had `:aggregate_failures` metadata, nitrocop failed to propagate it to nested examples.
+///   Root cause: the receiver check for example groups only recognized `RSpec.describe`, not
+///   other group methods like `shared_examples`, `shared_context`, `context`, `feature`, etc.
+///   Fixed by accepting all `is_rspec_example_group()` methods with `RSpec.` prefix.
+/// - **1 FN (pry)**: `focus` (a focused example alias) was missing from `RSPEC_EXAMPLES`.
+///   Added to the shared constant in `util.rs`.
 ///
 /// ## Expectation methods matched (from rubocop-rspec config/default.yml):
 /// `are_expected`, `expect`, `expect_any_instance_of`, `is_expected`, `should`,
@@ -106,10 +113,12 @@ impl<'a, 'pr> Visit<'pr> for MultipleExpectationsVisitor<'a> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         let method_name = node.name().as_slice();
 
-        // Check if this is an example group (describe/context) with aggregate_failures
+        // Check if this is an example group (describe/context/shared_examples etc.)
+        // with aggregate_failures. When called with RSpec. prefix, accept all example
+        // group methods (not just describe) to handle RSpec.shared_examples, RSpec.context, etc.
         let is_group = if let Some(recv) = node.receiver() {
             crate::cop::util::constant_name(&recv).is_some_and(|n| n == b"RSpec")
-                && method_name == b"describe"
+                && is_rspec_example_group(method_name)
         } else {
             is_rspec_example_group(method_name)
         };
