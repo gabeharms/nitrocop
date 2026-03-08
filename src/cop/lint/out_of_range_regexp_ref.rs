@@ -4,6 +4,29 @@ use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// Lint/OutOfRangeRegexpRef — detects `$N` back-references that exceed
+/// the number of capture groups in the most recently seen regexp.
+///
+/// ## Investigation (2026-03-08)
+///
+/// **Root cause of 140 FPs:** Two issues in capture-count state management:
+///
+/// 1. **case/when with constant matchers:** When a `when` clause uses a constant
+///    (e.g., `when SOME_PATTERN`) instead of a literal regexp, RuboCop's `on_when`
+///    returns `@valid_ref = nil` (since `[].max` returns nil in Ruby). Our code was
+///    not updating `current_capture_count` at all, so the capture count from a
+///    previous `when` clause with a literal regexp leaked into subsequent non-literal
+///    when clauses. This was the primary FP source (e.g., xcpretty parser.rb with 56 FPs
+///    from a large case/when matching against constant patterns).
+///
+/// 2. **None vs Some(0) initial state:** RuboCop initializes `@valid_ref = 0` (any
+///    `$N > 0` is an offense) but sets `@valid_ref = nil` after non-literal regexp
+///    methods (no offense). Our code used `None` for both states, which conflated
+///    "no regexp seen yet" (should flag) with "non-literal regexp seen" (should not flag).
+///
+/// **Fix:** Changed initial state to `Some(0)`, changed `None` to mean "unknown/don't flag",
+/// replaced all `Some(usize::MAX)` with `None` for non-literal regexp cases, and added
+/// `None` reset in `visit_case_node` for when clauses without literal regexp conditions.
 pub struct OutOfRangeRegexpRef;
 
 impl Cop for OutOfRangeRegexpRef {
@@ -28,7 +51,9 @@ impl Cop for OutOfRangeRegexpRef {
             cop: self,
             source,
             diagnostics: Vec::new(),
-            current_capture_count: None,
+            // Start at Some(0) to match RuboCop's @valid_ref = 0 in on_new_investigation.
+            // Any $N > 0 before the first regexp match is an offense.
+            current_capture_count: Some(0),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -40,7 +65,9 @@ struct RegexpRefVisitor<'a, 'src> {
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
     /// Number of capture groups in the most recent regexp match.
-    /// None means no regexp match has been seen yet.
+    /// Some(n) means n capture groups were detected (0 = no groups).
+    /// None means a non-literal regexp was used and captures are unknown — do not flag $N.
+    /// Starts at Some(0) to match RuboCop's @valid_ref = 0 initialization.
     current_capture_count: Option<usize>,
 }
 
@@ -70,7 +97,7 @@ impl<'pr> Visit<'pr> for RegexpRefVisitor<'_, '_> {
             // If neither side is a recognizable literal regexp (e.g., one is a constant
             // reference), mark capture count as unknown so we don't false-positive on $N.
             if !found_captures {
-                self.current_capture_count = Some(usize::MAX);
+                self.current_capture_count = None;
             }
             ruby_prism::visit_call_node(self, node);
             return;
@@ -87,7 +114,7 @@ impl<'pr> Visit<'pr> for RegexpRefVisitor<'_, '_> {
             }
             if !found {
                 // Receiver may be a constant regexp reference — mark as unknown
-                self.current_capture_count = Some(usize::MAX);
+                self.current_capture_count = None;
             }
             ruby_prism::visit_call_node(self, node);
             return;
@@ -115,7 +142,7 @@ impl<'pr> Visit<'pr> for RegexpRefVisitor<'_, '_> {
             }
             if !found && node.arguments().is_some() {
                 // Regexp is a constant or dynamic reference — mark as unknown
-                self.current_capture_count = Some(usize::MAX);
+                self.current_capture_count = None;
             }
             ruby_prism::visit_call_node(self, node);
             return;
@@ -168,7 +195,7 @@ impl<'pr> Visit<'pr> for RegexpRefVisitor<'_, '_> {
                     } else {
                         // Non-literal regexp argument (variable, constant, etc.) —
                         // captures can't be determined statically, mark as unknown
-                        self.current_capture_count = Some(usize::MAX);
+                        self.current_capture_count = None;
                     }
                 }
             }
@@ -194,23 +221,27 @@ impl<'pr> Visit<'pr> for RegexpRefVisitor<'_, '_> {
     }
 
     fn visit_case_node(&mut self, node: &ruby_prism::CaseNode<'pr>) {
-        // For case/when, each when clause with regexp conditions sets capture count
+        // For case/when, each when clause with regexp conditions sets capture count.
+        // Matches RuboCop's on_when behavior: literal regexp conditions set @valid_ref
+        // to max captures; non-literal conditions (constants, variables) set @valid_ref
+        // to nil (= None here), meaning $N references won't be flagged.
         let saved = self.current_capture_count;
         for condition in node.conditions().iter() {
             if let Some(when_node) = condition.as_when_node() {
+                let mut has_literal_regexp = false;
                 let mut max_captures = 0;
                 for cond in when_node.conditions().iter() {
                     if let Some(count) = count_captures_in_node(&cond) {
                         max_captures = max_captures.max(count);
+                        has_literal_regexp = true;
                     }
                 }
-                if max_captures > 0
-                    || when_node
-                        .conditions()
-                        .iter()
-                        .any(|c| count_captures_in_node(&c).is_some())
-                {
+                if has_literal_regexp {
                     self.current_capture_count = Some(max_captures);
+                } else {
+                    // No literal regexp conditions — captures are unknown.
+                    // Matches RuboCop's behavior where [].max returns nil.
+                    self.current_capture_count = None;
                 }
                 if let Some(body) = when_node.statements() {
                     self.visit_statements_node(&body);
@@ -246,43 +277,33 @@ impl<'pr> Visit<'pr> for RegexpRefVisitor<'_, '_> {
         &mut self,
         node: &ruby_prism::NumberedReferenceReadNode<'pr>,
     ) {
+        // None means a non-literal regexp was used or captures are unknown — don't flag.
+        // This matches RuboCop's behavior where @valid_ref = nil causes early return.
+        let Some(max_captures) = self.current_capture_count else {
+            return;
+        };
         let ref_num = node.number() as usize;
-        if let Some(max_captures) = self.current_capture_count {
-            if ref_num > max_captures {
-                let loc = node.location();
-                let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                let message = if max_captures == 0 {
-                    format!(
-                        "${} is out of range (no regexp capture groups detected).",
-                        ref_num
-                    )
-                } else if max_captures == 1 {
-                    format!(
-                        "${} is out of range ({} regexp capture group detected).",
-                        ref_num, max_captures
-                    )
-                } else {
-                    format!(
-                        "${} is out of range ({} regexp capture groups detected).",
-                        ref_num, max_captures
-                    )
-                };
-                self.diagnostics
-                    .push(self.cop.diagnostic(self.source, line, column, message));
-            }
-        } else {
-            // No regexp match seen — any $N reference is out of range
+        if ref_num > max_captures {
             let loc = node.location();
             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-            self.diagnostics.push(self.cop.diagnostic(
-                self.source,
-                line,
-                column,
+            let message = if max_captures == 0 {
                 format!(
                     "${} is out of range (no regexp capture groups detected).",
                     ref_num
-                ),
-            ));
+                )
+            } else if max_captures == 1 {
+                format!(
+                    "${} is out of range ({} regexp capture group detected).",
+                    ref_num, max_captures
+                )
+            } else {
+                format!(
+                    "${} is out of range ({} regexp capture groups detected).",
+                    ref_num, max_captures
+                )
+            };
+            self.diagnostics
+                .push(self.cop.diagnostic(self.source, line, column, message));
         }
     }
 }

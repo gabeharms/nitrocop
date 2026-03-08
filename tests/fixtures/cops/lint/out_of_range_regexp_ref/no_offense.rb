@@ -29,3 +29,79 @@ title = Regexp.new('(?<=\* )(.*)')
 str.scan(/^##.*/) do |line|
   line.gsub(/#(?=#)/, '    ').gsub('#', '*').gsub(title) { "[#{$1}](##{$1})" }
 end
+
+# Multiple methods each with their own regexp — $N references should be
+# scoped to the most recent regexp in that method's flow, not leak across methods
+def parse_name(line)
+  if line =~ /^(\w+)\s+(\w+)$/
+    $1
+  end
+end
+
+def parse_id(line)
+  if line =~ /^(\d+)$/
+    $1
+  end
+end
+
+# After a non-regexp method call, $N references remain valid from prior regexp
+# (RuboCop only resets @valid_ref on RESTRICT_ON_SEND methods, not all sends)
+/(foo)(bar)/ =~ "foobar"
+some_method_call
+puts $1
+
+# Class/module boundaries reset capture state
+class Parser
+  def extract(str)
+    str =~ /(item)_(\d+)/
+    $2
+  end
+end
+
+# Block with regexp inside — $N valid within the block
+items.each do |item|
+  item =~ /^(\w+)=(.*)$/
+  puts $1
+  puts $2
+end
+
+# case/when with constant matchers — $N should NOT be flagged
+# because the regexp is not a literal and captures are unknown
+PATTERN_A = /(\w+)\s+(\w+)\s+(\w+)/
+PATTERN_B = /(\d+)/
+case line
+when PATTERN_A
+  do_something($1, $2, $3)
+when PATTERN_B
+  do_other($1)
+end
+
+# case/when mixing literal and constant matchers
+# constant matcher when clause should not inherit literal's capture count
+case line
+when /(\w+)/
+  do_something($1)
+when SOME_PATTERN
+  do_something($1, $2, $3)
+end
+
+# Multiple methods in a class, each with different constant regexp patterns
+class Formatter
+  def parse_header(line)
+    if line =~ HEADER_PATTERN
+      [$1, $2]
+    end
+  end
+
+  def parse_body(line)
+    if line =~ BODY_PATTERN
+      [$1, $2, $3]
+    end
+  end
+
+  def parse_footer(line)
+    if line =~ FOOTER_PATTERN
+      $1
+    end
+  end
+end
