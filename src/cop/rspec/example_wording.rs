@@ -4,14 +4,27 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
-/// Corpus investigation: 63 FPs were caused by flagging pending examples (no block),
-/// e.g. `it "should do something"` without a `do...end`. RuboCop's ExampleWording
-/// only checks examples that have a block body. Fixed by checking `call.block().is_some()`.
+/// ## Corpus investigation (2026-03-08)
+///
+/// Previous investigation: 63 FPs were caused by flagging pending examples (no block),
+/// e.g. `it "should do something"` without a `do...end`. Fixed by checking
+/// `call.block().is_some()`.
+///
+/// Current investigation: FP=28, FN=4.
+///
+/// FP root causes:
+/// 1. Cop checked `fit`/`xit` in addition to `it`, but RuboCop's ExampleWording
+///    only matches `(block (send _ :it ...))` — only the `it` method.
+/// 2. Cop emitted multiple offenses per description (e.g., both "should" and
+///    DisallowedExamples), but RuboCop uses if/elsif so only one offense fires.
+/// 3. DisallowedExamples comparison didn't match RuboCop's `preprocess` logic
+///    (strip + squeeze spaces + downcase).
+///
+/// Fixed all three issues.
+///
+/// FN=4: Not addressed in this pass. Likely edge cases with multiline string
+/// descriptions or encoding differences.
 pub struct ExampleWording;
-
-/// Example methods that take a description string.
-/// RuboCop's ExampleWording only matches `it` blocks (and focused/pending variants).
-const EXAMPLE_METHODS: &[&[u8]] = &[b"it", b"fit", b"xit"];
 
 impl Cop for ExampleWording {
     fn name(&self) -> &'static str {
@@ -62,8 +75,9 @@ impl Cop for ExampleWording {
             return;
         }
 
+        // RuboCop's ExampleWording only matches `it` blocks — not `fit`/`xit`/`specify` etc.
         let method_name = call.name().as_slice();
-        if !EXAMPLE_METHODS.contains(&method_name) {
+        if method_name != b"it" {
             return;
         }
 
@@ -104,22 +118,6 @@ impl Cop for ExampleWording {
             if let (Some(desc), Some(loc)) = (desc_bytes, desc_loc) {
                 let desc_str = std::str::from_utf8(&desc).unwrap_or("");
 
-                // Check DisallowedExamples
-                if let Some(ref disallowed) = disallowed_examples {
-                    let trimmed = desc_str.trim();
-                    for d in disallowed {
-                        if trimmed.eq_ignore_ascii_case(d) {
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(self.diagnostic(
-                                source,
-                                line,
-                                column,
-                                format!("Avoid disallowed example description '{d}'."),
-                            ));
-                        }
-                    }
-                }
-
                 // Check IgnoredWords — if description starts with an ignored word, skip should-check
                 let skip_should = if let Some(ref words) = ignored_words {
                     let first_word = desc_str.split_whitespace().next().unwrap_or("");
@@ -128,6 +126,8 @@ impl Cop for ExampleWording {
                     false
                 };
 
+                // RuboCop uses if/elsif — only ONE offense fires per description.
+                // Priority: should > will > it prefix > DisallowedExamples
                 if !skip_should && starts_with_should(&desc) {
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
                     // CustomTransform: suggest replacement for the word after "should"
@@ -156,10 +156,7 @@ impl Cop for ExampleWording {
                         "Do not use should when describing your tests.".to_string()
                     };
                     diagnostics.push(self.diagnostic(source, line, column, msg));
-                }
-
-                // Check for "will"/"won't" prefix
-                if starts_with_will(&desc) {
+                } else if starts_with_will(&desc) {
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
                     diagnostics.push(self.diagnostic(
                         source,
@@ -167,10 +164,7 @@ impl Cop for ExampleWording {
                         column,
                         "Do not use the future tense when describing your tests.".to_string(),
                     ));
-                }
-
-                // Check for "it " prefix (repeating "it" inside it blocks)
-                if starts_with_it_prefix(&desc) {
+                } else if starts_with_it_prefix(&desc) {
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
                     diagnostics.push(self.diagnostic(
                         source,
@@ -178,6 +172,22 @@ impl Cop for ExampleWording {
                         column,
                         "Do not repeat 'it' when describing your tests.".to_string(),
                     ));
+                } else if let Some(ref disallowed) = disallowed_examples {
+                    // DisallowedExamples: RuboCop preprocesses with strip + squeeze(' ') + downcase
+                    let preprocessed = preprocess_description(desc_str);
+                    for d in disallowed {
+                        let preprocessed_d = preprocess_description(d);
+                        if preprocessed == preprocessed_d {
+                            let (line, column) = source.offset_to_line_col(loc.start_offset());
+                            diagnostics.push(self.diagnostic(
+                                source,
+                                line,
+                                column,
+                                "Your example description is insufficient.".to_string(),
+                            ));
+                            break;
+                        }
+                    }
                 }
             }
             break;
@@ -230,6 +240,26 @@ fn starts_with_will(desc: &[u8]) -> bool {
     false
 }
 
+/// Preprocess a description string for DisallowedExamples comparison.
+/// Matches RuboCop's `preprocess`: strip + squeeze(' ') + downcase.
+fn preprocess_description(s: &str) -> String {
+    let trimmed = s.trim();
+    let mut result = String::with_capacity(trimmed.len());
+    let mut last_was_space = false;
+    for c in trimmed.chars() {
+        if c == ' ' {
+            if !last_was_space {
+                result.push(' ');
+            }
+            last_was_space = true;
+        } else {
+            result.extend(c.to_lowercase());
+            last_was_space = false;
+        }
+    }
+    result
+}
+
 /// Check if a byte slice starts with "it " (case-insensitive).
 fn starts_with_it_prefix(desc: &[u8]) -> bool {
     if desc.len() < 3 {
@@ -259,7 +289,7 @@ mod tests {
         let source = b"it 'works' do\nend\n";
         let diags = crate::testutil::run_cop_full_with_config(&ExampleWording, source, config);
         assert_eq!(diags.len(), 1);
-        assert!(diags[0].message.contains("disallowed"));
+        assert!(diags[0].message.contains("insufficient"));
     }
 
     #[test]

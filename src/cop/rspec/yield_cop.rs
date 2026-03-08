@@ -6,6 +6,17 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=21, FN=11.
+///
+/// FP=21: Root cause was that the cop flagged blocks with extra positional params
+/// alongside &block (e.g., `|options, &block|`). RuboCop's pattern `(args (blockarg $_))`
+/// only matches when &block is the sole parameter. Fixed by checking that the block
+/// has no required, optional, rest, or keyword params — only the block param.
+///
+/// FN=11: Not addressed in this pass. Likely patterns where `receive` appears in
+/// positions our call chain traversal doesn't reach.
 pub struct Yield;
 
 /// Flags `receive(:method) { |&block| block.call }` — should use `.and_yield` instead.
@@ -72,11 +83,22 @@ impl Cop for Yield {
             None => return,
         };
 
-        // Must have a block parameter (&block)
+        // Must have a block parameter (&block) and NO other parameters.
+        // RuboCop's pattern `(args (blockarg $_))` only matches when &block is the sole param.
         let block_param = match inner_params.block() {
             Some(b) => b,
             None => return,
         };
+
+        // Check that there are no other parameters besides the block param
+        if inner_params.requireds().iter().count() > 0
+            || inner_params.optionals().iter().count() > 0
+            || inner_params.rest().is_some()
+            || inner_params.keywords().iter().count() > 0
+            || inner_params.keyword_rest().is_some()
+        {
+            return;
+        }
 
         let block_param_name = block_param.name();
         let block_param_bytes = match block_param_name {

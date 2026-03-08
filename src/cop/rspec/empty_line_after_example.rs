@@ -9,18 +9,19 @@ use crate::parse::source::SourceFile;
 
 /// ## Corpus investigation (2026-03-08)
 ///
-/// Corpus oracle reported FP=1,547, FN=2.
+/// Initially reported FP=1,547, FN=2.
 ///
-/// FP root cause (this pass): separator lines containing only spaces/tabs were
-/// treated as non-blank by `is_blank_line`, so examples followed by whitespace-only
-/// lines were flagged. RuboCop uses `blank?` semantics here.
+/// FP=1,547→15: Fixed whitespace-only separator lines treated as non-blank.
+/// Also fixed heredoc content extending past the example call location.
 ///
-/// Historical FP root cause (already fixed): heredoc content extending past the
-/// example call location. We account for this using heredoc closing offsets.
+/// Remaining FP=15: Likely subtle differences between text-based line analysis
+/// (our approach) and AST sibling analysis (RuboCop's `EmptyLineSeparation` mixin
+/// which uses `last_child?` and `right_sibling`). The consecutive FPs in puppetlabs
+/// (6 at lines 99-104) and activegraph (4 at lines 269-270,309-310) suggest
+/// edge cases in consecutive one-liner detection or end-line computation.
+/// Without corpus files locally, root cause is unconfirmed.
 ///
-/// FN=2: no code changes here were aimed at FN behavior in this pass.
-///
-/// Fix: use whitespace-aware blank-line checks for separator detection in this cop.
+/// FN=2: Not addressed.
 pub struct EmptyLineAfterExample;
 
 impl Cop for EmptyLineAfterExample {

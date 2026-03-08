@@ -8,6 +8,18 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=17, FN=1.
+///
+/// FP=17: Root cause was that `node_tree_uses_param` and `body_contains_yield`
+/// manually handled specific node types (StatementsNode, BeginNode, IfNode, etc.)
+/// but missed many others (CaseNode, AndNode, OrNode, WhileNode, ReturnNode, etc.).
+/// RuboCop uses `def_node_search` which recursively searches ALL descendants.
+/// Fixed by replacing manual traversal with Prism visitor-based deep search that
+/// walks all child nodes of all types.
+///
+/// FN=1: Not addressed in this pass.
 pub struct AroundBlock;
 
 /// Flags `around` hooks that don't yield or call `run`/`call` on the example.
@@ -78,7 +90,7 @@ impl Cop for AroundBlock {
             None => {
                 // No block parameter — flag the whole around call
                 // (unless the body uses _1.run/_1.call or yield)
-                if body_uses_numbered_param_run(&block_node) || body_contains_yield(&block_node) {
+                if body_uses_numbered_param_run(&block_node) || deep_contains_yield(&block_node) {
                     return;
                 }
                 let loc = node.location();
@@ -91,9 +103,9 @@ impl Cop for AroundBlock {
                 ));
             }
             Some(name) => {
-                // Has a block parameter — check if it's used with .run or .call (or yield)
-                if body_uses_param_correctly(&block_node, &name) || body_contains_yield(&block_node)
-                {
+                // Has a block parameter — check if it's used correctly anywhere in the body.
+                // RuboCop uses `def_node_search` which recursively searches ALL descendants.
+                if deep_uses_param(&block_node, &name) || deep_contains_yield(&block_node) {
                     return;
                 }
 
@@ -138,343 +150,181 @@ fn get_block_param_name(block: &ruby_prism::BlockNode<'_>) -> Option<Vec<u8>> {
         .map(|rp| rp.name().as_slice().to_vec())
 }
 
-fn body_uses_param_correctly(block: &ruby_prism::BlockNode<'_>, param_name: &[u8]) -> bool {
+/// Deep search using Prism visitor to find param usage anywhere in the block body.
+/// Matches RuboCop's `def_node_search :find_arg_usage` which checks:
+/// - `param.call` or `param.run`
+/// - param passed as argument to any method
+/// - param passed as block argument `&param`
+/// - param passed to yield
+fn deep_uses_param(block: &ruby_prism::BlockNode<'_>, param_name: &[u8]) -> bool {
+    use ruby_prism::Visit;
+
+    struct ParamUsageVisitor<'a> {
+        param_name: &'a [u8],
+        found: bool,
+    }
+
+    impl<'pr> Visit<'pr> for ParamUsageVisitor<'_> {
+        fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+            if self.found {
+                return;
+            }
+
+            let method = node.name().as_slice();
+
+            // Check for param.run or param.call
+            if method == b"run" || method == b"call" {
+                if let Some(recv) = node.receiver() {
+                    if is_param_ref(&recv, self.param_name) {
+                        self.found = true;
+                        return;
+                    }
+                }
+            }
+
+            // Check for passing param as a regular argument
+            if let Some(args) = node.arguments() {
+                for arg in args.arguments().iter() {
+                    if is_param_ref(&arg, self.param_name) {
+                        self.found = true;
+                        return;
+                    }
+                }
+            }
+
+            // Check for passing param as a block arg: `method(&param)`
+            if let Some(block_arg) = node.block() {
+                if let Some(ba) = block_arg.as_block_argument_node() {
+                    if let Some(expr) = ba.expression() {
+                        if is_param_ref(&expr, self.param_name) {
+                            self.found = true;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Continue visiting children
+            ruby_prism::visit_call_node(self, node);
+        }
+
+        fn visit_yield_node(&mut self, node: &ruby_prism::YieldNode<'pr>) {
+            if self.found {
+                return;
+            }
+            if let Some(args) = node.arguments() {
+                for arg in args.arguments().iter() {
+                    if is_param_ref(&arg, self.param_name) {
+                        self.found = true;
+                        return;
+                    }
+                }
+            }
+            ruby_prism::visit_yield_node(self, node);
+        }
+    }
+
     let body = match block.body() {
         Some(b) => b,
         None => return false,
     };
-    node_tree_uses_param(&body, param_name)
+
+    let mut visitor = ParamUsageVisitor {
+        param_name,
+        found: false,
+    };
+    visitor.visit(&body);
+    visitor.found
 }
 
-/// Recursively search a node tree (including BeginNode, StatementsNode) for param usage.
-fn node_tree_uses_param(node: &ruby_prism::Node<'_>, param_name: &[u8]) -> bool {
-    if node_uses_param_correctly(node, param_name) {
-        return true;
+/// Deep search for yield anywhere in the block body using Prism visitor.
+fn deep_contains_yield(block: &ruby_prism::BlockNode<'_>) -> bool {
+    use ruby_prism::Visit;
+
+    struct YieldVisitor {
+        found: bool,
     }
 
-    // Handle StatementsNode
-    if let Some(stmts) = node.as_statements_node() {
-        for stmt in stmts.body().iter() {
-            if node_tree_uses_param(&stmt, param_name) {
-                return true;
-            }
-        }
-    }
-
-    // Handle BeginNode (for blocks with rescue/ensure)
-    if let Some(begin_node) = node.as_begin_node() {
-        if let Some(stmts) = begin_node.statements() {
-            for s in stmts.body().iter() {
-                if node_tree_uses_param(&s, param_name) {
-                    return true;
-                }
-            }
-        }
-        // Check rescue clauses
-        let mut rescue = begin_node.rescue_clause();
-        while let Some(rc) = rescue {
-            if let Some(stmts) = rc.statements() {
-                for s in stmts.body().iter() {
-                    if node_tree_uses_param(&s, param_name) {
-                        return true;
-                    }
-                }
-            }
-            rescue = rc.subsequent();
-        }
-        // Check ensure clause
-        if let Some(ensure_clause) = begin_node.ensure_clause() {
-            if let Some(stmts) = ensure_clause.statements() {
-                for s in stmts.body().iter() {
-                    if node_tree_uses_param(&s, param_name) {
-                        return true;
-                    }
-                }
-            }
+    impl<'pr> Visit<'pr> for YieldVisitor {
+        fn visit_yield_node(&mut self, _node: &ruby_prism::YieldNode<'pr>) {
+            self.found = true;
         }
     }
 
-    // Handle local variable assignments (e.g., measurement = Benchmark.measure { example.run })
-    if let Some(lv) = node.as_local_variable_write_node() {
-        if node_tree_uses_param(&lv.value(), param_name) {
-            return true;
-        }
-    }
-
-    // Handle IfNode / UnlessNode — recurse into predicate, if-body, and else/elsif
-    if let Some(if_node) = node.as_if_node() {
-        if node_tree_uses_param(&if_node.predicate(), param_name) {
-            return true;
-        }
-        if let Some(stmts) = if_node.statements() {
-            for s in stmts.body().iter() {
-                if node_tree_uses_param(&s, param_name) {
-                    return true;
-                }
-            }
-        }
-        if let Some(subsequent) = if_node.subsequent() {
-            if node_tree_uses_param(&subsequent, param_name) {
-                return true;
-            }
-        }
-    }
-
-    // Handle ElseNode
-    if let Some(else_node) = node.as_else_node() {
-        if let Some(stmts) = else_node.statements() {
-            for s in stmts.body().iter() {
-                if node_tree_uses_param(&s, param_name) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // Handle `next expr` — the expression inside next may use the param
-    if let Some(next_node) = node.as_next_node() {
-        if let Some(args) = next_node.arguments() {
-            for arg in args.arguments().iter() {
-                if node_tree_uses_param(&arg, param_name) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
-}
-
-fn node_uses_param_correctly(node: &ruby_prism::Node<'_>, param_name: &[u8]) -> bool {
-    // Check for param.run or param.call
-    if let Some(call) = node.as_call_node() {
-        let method = call.name().as_slice();
-        if method == b"run" || method == b"call" {
-            if let Some(recv) = call.receiver() {
-                if is_param_ref(&recv, param_name) {
-                    return true;
-                }
-            }
-        }
-
-        // Check for passing param as a block arg: `1.times(&test)`
-        if let Some(block_arg) = call.block() {
-            if let Some(ba) = block_arg.as_block_argument_node() {
-                if let Some(expr) = ba.expression() {
-                    if is_param_ref(&expr, param_name) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Check for passing param as a regular argument: `something(test, ...)`
-        if let Some(args) = call.arguments() {
-            for arg in args.arguments().iter() {
-                if is_param_ref(&arg, param_name) {
-                    return true;
-                }
-            }
-        }
-
-        // Recurse into block body (handles StatementsNode, BeginNode, etc.)
-        if let Some(block) = call.block() {
-            if let Some(bn) = block.as_block_node() {
-                if let Some(body) = bn.body() {
-                    if node_tree_uses_param(&body, param_name) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Recurse into receiver
-        if let Some(recv) = call.receiver() {
-            if node_tree_uses_param(&recv, param_name) {
-                return true;
-            }
-        }
-    }
-
-    // Check for `yield(something, test)` pattern
-    if let Some(yield_node) = node.as_yield_node() {
-        if let Some(args) = yield_node.arguments() {
-            for arg in args.arguments().iter() {
-                if is_param_ref(&arg, param_name) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
-}
-
-fn body_contains_yield(block: &ruby_prism::BlockNode<'_>) -> bool {
     let body = match block.body() {
         Some(b) => b,
         None => return false,
     };
-    node_tree_contains_yield(&body)
+
+    let mut visitor = YieldVisitor { found: false };
+    visitor.visit(&body);
+    visitor.found
 }
 
-/// Recursively search a node tree (including BeginNode, StatementsNode) for yield.
-fn node_tree_contains_yield(node: &ruby_prism::Node<'_>) -> bool {
-    if node_contains_yield(node) {
-        return true;
+fn body_uses_numbered_param_run(block: &ruby_prism::BlockNode<'_>) -> bool {
+    use ruby_prism::Visit;
+
+    struct NumberedParamVisitor {
+        found: bool,
     }
 
-    if let Some(stmts) = node.as_statements_node() {
-        for stmt in stmts.body().iter() {
-            if node_tree_contains_yield(&stmt) {
-                return true;
+    impl<'pr> Visit<'pr> for NumberedParamVisitor {
+        fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+            if self.found {
+                return;
             }
-        }
-    }
-
-    if let Some(begin_node) = node.as_begin_node() {
-        if let Some(stmts) = begin_node.statements() {
-            for s in stmts.body().iter() {
-                if node_tree_contains_yield(&s) {
-                    return true;
-                }
-            }
-        }
-        let mut rescue = begin_node.rescue_clause();
-        while let Some(rc) = rescue {
-            if let Some(stmts) = rc.statements() {
-                for s in stmts.body().iter() {
-                    if node_tree_contains_yield(&s) {
-                        return true;
+            let method = node.name().as_slice();
+            if method == b"run" || method == b"call" {
+                if let Some(recv) = node.receiver() {
+                    if let Some(rc) = recv.as_call_node() {
+                        if rc.name().as_slice() == b"_1" && rc.receiver().is_none() {
+                            self.found = true;
+                            return;
+                        }
+                    }
+                    if let Some(lv) = recv.as_local_variable_read_node() {
+                        if lv.name().as_slice() == b"_1" {
+                            self.found = true;
+                            return;
+                        }
                     }
                 }
             }
-            rescue = rc.subsequent();
-        }
-        if let Some(ensure_clause) = begin_node.ensure_clause() {
-            if let Some(stmts) = ensure_clause.statements() {
-                for s in stmts.body().iter() {
-                    if node_tree_contains_yield(&s) {
-                        return true;
+            // Also check for _1 passed as argument or block arg
+            if let Some(args) = node.arguments() {
+                for arg in args.arguments().iter() {
+                    if let Some(lv) = arg.as_local_variable_read_node() {
+                        if lv.name().as_slice() == b"_1" {
+                            self.found = true;
+                            return;
+                        }
                     }
                 }
             }
-        }
-    }
-
-    if let Some(lv) = node.as_local_variable_write_node() {
-        if node_tree_contains_yield(&lv.value()) {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn node_contains_yield(node: &ruby_prism::Node<'_>) -> bool {
-    // Direct yield node
-    if node.as_yield_node().is_some() {
-        return true;
-    }
-
-    // Check inside call nodes (e.g., in method chain or block)
-    if let Some(call) = node.as_call_node() {
-        if let Some(recv) = call.receiver() {
-            if node_contains_yield(&recv) {
-                return true;
-            }
-        }
-        if let Some(args) = call.arguments() {
-            for arg in args.arguments().iter() {
-                if node_contains_yield(&arg) {
-                    return true;
-                }
-            }
-        }
-        if let Some(block) = call.block() {
-            if let Some(bn) = block.as_block_node() {
-                if let Some(body) = bn.body() {
-                    if let Some(stmts) = body.as_statements_node() {
-                        for s in stmts.body().iter() {
-                            if node_contains_yield(&s) {
-                                return true;
+            if let Some(block_arg) = node.block() {
+                if let Some(ba) = block_arg.as_block_argument_node() {
+                    if let Some(expr) = ba.expression() {
+                        if let Some(lv) = expr.as_local_variable_read_node() {
+                            if lv.name().as_slice() == b"_1" {
+                                self.found = true;
+                                return;
                             }
                         }
                     }
                 }
             }
+            ruby_prism::visit_call_node(self, node);
         }
     }
 
-    // Check inside begin/rescue/ensure
-    if let Some(begin_node) = node.as_begin_node() {
-        if let Some(stmts) = begin_node.statements() {
-            for s in stmts.body().iter() {
-                if node_contains_yield(&s) {
-                    return true;
-                }
-            }
-        }
-        if let Some(rescue) = begin_node.rescue_clause() {
-            if let Some(stmts) = rescue.statements() {
-                for s in stmts.body().iter() {
-                    if node_contains_yield(&s) {
-                        return true;
-                    }
-                }
-            }
-        }
-        if let Some(ensure) = begin_node.ensure_clause() {
-            if let Some(stmts) = ensure.statements() {
-                for s in stmts.body().iter() {
-                    if node_contains_yield(&s) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    false
-}
-
-fn body_uses_numbered_param_run(block: &ruby_prism::BlockNode<'_>) -> bool {
     let body = match block.body() {
         Some(b) => b,
         None => return false,
     };
-    let stmts = match body.as_statements_node() {
-        Some(s) => s,
-        None => return false,
-    };
 
-    for stmt in stmts.body().iter() {
-        if node_uses_numbered_param_run(&stmt) {
-            return true;
-        }
-    }
-    false
-}
-
-fn node_uses_numbered_param_run(node: &ruby_prism::Node<'_>) -> bool {
-    if let Some(call) = node.as_call_node() {
-        let method = call.name().as_slice();
-        if method == b"run" || method == b"call" {
-            if let Some(recv) = call.receiver() {
-                if let Some(rc) = recv.as_call_node() {
-                    if rc.name().as_slice() == b"_1" && rc.receiver().is_none() {
-                        return true;
-                    }
-                }
-                if let Some(lv) = recv.as_local_variable_read_node() {
-                    if lv.name().as_slice() == b"_1" {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
+    let mut visitor = NumberedParamVisitor { found: false };
+    visitor.visit(&body);
+    visitor.found
 }
 
 fn is_param_ref(node: &ruby_prism::Node<'_>, param_name: &[u8]) -> bool {

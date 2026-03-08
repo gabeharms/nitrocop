@@ -13,4 +13,19 @@ RSpec.describe 'test' do
   it 'uses and_yield' do
     allow(foo).to receive(:bar).and_yield
   end
+
+  # RuboCop only flags blocks where &block is the sole parameter
+  it 'allows block with extra positional params' do
+    expect(controller).to receive(:before_action).with({}) { |_options, &block| block.call(controller) }
+  end
+
+  it 'allows block with extra positional params do-end' do
+    allow(obj).to receive(:run) do |_arg, &block|
+      block.call
+    end
+  end
+
+  it 'allows block with multiple extra params' do
+    allow(Dir).to receive(:chdir) { |_, &b| b.call }
+  end
 end

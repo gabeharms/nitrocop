@@ -56,3 +56,26 @@ around do |example|
     end
   end
 end
+# example.run inside case/when
+around do |example|
+  case env_type
+  when :production
+    example.run
+  when :staging
+    example.run
+  end
+end
+# example.run with boolean operators
+around do |example|
+  setup && example.run
+end
+# example passed to method inside deeply nested structure
+around do |example|
+  retries = 3
+  begin
+    example.run
+  rescue Timeout::Error
+    retries -= 1
+    retry if retries > 0
+  end
+end
