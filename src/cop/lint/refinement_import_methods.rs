@@ -7,13 +7,15 @@ use crate::parse::source::SourceFile;
 /// Checks if `include` or `prepend` is called in a `refine` block.
 /// These methods are deprecated and should be replaced with `import_methods`.
 ///
-/// ## Investigation (corpus: 0 RuboCop matches, 7 FP, 0 FN)
-/// Root cause: Cop is `Enabled: pending` in vendor config (disabled by default),
-/// but we were missing `default_enabled() -> false`, so nitrocop enabled it
-/// unconditionally when vendored config wasn't loaded.
-/// Also fixed: Only flag `include`/`prepend` that are direct children of the
-/// refine block body, matching RuboCop's `parent.block_type? && parent.method?(:refine)`
-/// check. Previously we recursed into nested lambdas/procs/blocks, causing FPs.
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=1, FN=0.
+///
+/// FP=1: the remaining mismatch is an excluded `ruby-next` fixture under
+/// `spec/core/**/*`, so this is config/path-filtering noise rather than a cop-logic
+/// mismatch. Earlier fixes already aligned the cop's pending default-disabled state
+/// and restricted matches to direct `include`/`prepend` children of a `refine` block.
+/// FN=0: no missing detections were reported for this cop in the corpus run.
 pub struct RefinementImportMethods;
 
 impl Cop for RefinementImportMethods {
