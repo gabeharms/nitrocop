@@ -6,6 +6,11 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation: 4 FP on `OpenSSL::Digest::Digest.new(...)`. RuboCop's `digest_const?`
+/// matcher explicitly skips receivers where the rightmost constant is `:Digest` (or `:Cipher`),
+/// because `OpenSSL::Digest::Digest` is an old class alias for `OpenSSL::Digest` itself, not an
+/// algorithm-specific subclass like `OpenSSL::Digest::SHA1`. Fixed by excluding `Digest` and
+/// `Cipher` as algorithm name constants.
 pub struct DeprecatedOpenSSLConstant;
 
 impl Cop for DeprecatedOpenSSLConstant {
@@ -78,10 +83,17 @@ impl Cop for DeprecatedOpenSSLConstant {
         };
 
         // The algorithm name is the rightmost constant
-        let _algo_name = match recv_path.name() {
+        let algo_name = match recv_path.name() {
             Some(n) => n,
             None => return,
         };
+
+        // OpenSSL::Digest::Digest and OpenSSL::Cipher::Cipher are old class aliases,
+        // not algorithm-specific subclasses. RuboCop's digest_const? matcher skips these.
+        let algo_name_str = algo_name.as_slice();
+        if algo_name_str == b"Digest" || algo_name_str == b"Cipher" {
+            return;
+        }
 
         // Parent should be OpenSSL::Cipher or OpenSSL::Digest
         let parent = match recv_path.parent() {
