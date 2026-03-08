@@ -1,9 +1,22 @@
-use crate::cop::node_type::{CALL_NODE, INTEGER_NODE, SYMBOL_NODE};
+use crate::cop::node_type::{CALL_NODE, INTEGER_NODE, STRING_NODE, SYMBOL_NODE};
 use crate::cop::util::keyword_arg_value;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Rails/HttpStatus — enforces symbolic or numeric HTTP status codes.
+///
+/// ## Investigation findings (2026-03-08)
+///
+/// **FP root cause (12 FP):** RuboCop's `http_status` NodePattern requires `(send nil? ...)` —
+/// the method call must be receiverless. Nitrocop was not checking for nil receiver, so
+/// `foo.render(status: 200)` or `response.head(200)` were incorrectly flagged.
+/// Fix: return early when `call.receiver().is_some()`.
+///
+/// **FN root cause (9 FN):** RuboCop's `status_code` pattern matches `${int sym str}` — it
+/// handles string status codes like `'200'` in addition to integer and symbol nodes.
+/// Nitrocop only handled IntegerNode and SymbolNode, missing StringNode.
+/// Fix: add StringNode handling — parse string content as integer, then look up in status maps.
 pub struct HttpStatus;
 
 fn status_code_to_symbol(code: i64) -> Option<&'static str> {
@@ -164,7 +177,7 @@ impl Cop for HttpStatus {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[CALL_NODE, INTEGER_NODE, SYMBOL_NODE]
+        &[CALL_NODE, INTEGER_NODE, STRING_NODE, SYMBOL_NODE]
     }
 
     fn check_node(
@@ -183,6 +196,12 @@ impl Cop for HttpStatus {
             None => return,
         };
         if !STATUS_METHODS.contains(&call.name().as_slice()) {
+            return;
+        }
+
+        // RuboCop requires nil receiver (receiverless call): (send nil? ...)
+        // e.g., `render status: 200` matches but `response.head 200` does not.
+        if call.receiver().is_some() {
             return;
         }
 
@@ -216,22 +235,30 @@ impl Cop for HttpStatus {
                     None
                 }
                 _ => {
-                    if status_value.as_integer_node().is_some() {
-                        let int_loc = status_value.location();
-                        let code_text = std::str::from_utf8(int_loc.as_slice()).unwrap_or("");
-                        if let Ok(code_num) = code_text.parse::<i64>() {
-                            if let Some(sym) = status_code_to_symbol(code_num) {
-                                let (line, column) =
-                                    source.offset_to_line_col(int_loc.start_offset());
-                                return Some(self.diagnostic(
-                                    source,
-                                    line,
-                                    column,
-                                    format!(
-                                        "Prefer `{sym}` over `{code_num}` to define HTTP status code."
-                                    ),
-                                ));
-                            }
+                    // symbolic style: flag integer and string status codes
+                    let (code_num_opt, val_loc) = if let Some(_int) = status_value.as_integer_node()
+                    {
+                        let loc = status_value.location();
+                        let code_text = std::str::from_utf8(loc.as_slice()).unwrap_or("");
+                        (code_text.parse::<i64>().ok(), loc)
+                    } else if let Some(str_node) = status_value.as_string_node() {
+                        let content = str_node.unescaped();
+                        let code_text = std::str::from_utf8(content).unwrap_or("");
+                        (code_text.parse::<i64>().ok(), status_value.location())
+                    } else {
+                        (None, status_value.location())
+                    };
+                    if let Some(code_num) = code_num_opt {
+                        if let Some(sym) = status_code_to_symbol(code_num) {
+                            let (line, column) = source.offset_to_line_col(val_loc.start_offset());
+                            return Some(self.diagnostic(
+                                source,
+                                line,
+                                column,
+                                format!(
+                                    "Prefer `{sym}` over `{code_num}` to define HTTP status code."
+                                ),
+                            ));
                         }
                     }
                     None
@@ -249,7 +276,10 @@ impl Cop for HttpStatus {
         if keyword_status.is_none() && DIRECT_STATUS_METHODS.contains(&method_name) {
             if let Some(args) = call.arguments() {
                 for first in args.arguments().iter().take(1) {
-                    if first.as_integer_node().is_some() || first.as_symbol_node().is_some() {
+                    if first.as_integer_node().is_some()
+                        || first.as_symbol_node().is_some()
+                        || first.as_string_node().is_some()
+                    {
                         if let Some(diag) = check_status(&first) {
                             diagnostics.push(diag);
                         }

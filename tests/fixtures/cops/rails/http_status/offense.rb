@@ -8,3 +8,9 @@ head 200
      ^^^ Rails/HttpStatus: Prefer `:ok` over `200` to define HTTP status code.
 assert_response 404
                 ^^^ Rails/HttpStatus: Prefer `:not_found` over `404` to define HTTP status code.
+render status: '200'
+               ^^^^^ Rails/HttpStatus: Prefer `:ok` over `200` to define HTTP status code.
+render json: data, status: '404'
+                           ^^^^^ Rails/HttpStatus: Prefer `:not_found` over `404` to define HTTP status code.
+redirect_to root_path, status: '301'
+                               ^^^^^ Rails/HttpStatus: Prefer `:moved_permanently` over `301` to define HTTP status code.
