@@ -113,6 +113,15 @@ def format_match_rate(rate: float) -> str:
     return f"{math.floor(rate * 1000) / 10:.1f}%"
 
 
+def format_exact_match_pct(exact: int, total: int) -> str:
+    """Format exact-match coverage across total cops for README tables."""
+    if total <= 0:
+        return "N/A"
+    rate = exact / total
+    pct = format_match_rate(rate)
+    return f"✓ {pct}" if exact == total else pct
+
+
 def build_department_stats(data: dict) -> dict[str, dict]:
     """Build per-department cop counts for the generated README Cops section."""
     derived: dict[str, dict] = {}
@@ -214,17 +223,19 @@ def build_cops_section(data: dict) -> str:
         version = baseline.get(gem["key"], "?")
         lines.append(f"**[{gem['key']}]({gem['url']})** `{version}` ({total:,} cops)")
         lines.append("")
-        lines.append("| Department | Total cops | Exact match | Diverging | No corpus data |")
-        lines.append("|------------|-----------:|------------:|----------:|---------------:|")
+        lines.append("| Department | Total cops | Exact match | Diverging | No corpus data | Exact match % |")
+        lines.append("|------------|-----------:|------------:|----------:|---------------:|--------------:|")
         for row in rows:
             lines.append(
                 f"| {row['department']} | {row['cops']:,} | "
-                f"{row['perfect_cops']:,} | {row['diverging_cops']:,} | {row['no_data_cops']:,} |"
+                f"{row['perfect_cops']:,} | {row['diverging_cops']:,} | {row['no_data_cops']:,} | "
+                f"{format_exact_match_pct(row['perfect_cops'], row['cops'])} |"
             )
         if len(rows) > 1:
             lines.append(
                 f"| **Total** | **{total:,}** | **{perfect:,}** | "
-                f"**{diverging:,}** | **{no_data:,}** |"
+                f"**{diverging:,}** | **{no_data:,}** | "
+                f"**{format_exact_match_pct(perfect, total)}** |"
             )
             lines.append("")
         else:

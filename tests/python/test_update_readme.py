@@ -197,10 +197,11 @@ def test_write():
         assert "nitrocop supports 14 cops from 6 RuboCop gems." in updated
         assert "Current corpus status: 6 cops match RuboCop exactly on the corpus, 4 diverge, and 4 have no corpus data." in updated
         assert "No corpus data means the cop never appeared in the corpus, so it has not been compared yet." in updated
-        assert "| Department | Total cops | Exact match | Diverging | No corpus data |" in updated
+        assert "| Department | Total cops | Exact match | Diverging | No corpus data | Exact match % |" in updated
         assert "**[rubocop](https://github.com/rubocop/rubocop)** `1.84.2` (9 cops)" in updated
-        assert "| **Total** | **9** | **4** | **2** | **3** |" in updated
-        assert "| Rails | 1 | 0 | 1 | 0 |" in updated
+        assert "| **Total** | **9** | **4** | **2** | **3** | **44.4%** |" in updated
+        assert "| Rails | 1 | 0 | 1 | 0 | 0.0% |" in updated
+        assert "| Performance | 1 | 1 | 0 | 0 | ✓ 100.0% |" in updated
         assert "| **Total** | **1** |" not in updated
         assert "Old generated cops section." not in updated
         assert "| RuboCop offenses |" in updated

@@ -60,48 +60,48 @@ No corpus data means the cop never appeared in the corpus, so it has not been co
 
 **[rubocop](https://github.com/rubocop/rubocop)** `1.84.2` (593 cops)
 
-| Department | Total cops | Exact match | Diverging | No corpus data |
-|------------|-----------:|------------:|----------:|---------------:|
-| Layout | 100 | 19 | 81 | 0 |
-| Lint | 152 | 60 | 83 | 9 |
-| Style | 287 | 65 | 217 | 5 |
-| Metrics | 10 | 4 | 6 | 0 |
-| Naming | 19 | 5 | 14 | 0 |
-| Security | 7 | 6 | 0 | 1 |
-| Bundler | 7 | 7 | 0 | 0 |
-| Gemspec | 10 | 10 | 0 | 0 |
-| Migration | 1 | 1 | 0 | 0 |
-| **Total** | **593** | **177** | **401** | **15** |
+| Department | Total cops | Exact match | Diverging | No corpus data | Exact match % |
+|------------|-----------:|------------:|----------:|---------------:|--------------:|
+| Layout | 100 | 19 | 81 | 0 | 19.0% |
+| Lint | 152 | 60 | 83 | 9 | 39.4% |
+| Style | 287 | 65 | 217 | 5 | 22.6% |
+| Metrics | 10 | 4 | 6 | 0 | 40.0% |
+| Naming | 19 | 5 | 14 | 0 | 26.3% |
+| Security | 7 | 6 | 0 | 1 | 85.7% |
+| Bundler | 7 | 7 | 0 | 0 | ✓ 100.0% |
+| Gemspec | 10 | 10 | 0 | 0 | ✓ 100.0% |
+| Migration | 1 | 1 | 0 | 0 | ✓ 100.0% |
+| **Total** | **593** | **177** | **401** | **15** | **29.8%** |
 
 **[rubocop-rails](https://github.com/rubocop/rubocop-rails)** `2.34.3` (138 cops)
 
-| Department | Total cops | Exact match | Diverging | No corpus data |
-|------------|-----------:|------------:|----------:|---------------:|
-| Rails | 138 | 37 | 58 | 43 |
+| Department | Total cops | Exact match | Diverging | No corpus data | Exact match % |
+|------------|-----------:|------------:|----------:|---------------:|--------------:|
+| Rails | 138 | 37 | 58 | 43 | 26.8% |
 
 **[rubocop-performance](https://github.com/rubocop/rubocop-performance)** `1.26.1` (52 cops)
 
-| Department | Total cops | Exact match | Diverging | No corpus data |
-|------------|-----------:|------------:|----------:|---------------:|
-| Performance | 52 | 52 | 0 | 0 |
+| Department | Total cops | Exact match | Diverging | No corpus data | Exact match % |
+|------------|-----------:|------------:|----------:|---------------:|--------------:|
+| Performance | 52 | 52 | 0 | 0 | ✓ 100.0% |
 
 **[rubocop-rspec](https://github.com/rubocop/rubocop-rspec)** `3.9.0` (113 cops)
 
-| Department | Total cops | Exact match | Diverging | No corpus data |
-|------------|-----------:|------------:|----------:|---------------:|
-| RSpec | 113 | 50 | 60 | 3 |
+| Department | Total cops | Exact match | Diverging | No corpus data | Exact match % |
+|------------|-----------:|------------:|----------:|---------------:|--------------:|
+| RSpec | 113 | 50 | 60 | 3 | 44.2% |
 
 **[rubocop-rspec_rails](https://github.com/rubocop/rubocop-rspec_rails)** `2.32.0` (8 cops)
 
-| Department | Total cops | Exact match | Diverging | No corpus data |
-|------------|-----------:|------------:|----------:|---------------:|
-| RSpecRails | 8 | 7 | 0 | 1 |
+| Department | Total cops | Exact match | Diverging | No corpus data | Exact match % |
+|------------|-----------:|------------:|----------:|---------------:|--------------:|
+| RSpecRails | 8 | 7 | 0 | 1 | 87.5% |
 
 **[rubocop-factory_bot](https://github.com/rubocop/rubocop-factory_bot)** `2.28.0` (11 cops)
 
-| Department | Total cops | Exact match | Diverging | No corpus data |
-|------------|-----------:|------------:|----------:|---------------:|
-| FactoryBot | 11 | 11 | 0 | 0 |
+| Department | Total cops | Exact match | Diverging | No corpus data | Exact match % |
+|------------|-----------:|------------:|----------:|---------------:|--------------:|
+| FactoryBot | 11 | 11 | 0 | 0 | ✓ 100.0% |
 <!-- corpus-cops:end -->
 
 Every cop reads its RuboCop YAML config options and has fixture-based test coverage.
