@@ -2,6 +2,17 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Checks for ambiguous endless method definitions that use low-precedence operators.
+///
+/// ## Corpus conformance fix (2026-03-08)
+/// **Root cause:** RuboCop requires `minimum_target_ruby_version 3.0` — endless methods
+/// were introduced in Ruby 3.0, so this cop only fires for repos targeting Ruby >= 3.0.
+/// The nitrocop implementation was missing this version check, causing 13 false positives
+/// across 10 repos (rbs, newrelic, yard, nats.rb, blueprinter, puppet, rack, rails,
+/// ferrum, stripe-mock) that target Ruby < 3.0.
+///
+/// **Fix:** Added TargetRubyVersion >= 3.0 check at the start of `check_lines`,
+/// matching the pattern used by `Style/ItBlockParameter` for its 3.4 threshold.
 pub struct AmbiguousEndlessMethodDefinition;
 
 impl Cop for AmbiguousEndlessMethodDefinition {
@@ -12,10 +23,21 @@ impl Cop for AmbiguousEndlessMethodDefinition {
     fn check_lines(
         &self,
         source: &SourceFile,
-        _config: &CopConfig,
+        config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        // RuboCop: minimum_target_ruby_version 3.0
+        // Endless methods were introduced in Ruby 3.0
+        let ruby_version = config
+            .options
+            .get("TargetRubyVersion")
+            .and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|u| u as f64)))
+            .unwrap_or(2.7);
+        if ruby_version < 3.0 {
+            return;
+        }
+
         let low_precedence_ops = [" and ", " or ", " if ", " unless ", " while ", " until "];
 
         for (i, line) in source.lines().enumerate() {
@@ -77,8 +99,47 @@ impl Cop for AmbiguousEndlessMethodDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    crate::cop_fixture_tests!(
-        AmbiguousEndlessMethodDefinition,
-        "cops/style/ambiguous_endless_method_definition"
-    );
+    use crate::cop::CopConfig;
+
+    fn ruby30_config() -> CopConfig {
+        let mut config = CopConfig::default();
+        config.options.insert(
+            "TargetRubyVersion".to_string(),
+            serde_yml::Value::Number(serde_yml::Number::from(3.0)),
+        );
+        config
+    }
+
+    #[test]
+    fn offense_with_ruby30() {
+        crate::testutil::assert_cop_offenses_full_with_config(
+            &AmbiguousEndlessMethodDefinition,
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/ambiguous_endless_method_definition/offense.rb"
+            ),
+            ruby30_config(),
+        );
+    }
+
+    #[test]
+    fn no_offense_with_ruby30() {
+        crate::testutil::assert_cop_no_offenses_full_with_config(
+            &AmbiguousEndlessMethodDefinition,
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/ambiguous_endless_method_definition/no_offense.rb"
+            ),
+            ruby30_config(),
+        );
+    }
+
+    #[test]
+    fn no_offense_below_ruby30() {
+        // Default Ruby version (2.7) — cop should be completely silent
+        crate::testutil::assert_cop_no_offenses_full(
+            &AmbiguousEndlessMethodDefinition,
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/ambiguous_endless_method_definition/offense.rb"
+            ),
+        );
+    }
 }
