@@ -22,10 +22,22 @@ use crate::parse::source::SourceFile;
 /// ## Remaining FN=24,262 (2026-03-03)
 ///
 /// The remaining false negatives likely come from patterns not yet handled:
-/// - Method calls without explicit parentheses (no opening_loc/closing_loc)
 /// - `super` / `yield` calls (not CallNode in Prism)
 /// - Complex nested call chains where the outer call lacks parens
 /// - Possibly `send` vs `csend` differences in safe navigation edge cases
+///
+/// ## Corpus investigation (2026-03-08)
+///
+/// Investigated no-parens command calls and confirmed they are a major FN source.
+/// A local fix that removed the `(` / `)` gate matched isolated RuboCop repros,
+/// but failed corpus acceptance with hundreds of apparent FP concentrated in
+/// repo-local excluded/generated files. Direct repo comparison showed RuboCop
+/// suppressing those files under the corpus baseline invocation while nitrocop's
+/// `--config baseline_rubocop.yml` path did not.
+///
+/// Result: reverted the no-parens cop-only change. A safe fix likely requires
+/// config-layer parity for repo-local exclude handling under explicit `--config`
+/// before re-enabling no-parens coverage here.
 pub struct MultilineMethodArgumentLineBreaks;
 
 impl Cop for MultilineMethodArgumentLineBreaks {
@@ -62,6 +74,11 @@ impl Cop for MultilineMethodArgumentLineBreaks {
             return;
         }
 
+        let args = match call.arguments() {
+            Some(a) => a,
+            None => return,
+        };
+
         let open_loc = match call.opening_loc() {
             Some(loc) => loc,
             None => return,
@@ -74,11 +91,6 @@ impl Cop for MultilineMethodArgumentLineBreaks {
         if open_loc.as_slice() != b"(" || close_loc.as_slice() != b")" {
             return;
         }
-
-        let args = match call.arguments() {
-            Some(a) => a,
-            None => return,
-        };
 
         let (open_line, _) = source.offset_to_line_col(open_loc.start_offset());
         let (close_line, _) = source.offset_to_line_col(close_loc.start_offset());
