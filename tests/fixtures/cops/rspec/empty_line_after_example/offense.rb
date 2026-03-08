@@ -24,4 +24,11 @@ RSpec.describe Foo do
   it "adds the errors" do
     expect(true).to be true
   end
+
+  # Description text containing `end` should not be mistaken for one-line do..end
+  it("returns the number of added lines") { is_expected.to eq(1) }
+  ^^ RSpec/EmptyLineAfterExample: Add an empty line after `it`.
+  it "adds a line to the end" do
+    expect(true).to be true
+  end
 end

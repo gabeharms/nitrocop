@@ -213,6 +213,9 @@ fn is_terminator_line(line: &[u8]) -> bool {
     let trimmed = line.iter().position(|&b| b != b' ' && b != b'\t');
     if let Some(start) = trimmed {
         let rest = &line[start..];
+        if rest.starts_with(b"}") {
+            return true;
+        }
         for keyword in &[
             b"end" as &[u8],
             b"else",
@@ -241,12 +244,48 @@ fn is_single_line_block(line: &[u8]) -> bool {
     if line.contains(&b'{') && line.contains(&b'}') {
         return true;
     }
-    // Single-line do..end: `it "foo" do something end` (very rare but possible)
-    // Check if line contains both `do` and `end`
-    if line.windows(2).any(|w| w == b"do") && line.windows(3).any(|w| w == b"end") {
+
+    // Single-line do..end: `it "foo" do something end`.
+    // Require `end` as the trailing keyword to avoid matching description text.
+    let trimmed = trim_ascii_whitespace(line);
+    if trimmed.ends_with(b"end") && contains_keyword(trimmed, b"do") {
         return true;
     }
     false
+}
+
+fn trim_ascii_whitespace(mut line: &[u8]) -> &[u8] {
+    while let Some((first, rest)) = line.split_first() {
+        if *first == b' ' || *first == b'\t' {
+            line = rest;
+        } else {
+            break;
+        }
+    }
+    while let Some((last, rest)) = line.split_last() {
+        if *last == b' ' || *last == b'\t' {
+            line = rest;
+        } else {
+            break;
+        }
+    }
+    line
+}
+
+fn contains_keyword(line: &[u8], keyword: &[u8]) -> bool {
+    if keyword.is_empty() || line.len() < keyword.len() {
+        return false;
+    }
+    line.windows(keyword.len()).enumerate().any(|(i, window)| {
+        if window != keyword {
+            return false;
+        }
+        let left_ok = i == 0 || !line[i - 1].is_ascii_alphanumeric() && line[i - 1] != b'_';
+        let right_idx = i + keyword.len();
+        let right_ok = right_idx == line.len()
+            || !line[right_idx].is_ascii_alphanumeric() && line[right_idx] != b'_';
+        left_ok && right_ok
+    })
 }
 
 /// Check if a line starts with any RSpec example keyword followed by a

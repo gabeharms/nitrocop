@@ -58,6 +58,11 @@ RSpec.describe Foo do
     # rubocop:enable RSpec/AnyInstance
   end
 
+  # One-liner before a brace terminator should be treated as last child
+  context {
+    it { should == 0 }
+  }
+
   # Consecutive `its` one-liners should be allowed
   describe '#attributes' do
     subject { record }
