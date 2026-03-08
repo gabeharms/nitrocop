@@ -3,6 +3,25 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Rails/WhereNot - detects manually constructed negated SQL in `where` calls.
+///
+/// ## Corpus investigation findings
+///
+/// FN root cause (35 FN): RuboCop's `where_method_call?` pattern matches two forms:
+///
+/// - `(call _ :where $str_type? $_ ?)` -- bare string arg: `where('name != ?', val)`
+/// - `(call _ :where (array $str_type? $_ ?))` -- array-wrapped: `where(['name != ?', val])`
+///
+/// Nitrocop originally only handled the bare string form; the array-wrapped form was missed.
+///
+/// FP root cause (27 FP): RuboCop's `offense_range` starts at `node.loc.selector`
+/// (the `where` method name), not the full node including receiver. Nitrocop used
+/// `node.location()` which includes the receiver (e.g., `User.where(...)` vs `where(...)`).
+/// On multiline chains this causes line-number mismatches: nitrocop reports on the receiver
+/// line while RuboCop reports on the `where` line, creating paired FP+FN on adjacent lines.
+///
+/// Fix applied: Added array-unwrapping for first arg, and changed offense location
+/// to start at `call.message_loc()` (the `where` keyword) instead of `node.location()`.
 pub struct WhereNot;
 
 /// Check if the SQL template string matches a simple negation pattern
@@ -335,10 +354,24 @@ impl Cop for WhereNot {
             return;
         }
 
-        // First argument must be a string literal
+        // RuboCop matches two forms:
+        // 1. where('col != ?', val) — bare string first arg
+        // 2. where(['col != ?', val]) — array-wrapped first arg
         let first_arg = &arg_list[0];
         let sql_content = if let Some(str_node) = first_arg.as_string_node() {
+            // Form 1: bare string
             String::from_utf8_lossy(str_node.unescaped()).to_string()
+        } else if let Some(array_node) = first_arg.as_array_node() {
+            // Form 2: array-wrapped — extract first element as SQL template
+            let elements: Vec<_> = array_node.elements().iter().collect();
+            if elements.is_empty() {
+                return;
+            }
+            if let Some(str_node) = elements[0].as_string_node() {
+                String::from_utf8_lossy(str_node.unescaped()).to_string()
+            } else {
+                return;
+            }
         } else {
             return;
         };
@@ -347,7 +380,9 @@ impl Cop for WhereNot {
             return;
         }
 
-        let loc = node.location();
+        // Use message_loc to start offense at `where` keyword (matching RuboCop's
+        // offense_range which uses node.loc.selector, not the full node with receiver)
+        let loc = call.message_loc().unwrap_or(node.location());
         let (line, column) = source.offset_to_line_col(loc.start_offset());
         diagnostics.push(self.diagnostic(
             source,

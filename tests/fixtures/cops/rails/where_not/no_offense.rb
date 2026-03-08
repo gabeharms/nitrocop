@@ -7,3 +7,7 @@ Post.where(published: true)
 where('NOT EXISTS (SELECT * FROM statuses_tags forbidden WHERE forbidden.status_id = statuses.id)')
 where('scheduled_at IS NOT NULL AND scheduled_at <= ?', Time.now.utc)
 where('name NOT LIKE ?', '%test%')
+# Array-wrapped non-negation should not be flagged
+User.where(["name = ?", "foo"])
+User.where(["name IN (?)", [1, 2]])
+User.where(["name IS NULL"])
