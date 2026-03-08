@@ -20,4 +20,14 @@ value =
     nil
   end
 
+memoized ||=
+  begin
+    build_value
+  end
+
+result =
+  fetch_records do
+    build_record
+  end
+
 x = 42

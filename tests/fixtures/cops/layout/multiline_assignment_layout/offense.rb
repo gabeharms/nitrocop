@@ -19,3 +19,13 @@ value = case x
         else
           2
         end
+
+memoized ||= begin
+^^^^^^^^^^^^^^^^^^ Layout/MultilineAssignmentLayout: Right hand side of multi-line assignment is on the same line as the assignment operator `=`.
+               build_value
+             end
+
+result = fetch_records do
+^^^^^^^^^^^^^^^^^^^^^^^^^ Layout/MultilineAssignmentLayout: Right hand side of multi-line assignment is on the same line as the assignment operator `=`.
+           build_record
+         end

@@ -1,12 +1,37 @@
 use crate::cop::node_type::{
-    BEGIN_NODE, BLOCK_NODE, CASE_MATCH_NODE, CASE_NODE, CLASS_NODE, CLASS_VARIABLE_WRITE_NODE,
-    CONSTANT_WRITE_NODE, GLOBAL_VARIABLE_WRITE_NODE, IF_NODE, INSTANCE_VARIABLE_WRITE_NODE,
-    LAMBDA_NODE, LOCAL_VARIABLE_WRITE_NODE, MODULE_NODE, UNLESS_NODE,
+    BEGIN_NODE, BLOCK_NODE, CASE_MATCH_NODE, CASE_NODE, CLASS_NODE, CLASS_VARIABLE_OR_WRITE_NODE,
+    CLASS_VARIABLE_WRITE_NODE, CONSTANT_OR_WRITE_NODE, CONSTANT_PATH_OR_WRITE_NODE,
+    CONSTANT_PATH_WRITE_NODE, CONSTANT_WRITE_NODE, GLOBAL_VARIABLE_OR_WRITE_NODE,
+    GLOBAL_VARIABLE_WRITE_NODE, IF_NODE, INSTANCE_VARIABLE_OR_WRITE_NODE,
+    INSTANCE_VARIABLE_WRITE_NODE, LAMBDA_NODE, LOCAL_VARIABLE_OR_WRITE_NODE,
+    LOCAL_VARIABLE_WRITE_NODE, MODULE_NODE, UNLESS_NODE,
 };
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=13, FN=39,806.
+///
+/// FP=13: not investigated in this pass.
+///
+/// FN root causes investigated:
+/// - Prism represents `||=` as `*_or_write` nodes. The cop only subscribed to
+///   plain `*_write` nodes, so memoized multiline assignments like
+///   `memoized ||= begin ... end` were skipped entirely.
+/// - Prism keeps `do/end` and `{}` blocks on `CallNode` itself. The cop only
+///   treated `BlockNode`/`LambdaNode` as supported `block` RHS values, so
+///   assignments like `result = fetch_records do ... end` were missed.
+///
+/// Fix applied:
+/// - Added `*_or_write` and constant-path assignment node handling.
+/// - Treat block-bearing `CallNode` values as supported `block` assignments.
+///
+/// Remaining likely gaps:
+/// - Setter/index assignment shapes (`foo.bar =`, `hash[:key] =`) still are not
+///   modeled here.
+/// - Multi-assignment (`masgn`) support from RuboCop is still absent.
 pub struct MultilineAssignmentLayout;
 
 /// Check if a node represents one of the supported types for this cop.
@@ -18,7 +43,13 @@ fn is_supported_type(node: &ruby_prism::Node<'_>, supported_types: &[String]) ->
             "class" => node.as_class_node().is_some(),
             "module" => node.as_module_node().is_some(),
             "kwbegin" => node.as_begin_node().is_some(),
-            "block" => node.as_block_node().is_some() || node.as_lambda_node().is_some(),
+            "block" => {
+                node.as_block_node().is_some()
+                    || node.as_lambda_node().is_some()
+                    || node
+                        .as_call_node()
+                        .is_some_and(|call| call.block().is_some())
+            }
             _ => false,
         };
         if matches {
@@ -28,20 +59,63 @@ fn is_supported_type(node: &ruby_prism::Node<'_>, supported_types: &[String]) ->
     false
 }
 
-/// Find the `=` sign byte offset between the name end and the value start
-/// by scanning the raw bytes. Returns None if not found.
-fn find_eq_offset(source: &SourceFile, name_end: usize, value_start: usize) -> Option<usize> {
+/// Find the assignment operator byte offset by scanning backwards from the RHS.
+/// This catches both `=` and `||=` forms while preferring the last operator
+/// before the value start.
+fn find_eq_offset(
+    source: &SourceFile,
+    assignment_start: usize,
+    value_start: usize,
+) -> Option<usize> {
     let bytes = source.as_bytes();
-    for i in name_end..value_start.min(bytes.len()) {
-        if bytes[i] == b'=' {
-            // Make sure it's a standalone `=` and not `==`
-            if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
-                continue;
-            }
-            return Some(i);
+    let end = value_start.min(bytes.len());
+    for i in (assignment_start..end).rev() {
+        if bytes[i] != b'=' {
+            continue;
         }
+
+        // Skip comparison operators like `==`/`===` by ignoring both sides.
+        if i + 1 < end && bytes[i + 1] == b'=' {
+            continue;
+        }
+        if i > assignment_start && bytes[i - 1] == b'=' {
+            continue;
+        }
+
+        return Some(i);
     }
     None
+}
+
+fn assignment_start_and_value<'a>(
+    node: &'a ruby_prism::Node<'a>,
+) -> Option<(usize, ruby_prism::Node<'a>)> {
+    if let Some(asgn) = node.as_local_variable_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_instance_variable_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_constant_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_constant_path_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_class_variable_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_global_variable_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_local_variable_or_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_instance_variable_or_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_constant_or_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_constant_path_or_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else if let Some(asgn) = node.as_class_variable_or_write_node() {
+        Some((asgn.location().start_offset(), asgn.value()))
+    } else {
+        node.as_global_variable_or_write_node()
+            .map(|asgn| (asgn.location().start_offset(), asgn.value()))
+    }
 }
 
 impl Cop for MultilineAssignmentLayout {
@@ -60,12 +134,19 @@ impl Cop for MultilineAssignmentLayout {
             CASE_MATCH_NODE,
             CASE_NODE,
             CLASS_NODE,
+            CLASS_VARIABLE_OR_WRITE_NODE,
             CLASS_VARIABLE_WRITE_NODE,
+            CONSTANT_OR_WRITE_NODE,
+            CONSTANT_PATH_OR_WRITE_NODE,
+            CONSTANT_PATH_WRITE_NODE,
             CONSTANT_WRITE_NODE,
+            GLOBAL_VARIABLE_OR_WRITE_NODE,
             GLOBAL_VARIABLE_WRITE_NODE,
             IF_NODE,
+            INSTANCE_VARIABLE_OR_WRITE_NODE,
             INSTANCE_VARIABLE_WRITE_NODE,
             LAMBDA_NODE,
+            LOCAL_VARIABLE_OR_WRITE_NODE,
             LOCAL_VARIABLE_WRITE_NODE,
             MODULE_NODE,
             UNLESS_NODE,
@@ -95,19 +176,9 @@ impl Cop for MultilineAssignmentLayout {
                 ]
             });
 
-        // Extract (name_end_offset, value_node) from various assignment types
-        let (name_end, value) = if let Some(asgn) = node.as_local_variable_write_node() {
-            (asgn.name_loc().end_offset(), asgn.value())
-        } else if let Some(asgn) = node.as_instance_variable_write_node() {
-            (asgn.name_loc().end_offset(), asgn.value())
-        } else if let Some(asgn) = node.as_constant_write_node() {
-            (asgn.name_loc().end_offset(), asgn.value())
-        } else if let Some(asgn) = node.as_class_variable_write_node() {
-            (asgn.name_loc().end_offset(), asgn.value())
-        } else if let Some(asgn) = node.as_global_variable_write_node() {
-            (asgn.name_loc().end_offset(), asgn.value())
-        } else {
-            return;
+        let (assignment_start, value) = match assignment_start_and_value(node) {
+            Some(parts) => parts,
+            None => return,
         };
 
         if !is_supported_type(&value, &supported_types) {
@@ -123,11 +194,11 @@ impl Cop for MultilineAssignmentLayout {
             return;
         }
 
-        // Find the `=` sign between the name and the value
-        let eq_offset = match find_eq_offset(source, name_end, value.location().start_offset()) {
-            Some(o) => o,
-            None => return,
-        };
+        let eq_offset =
+            match find_eq_offset(source, assignment_start, value.location().start_offset()) {
+                Some(o) => o,
+                None => return,
+            };
 
         let (eq_line, _) = source.offset_to_line_col(eq_offset);
         let same_line = eq_line == value_start_line;
