@@ -12,13 +12,16 @@ static DIRECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// Legacy directive aliases derived from obsoletion.yml.
 ///
 /// Maps new cop name -> old cop names when RuboCop still treats the old name as
-/// suppressing the new cop in inline directives:
-/// - same-department renames (`Naming/PredicateName` -> `Naming/PredicatePrefix`)
+/// suppressing the new cop in inline directives. Only includes renames where
+/// the short name (after the `/`) stayed the same, because RuboCop's
+/// `Registry.qualified_cop_name` resolves unregistered names by short-name
+/// lookup in the global registry:
 /// - moved cops whose short name stayed the same
 ///   (`Lint/Eval` -> `Security/Eval`, `Metrics/LineLength` -> `Layout/LineLength`)
 ///
-/// Cross-department renames that also change the short name remain excluded
-/// (`Style/OpMethod` -> `Naming/BinaryOperatorParameterName`).
+/// Renames that changed the short name are excluded even within the same
+/// department (`Naming/PredicateName` -> `Naming/PredicatePrefix`), because
+/// the old short name `PredicateName` won't match any registered cop.
 static DIRECTIVE_LEGACY_ALIASES: LazyLock<HashMap<String, Vec<String>>> =
     LazyLock::new(|| build_directive_legacy_aliases(&crate::linter::RENAMED_COPS));
 
@@ -328,15 +331,14 @@ fn build_directive_legacy_aliases(
     let mut aliases = HashMap::new();
 
     for (old_name, new_name) in renamed_cops {
-        let Some((old_dept, old_short)) = old_name.split_once('/') else {
+        let Some((_, old_short)) = old_name.split_once('/') else {
             continue;
         };
-        let Some((new_dept, new_short)) = new_name.as_str().split_once('/') else {
+        let Some((_, new_short)) = new_name.as_str().split_once('/') else {
             continue;
         };
-        let same_department = old_dept.eq_ignore_ascii_case(new_dept);
         let same_short_name = old_short.eq_ignore_ascii_case(new_short);
-        if !same_department && !same_short_name {
+        if !same_short_name {
             continue;
         }
 
@@ -622,12 +624,18 @@ mod tests {
     }
 
     #[test]
-    fn same_department_legacy_cop_name_resolved() {
-        // Same-department rename should resolve for inline disable matching.
+    fn same_department_changed_short_name_not_resolved() {
+        // Same-department rename where the short name changed should NOT resolve,
+        // matching RuboCop behavior: `Registry.qualified_cop_name` resolves by
+        // short-name lookup, so `PredicateName` won't find `PredicatePrefix`.
         let dr = disabled_ranges("x = 1 # rubocop:disable Naming/PredicateName\ny = 2\n");
         assert!(
-            dr.is_disabled("Naming/PredicatePrefix", 1),
-            "same-department legacy name should resolve to new cop name"
+            !dr.is_disabled("Naming/PredicatePrefix", 1),
+            "same-department legacy name with changed short name should NOT resolve"
+        );
+        assert!(
+            dr.is_disabled("Naming/PredicateName", 1),
+            "the exact legacy name should still be recorded"
         );
     }
 
@@ -659,13 +667,18 @@ mod tests {
     }
 
     #[test]
-    fn directive_legacy_alias_marks_used() {
+    fn same_department_changed_short_name_not_marked_used() {
+        // Same-department rename with changed short name should NOT suppress.
         let mut dr = disabled_ranges("x = 1 # rubocop:disable Naming/PredicateName\ny = 2\n");
-        assert!(dr.check_and_mark_used("Naming/PredicatePrefix", 1));
-        let unused: Vec<_> = dr.unused_directives().collect();
         assert!(
-            unused.is_empty(),
-            "legacy alias directive should be marked used"
+            !dr.check_and_mark_used("Naming/PredicatePrefix", 1),
+            "changed short name should not suppress new cop"
+        );
+        let unused: Vec<_> = dr.unused_directives().collect();
+        assert_eq!(
+            unused.len(),
+            1,
+            "directive should remain unused since it doesn't match the new cop"
         );
     }
 

@@ -18,6 +18,17 @@ use crate::parse::source::SourceFile;
 /// - Fix: iterate over NamePrefix, compute expected_name per RuboCop logic (strip prefix
 ///   if in ForbiddenPrefixes, else keep; append `?` if not present), skip if method_name
 ///   already equals expected_name. Support singleton methods via DefNode receiver check.
+///
+/// ## Investigation findings (FN=61 fix):
+/// - Root cause: all 61 FNs had `# rubocop:disable Naming/PredicateName` inline comments.
+///   `Naming/PredicateName` is the old (renamed) name for `Naming/PredicatePrefix`.
+///   Nitrocop's directive legacy alias system incorrectly treated same-department renames
+///   with different short names as valid aliases. RuboCop does NOT honor the old name in
+///   disable comments when the short name changed (its `Registry.qualified_cop_name`
+///   resolves by short-name lookup, and `PredicateName` doesn't match `PredicatePrefix`).
+/// - Fix: changed `build_directive_legacy_aliases` in `directives.rs` to only include
+///   renames where the short name is the same (e.g., `Lint/Eval` → `Security/Eval`),
+///   excluding same-department renames with changed short names.
 pub struct PredicatePrefix;
 
 impl PredicatePrefix {
