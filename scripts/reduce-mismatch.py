@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -27,6 +28,7 @@ OUTPUT_DIR = Path("/tmp/nitrocop-reduce")
 
 # Counters for stats
 _predicate_calls = 0
+_predicate_cache: dict[tuple[str, str, str, bool, str], bool] = {}
 
 
 def corpus_env() -> dict[str, str]:
@@ -35,6 +37,67 @@ def corpus_env() -> dict[str, str]:
     env["BUNDLE_GEMFILE"] = str(PROJECT_ROOT / "bench" / "corpus" / "Gemfile")
     env["BUNDLE_PATH"] = str(PROJECT_ROOT / "bench" / "corpus" / "vendor" / "bundle")
     return env
+
+
+class RubocopRunner:
+    """Run RuboCop with optional server mode to amortize startup cost."""
+
+    def __init__(self):
+        self.env = corpus_env()
+        self._server_enabled: bool | None = None
+
+    def _base_cmd(self, cop: str, filepath: str) -> list[str]:
+        return [
+            "bundle", "exec", "rubocop",
+            "--only", cop,
+            "--format", "json",
+            "--config", str(BASELINE_CONFIG),
+            "--force-exclusion",
+            filepath,
+        ]
+
+    def _ensure_server_mode(self):
+        if self._server_enabled is not None:
+            return
+
+        cmd = ["bundle", "exec", "rubocop", "--start-server"]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30, env=self.env,
+            )
+            self._server_enabled = result.returncode == 0
+        except subprocess.TimeoutExpired:
+            self._server_enabled = False
+
+    def run(self, cop: str, filepath: str) -> set[int]:
+        """Run RuboCop on a single file, returning offense line numbers."""
+        self._ensure_server_mode()
+
+        cmd = self._base_cmd(cop, filepath)
+        if self._server_enabled:
+            cmd.insert(3, "--server")
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30, env=self.env,
+            )
+        except subprocess.TimeoutExpired:
+            return set()
+
+        if result.returncode not in (0, 1):
+            return set()
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return set()
+
+        lines = set()
+        for f in data.get("files", []):
+            for o in f.get("offenses", []):
+                if o.get("cop_name", "") == cop:
+                    lines.add(o.get("location", {}).get("line", 0))
+        return lines
 
 
 def run_nitrocop(cop: str, filepath: str) -> set[int]:
@@ -67,39 +130,6 @@ def run_nitrocop(cop: str, filepath: str) -> set[int]:
     return lines
 
 
-def run_rubocop(cop: str, filepath: str) -> set[int]:
-    """Run rubocop --only on a single file, return offense line numbers."""
-    cmd = [
-        "bundle", "exec", "rubocop",
-        "--only", cop,
-        "--format", "json",
-        "--config", str(BASELINE_CONFIG),
-        "--force-exclusion",
-        filepath,
-    ]
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, env=corpus_env(),
-        )
-    except subprocess.TimeoutExpired:
-        return set()
-
-    if result.returncode not in (0, 1):
-        return set()
-
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return set()
-
-    lines = set()
-    for f in data.get("files", []):
-        for o in f.get("offenses", []):
-            if o.get("cop_name", "") == cop:
-                lines.add(o.get("location", {}).get("line", 0))
-    return lines
-
-
 def is_parseable(filepath: str) -> bool:
     """Check if a Ruby file parses without errors using Prism."""
     cmd = [
@@ -118,8 +148,10 @@ def is_interesting(
     cop: str,
     tmp_path: str,
     mismatch_type: str,
+    rubocop_runner: RubocopRunner,
     skip_rubocop: bool = False,
     verbose: bool = False,
+    candidate_text: str | None = None,
 ) -> bool:
     """Check if the file at tmp_path still exhibits the mismatch.
 
@@ -129,43 +161,69 @@ def is_interesting(
     skip_rubocop: optimization for FP — if original had 0 rubocop offenses,
     any subset will too, so we only need to check nitrocop.
     """
+    cache_key = None
+    if candidate_text is not None:
+        digest = hashlib.blake2b(candidate_text.encode(), digest_size=16).hexdigest()
+        cache_key = (cop, tmp_path, mismatch_type, skip_rubocop, digest)
+        cached = _predicate_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     global _predicate_calls
     _predicate_calls += 1
-
-    if not is_parseable(tmp_path):
-        if verbose:
-            print("    [skip] not parseable", file=sys.stderr)
-        return False
 
     nc = run_nitrocop(cop, tmp_path)
 
     if mismatch_type == "fp":
+        reject_reason = None
         if not nc:
-            if verbose:
-                print("    [skip] nitrocop didn't fire", file=sys.stderr)
-            return False
-        if skip_rubocop:
-            return True
-        rc = run_rubocop(cop, tmp_path)
-        interesting = len(rc) == 0
+            interesting = False
+            reject_reason = "nitrocop didn't fire"
+        elif not is_parseable(tmp_path):
+            interesting = False
+            reject_reason = "not parseable"
+        elif skip_rubocop:
+            interesting = True
+        else:
+            rc = rubocop_runner.run(cop, tmp_path)
+            interesting = len(rc) == 0
+            if not interesting:
+                reject_reason = "rubocop also fires"
         if verbose and not interesting:
-            print("    [skip] rubocop also fires", file=sys.stderr)
-        return interesting
+            print(f"    [skip] {reject_reason}", file=sys.stderr)
     else:  # fn
         if nc:
             if verbose:
                 print("    [skip] nitrocop fires (need it silent for FN)", file=sys.stderr)
-            return False
-        rc = run_rubocop(cop, tmp_path)
-        interesting = len(rc) > 0
-        if verbose and not interesting:
-            print("    [skip] rubocop also silent", file=sys.stderr)
-        return interesting
+            interesting = False
+        else:
+            rc = rubocop_runner.run(cop, tmp_path)
+            if not rc:
+                if verbose:
+                    print("    [skip] rubocop also silent", file=sys.stderr)
+                interesting = False
+            elif not is_parseable(tmp_path):
+                if verbose:
+                    print("    [skip] not parseable", file=sys.stderr)
+                interesting = False
+            else:
+                interesting = True
+
+    if cache_key is not None:
+        _predicate_cache[cache_key] = interesting
+    return interesting
 
 
-def write_candidate(lines: list[str], tmp_path: str):
+def render_candidate(lines: list[str]) -> str:
+    """Render candidate lines back to file contents."""
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def write_candidate(lines: list[str], tmp_path: str) -> str:
     """Write candidate lines to the temp file."""
-    Path(tmp_path).write_text("\n".join(lines) + "\n" if lines else "")
+    text = render_candidate(lines)
+    Path(tmp_path).write_text(text)
+    return text
 
 
 def reduce_blocks(
@@ -173,6 +231,7 @@ def reduce_blocks(
     cop: str,
     tmp_path: str,
     mismatch_type: str,
+    rubocop_runner: RubocopRunner,
     skip_rubocop: bool,
     verbose: bool,
 ) -> list[str]:
@@ -195,8 +254,11 @@ def reduce_blocks(
                       f"(lines {start+1}-{end}, {len(candidate)} remaining)",
                       file=sys.stderr)
 
-            write_candidate(candidate, tmp_path)
-            if is_interesting(cop, tmp_path, mismatch_type, skip_rubocop, verbose):
+            candidate_text = write_candidate(candidate, tmp_path)
+            if is_interesting(
+                cop, tmp_path, mismatch_type, rubocop_runner,
+                skip_rubocop, verbose, candidate_text,
+            ):
                 if verbose:
                     print(f"  Phase 1: accepted! {len(lines)} → {len(candidate)} lines",
                           file=sys.stderr)
@@ -217,6 +279,7 @@ def reduce_lines(
     cop: str,
     tmp_path: str,
     mismatch_type: str,
+    rubocop_runner: RubocopRunner,
     skip_rubocop: bool,
     verbose: bool,
 ) -> list[str]:
@@ -234,8 +297,11 @@ def reduce_lines(
                   f"({len(candidate)} remaining)",
                   file=sys.stderr)
 
-        write_candidate(candidate, tmp_path)
-        if is_interesting(cop, tmp_path, mismatch_type, skip_rubocop, verbose):
+        candidate_text = write_candidate(candidate, tmp_path)
+        if is_interesting(
+            cop, tmp_path, mismatch_type, rubocop_runner,
+            skip_rubocop, verbose, candidate_text,
+        ):
             if verbose:
                 print(f"  Phase 2: accepted! removed line {i+1}",
                       file=sys.stderr)
@@ -291,13 +357,14 @@ def main():
     # Set up temp file (preserve original filename for path-sensitive cops)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     tmp_path = str(OUTPUT_DIR / Path(filepath).name)
+    rubocop_runner = RubocopRunner()
 
     # Write original and verify the mismatch exists
     write_candidate(lines, tmp_path)
     print("Verifying initial mismatch...", file=sys.stderr)
 
     nc_lines = run_nitrocop(args.cop, tmp_path)
-    rc_lines = run_rubocop(args.cop, tmp_path)
+    rc_lines = rubocop_runner.run(args.cop, tmp_path)
 
     if args.type == "fp":
         if not nc_lines:
@@ -335,12 +402,16 @@ def main():
 
     # Phase 1: block deletion
     print("Phase 1: block deletion...", file=sys.stderr)
-    lines = reduce_blocks(lines, args.cop, tmp_path, args.type, skip_rubocop, args.verbose)
+    lines = reduce_blocks(
+        lines, args.cop, tmp_path, args.type, rubocop_runner, skip_rubocop, args.verbose,
+    )
     print(f"Phase 1 done: {original_count} → {len(lines)} lines", file=sys.stderr)
 
     # Phase 2: line deletion
     print("Phase 2: line deletion...", file=sys.stderr)
-    lines = reduce_lines(lines, args.cop, tmp_path, args.type, skip_rubocop, args.verbose)
+    lines = reduce_lines(
+        lines, args.cop, tmp_path, args.type, rubocop_runner, skip_rubocop, args.verbose,
+    )
     print(f"Phase 2 done: {len(lines)} lines", file=sys.stderr)
 
     elapsed = time.time() - start_time
