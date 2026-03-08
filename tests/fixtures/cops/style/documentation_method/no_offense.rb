@@ -85,3 +85,55 @@ class Container
       end
   end
 end
+
+# Retroactive private :method_name makes method non-public (no docs needed)
+class RetroactivePrivate
+  def secret_method
+    42
+  end
+  private :secret_method
+end
+
+# Retroactive protected :method_name makes method non-public
+class RetroactiveProtected
+  def guarded_method
+    42
+  end
+  protected :guarded_method
+end
+
+# Multiple methods made private retroactively
+class MultiRetroactive
+  def helper_one
+    42
+  end
+
+  def helper_two
+    42
+  end
+  private :helper_one, :helper_two
+end
+
+# Retroactive private with string argument
+class RetroactivePrivateString
+  def string_method
+    42
+  end
+  private "string_method"
+end
+
+# public re-establishes visibility after private section
+class PublicAfterPrivate
+  private
+
+  def secret
+    42
+  end
+
+  public
+
+  # Documented public method after public keyword
+  def visible
+    42
+  end
+end

@@ -13,6 +13,20 @@ const NON_PUBLIC_MODIFIERS: &[&[u8]] = &[b"private_class_method "];
 /// reported at the modifier start.
 const PUBLIC_MODIFIERS: &[&[u8]] = &[b"module_function ", b"ruby2_keywords "];
 
+/// Style/DocumentationMethod: checks for missing documentation comment on public methods.
+///
+/// **Investigation (2026-03-08):** 1,768 FPs, 453 FNs at 99.5% match rate.
+/// Root cause of FPs: retroactive visibility via `private :method_name` or
+/// `protected :method_name` after the def. RuboCop's `VisibilityHelp` mixin checks
+/// right-siblings for `(send nil? :private (sym :method_name))`, making the method
+/// non-public. nitrocop's `is_private_or_protected` only checked preceding standalone
+/// visibility keywords and inline prefixes — it missed the retroactive pattern.
+///
+/// Fix: Added `has_retroactive_visibility()` which scans lines after the def for
+/// `private :sym` / `protected :sym` / `private "str"` patterns with matching method name.
+///
+/// Remaining FN gap (453): likely from singleton methods (`def self.foo`, `def obj.bar`)
+/// which RuboCop handles via `on_defs` but nitrocop only handles `DefNode` (not singleton defs).
 pub struct DocumentationMethod;
 
 /// Detect if the line containing the def has a modifier prefix before the `def` keyword.
@@ -46,6 +60,58 @@ fn detect_inline_modifier(source: &SourceFile, def_offset: usize) -> Option<(&[u
 /// Check if the detected modifier is a non-public modifier.
 fn is_non_public_modifier(modifier: &[u8]) -> bool {
     NON_PUBLIC_MODIFIERS.contains(&modifier)
+}
+
+/// Check if a method is made private/protected retroactively via `private :method_name`
+/// or `protected :method_name` appearing after the def in the same scope.
+/// This is a common Ruby pattern: `def foo; end; private :foo`
+fn has_retroactive_visibility(source: &SourceFile, def_offset: usize, method_name: &str) -> bool {
+    let (def_line, def_col) = source.offset_to_line_col(def_offset);
+    let lines: Vec<&[u8]> = source.lines().collect();
+
+    // Build target patterns to match: `:method_name` or `"method_name"` or `'method_name'`
+    let sym_pattern = format!(":{}", method_name);
+    let dq_pattern = format!("\"{}\"", method_name);
+    let sq_pattern = format!("'{}'", method_name);
+
+    // Scan lines after the def line for retroactive visibility declarations
+    for line in &lines[def_line..] {
+        let indent = line
+            .iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count();
+        let trimmed = &line[indent..];
+
+        // Scope boundary at lower indent — stop searching
+        if indent < def_col
+            && (trimmed.starts_with(b"class ")
+                || trimmed.starts_with(b"module ")
+                || trimmed == b"end"
+                || trimmed.starts_with(b"end ")
+                || trimmed.starts_with(b"end\n")
+                || trimmed.starts_with(b"end\r"))
+        {
+            break;
+        }
+
+        // Check for `private :method_name` or `protected :method_name` at same or lower indent
+        if indent <= def_col {
+            let line_str = std::str::from_utf8(trimmed).unwrap_or("");
+            let line_str = line_str.trim_end();
+            if (line_str.starts_with("private ")
+                || line_str.starts_with("private(")
+                || line_str.starts_with("protected ")
+                || line_str.starts_with("protected("))
+                && (line_str.contains(&sym_pattern)
+                    || line_str.contains(&dq_pattern)
+                    || line_str.contains(&sq_pattern))
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 /// Check if the `def` has an unknown (non-visibility, non-registered modifier) prefix
@@ -150,8 +216,12 @@ impl Cop for DocumentationMethod {
                     return;
                 }
             }
-            // Check standard private/protected detection
+            // Check standard private/protected detection (preceding `private`/`protected`)
             if is_private_or_protected(source, def_offset) {
+                return;
+            }
+            // Check retroactive visibility: `private :method_name` after the def
+            if has_retroactive_visibility(source, def_offset, method_name) {
                 return;
             }
         }
