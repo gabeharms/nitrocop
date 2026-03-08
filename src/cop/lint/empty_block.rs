@@ -3,6 +3,16 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Lint/EmptyBlock — checks for blocks without a body.
+///
+/// ## Investigation (2026-03-08)
+/// Root cause of 197 FPs: AllowEmptyLambdas handling only checked for bare `lambda`/`proc`
+/// method calls (no receiver), but missed `Proc.new {}` and `::Proc.new {}` which RuboCop's
+/// `lambda_or_proc?` also covers. Many corpus repos (jruby, natalie, pakyow) have extensive
+/// proc-related specs with `Proc.new {}` patterns.
+///
+/// Fix: Added receiver checks for `Proc.new` and `::Proc.new` (ConstantReadNode and
+/// ConstantPathNode with no parent) to the AllowEmptyLambdas guard.
 pub struct EmptyBlock;
 
 /// Check if a comment is a rubocop:disable directive for a specific cop.
@@ -87,11 +97,27 @@ impl Cop for EmptyBlock {
         }
 
         // AllowEmptyLambdas: skip lambda/proc blocks
+        // RuboCop's lambda_or_proc? covers: lambda {}, proc {}, Proc.new {}, ::Proc.new {}
         let allow_empty_lambdas = config.get_bool("AllowEmptyLambdas", true);
         if allow_empty_lambdas {
             let name = call_node.name().as_slice();
             if (name == b"lambda" || name == b"proc") && call_node.receiver().is_none() {
                 return;
+            }
+            // Proc.new {} and ::Proc.new {}
+            if name == b"new" {
+                if let Some(receiver) = call_node.receiver() {
+                    let is_proc_const = receiver
+                        .as_constant_read_node()
+                        .is_some_and(|c| c.name().as_slice() == b"Proc")
+                        || receiver.as_constant_path_node().is_some_and(|cp| {
+                            cp.parent().is_none()
+                                && cp.name().is_some_and(|n| n.as_slice() == b"Proc")
+                        });
+                    if is_proc_const {
+                        return;
+                    }
+                }
             }
         }
 

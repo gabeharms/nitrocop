@@ -14,3 +14,19 @@ end
 # Inline empty block with trailing comment on same line
 Mail.connection {} # rubocop:disable:block
 foo.bar {} # some explanation comment
+
+# Empty lambdas and procs (AllowEmptyLambdas default true)
+lambda {}
+lambda do
+end
+proc {}
+proc do
+end
+
+# Proc.new is treated as a proc (AllowEmptyLambdas default true)
+Proc.new {}
+Proc.new do
+end
+::Proc.new {}
+::Proc.new do
+end
