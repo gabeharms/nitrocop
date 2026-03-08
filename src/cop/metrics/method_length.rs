@@ -47,6 +47,23 @@ use crate::parse::source::SourceFile;
 ///
 /// Known remaining FN examples from corpus oracle: `chef` (powershell wrapper)
 /// and `jruby` (`test_lje_structure`).
+///
+/// ## Corpus investigation (2026-03-07)
+///
+/// FP=112 across 31 repos. Root cause: when a method body contains heredocs,
+/// RuboCop uses `source_from_node_with_heredoc(body)` which computes the line
+/// range as `body.first_line..max(descendant.last_line)`. Since `each_descendant`
+/// yields only children/grandchildren (not the body node itself), wrapper closing
+/// keywords like block `end`s are excluded from the max. In contrast, nitrocop
+/// used the method's `end` keyword line as the range boundary, which included
+/// inner block `end` keywords.
+///
+/// Fix: when the body has heredoc descendants, compute `effective_end_offset`
+/// from `max_descendant_end_line` (max of inner statements' end lines and
+/// heredoc closing locations) rather than the method's `end` keyword line.
+/// The function `inner_content_end_line` recursively digs into CallNode blocks
+/// and StatementsNode wrappers to find the innermost content line, matching
+/// RuboCop's descendant-based line range.
 pub struct MethodLength;
 
 /// Parsed config values for MethodLength.
@@ -275,10 +292,30 @@ fn count_method_lines(
     all_foldable.sort();
     all_foldable.dedup();
 
+    // When the body contains heredocs, RuboCop switches from `body.source.lines`
+    // to `source_from_node_with_heredoc(body)`, which computes lines from
+    // body.first_line to the max descendant last_line. This excludes wrapper
+    // closing keywords (block `end`s) that are part of the body node but not
+    // individual descendants. We replicate this by adjusting end_offset.
+    let effective_end_offset = if body_has_heredoc(source, &body) {
+        let max_line = max_descendant_end_line(source, &body);
+        if max_line > 0 {
+            // Use the start of the line AFTER max_line as end_offset so
+            // count_body_lines_impl's exclusive range includes max_line.
+            source
+                .line_col_to_offset(max_line + 1, 0)
+                .unwrap_or(end_offset)
+        } else {
+            end_offset
+        }
+    } else {
+        end_offset
+    };
+
     count_body_lines_ex(
         source,
         effective_start_offset,
-        end_offset,
+        effective_end_offset,
         cfg.count_comments,
         &all_foldable,
     )
@@ -381,6 +418,125 @@ fn extract_define_method_name(call: &ruby_prism::CallNode<'_>) -> Option<String>
     None
 }
 
+/// Check if a body node contains any heredoc descendants.
+fn body_has_heredoc(source: &SourceFile, body: &ruby_prism::Node<'_>) -> bool {
+    use ruby_prism::Visit;
+
+    struct HeredocDetector<'a> {
+        source: &'a SourceFile,
+        found: bool,
+    }
+
+    impl<'pr> Visit<'pr> for HeredocDetector<'_> {
+        fn visit_string_node(&mut self, node: &ruby_prism::StringNode<'pr>) {
+            if !self.found {
+                if let Some(o) = node.opening_loc() {
+                    let bytes = &self.source.as_bytes()[o.start_offset()..o.end_offset()];
+                    if bytes.starts_with(b"<<") {
+                        self.found = true;
+                    }
+                }
+            }
+        }
+
+        fn visit_interpolated_string_node(
+            &mut self,
+            node: &ruby_prism::InterpolatedStringNode<'pr>,
+        ) {
+            if !self.found {
+                if let Some(o) = node.opening_loc() {
+                    let bytes = &self.source.as_bytes()[o.start_offset()..o.end_offset()];
+                    if bytes.starts_with(b"<<") {
+                        self.found = true;
+                        return;
+                    }
+                }
+                ruby_prism::visit_interpolated_string_node(self, node);
+            }
+        }
+    }
+
+    let mut detector = HeredocDetector {
+        source,
+        found: false,
+    };
+    detector.visit(body);
+    detector.found
+}
+
+/// Compute the max end line (1-indexed) among descendants of a body node,
+/// considering heredoc closing locations. This replicates RuboCop's
+/// `source_from_node_with_heredoc` behavior where the effective end
+/// is the max descendant last_line (not the container node's last_line).
+fn max_descendant_end_line(source: &SourceFile, body: &ruby_prism::Node<'_>) -> usize {
+    let heredoc_ranges = collect_heredoc_ranges(source, body);
+    let max_heredoc_line = heredoc_ranges
+        .iter()
+        .map(|&(_, end)| end)
+        .max()
+        .unwrap_or(0);
+    let last_stmt_line = inner_content_end_line(source, body);
+    last_stmt_line.max(max_heredoc_line)
+}
+
+/// Get the max end line among body's inner content, matching RuboCop's
+/// `each_descendant` behavior where container `end` keywords are excluded.
+///
+/// RuboCop calls `body.each_descendant` which yields all descendants but
+/// NOT the body itself. For a block body like `in_tmpdir do...end`, the
+/// block's `end` keyword is only in the block node's source range. The
+/// descendants (send node, begin/statements body) have ranges that exclude
+/// the block `end`.
+fn inner_content_end_line(source: &SourceFile, body: &ruby_prism::Node<'_>) -> usize {
+    let end_line_of = |node: &ruby_prism::Node<'_>| -> usize {
+        let off = node
+            .location()
+            .end_offset()
+            .saturating_sub(1)
+            .max(node.location().start_offset());
+        source.offset_to_line_col(off).0
+    };
+
+    if let Some(stmts) = body.as_statements_node() {
+        stmts
+            .body()
+            .iter()
+            .map(|n| inner_content_end_line(source, &n))
+            .max()
+            .unwrap_or(0)
+    } else if let Some(begin) = body.as_begin_node() {
+        let mut max = 0usize;
+        if let Some(ensure_clause) = begin.ensure_clause() {
+            let off = ensure_clause.location().end_offset().saturating_sub(1);
+            max = max.max(source.offset_to_line_col(off).0);
+        }
+        if let Some(rescue_clause) = begin.rescue_clause() {
+            let off = rescue_clause.location().end_offset().saturating_sub(1);
+            max = max.max(source.offset_to_line_col(off).0);
+        }
+        if let Some(stmts) = begin.statements() {
+            if let Some(last) = stmts.body().iter().last() {
+                max = max.max(end_line_of(&last));
+            }
+        }
+        max
+    } else if let Some(call) = body.as_call_node() {
+        // For a CallNode with block (e.g., `in_tmpdir do...end`), dig into
+        // the block body. RuboCop's each_descendant would yield the send,
+        // the block's begin/statements body, but NOT the block's `end`.
+        if let Some(block_wrapper) = call.block() {
+            if let Some(block) = block_wrapper.as_block_node() {
+                if let Some(inner_body) = block.body() {
+                    return inner_content_end_line(source, &inner_body);
+                }
+            }
+        }
+        end_line_of(body)
+    } else {
+        end_line_of(body)
+    }
+}
+
 fn is_single_heredoc_expression(source: &SourceFile, body: &ruby_prism::Node<'_>) -> bool {
     if is_heredoc_node(source, body) {
         return true;
@@ -418,6 +574,19 @@ fn is_heredoc_node(source: &SourceFile, node: &ruby_prism::Node<'_>) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(MethodLength, "cops/metrics/method_length");
+
+    #[test]
+    fn heredoc_in_block_no_offense() {
+        use crate::testutil::run_cop_full;
+        // Method with heredoc inside block: RuboCop's source_from_node_with_heredoc
+        // excludes the block `end` from the line count. 10 non-blank body lines.
+        let source = b"def test_method\n  in_tmpdir do\n    path = current_dir.join(\"config\")\n    path.write(<<~TEXT)\n      target :app do\n        collection_config \"test.yaml\"\n      end\n    TEXT\n    current_dir.join(\"test.yaml\").write(\"[]\")\n\n    Runner.new.load_config(path: path)\n    assert_match(/pattern/, output.string)\n  end\nend\n";
+        let diags = run_cop_full(&MethodLength, source);
+        assert!(
+            diags.is_empty(),
+            "Method with heredoc in block should not fire (10 body lines per RuboCop)"
+        );
+    }
 
     #[test]
     fn config_custom_max() {

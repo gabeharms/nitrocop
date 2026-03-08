@@ -127,6 +127,40 @@ builder.define_method(:short_generated) do
   c = 3
 end
 
+# When a method body contains heredocs, RuboCop's source_from_node_with_heredoc
+# computes lines from body.first_line to max descendant last_line, which excludes
+# wrapper closing keywords (block `end`s). This method has 11 physical non-blank
+# body lines (counting the block end), but RuboCop counts 10 (excluding it).
+def test_heredoc_in_block
+  in_tmpdir do
+    path = current_dir.join("config")
+    path.write(<<~TEXT)
+      target :app do
+        collection_config "test.yaml"
+      end
+    TEXT
+    current_dir.join("test.yaml").write("[]")
+
+    Runner.new.load_config(path: path)
+    assert_match(/pattern/, output.string)
+  end
+end
+
+# Same pattern with <<- heredoc in a block (10 non-blank lines per RuboCop).
+def test_indented_heredoc_in_block
+  setup do
+    config = <<-YAML
+      key: value
+      other: data
+    YAML
+    load_config(config)
+    validate_config
+    process_data
+    check_results
+    verify_output
+  end
+end
+
 # Endless method with short multiline body (no offense)
 def compact_settings = {
   one: 1,
