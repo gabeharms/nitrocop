@@ -86,3 +86,19 @@ RSpec.describe SillyHeredocEdge do
 
   it { expect(scss).to include("$foo") }
 end
+
+# Inline trailing comment after the final let is treated as a comment line.
+# With a blank line after it, this should not register an offense.
+RSpec.describe ResourceProvider do
+  let(:resource_class) do
+    result = Class.new do
+      def self.name
+        "B"
+      end
+    end
+    result
+  end
+  before { resource_class } # pull on it so it gets defined before the recipe runs
+
+  it { expect(resource_class.name).to eq("B") }
+end

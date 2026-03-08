@@ -23,3 +23,21 @@ end
   ^^^^^^^^^^^^^^^^^^^^^^ RSpec/EmptyLineAfterFinalLet: Add an empty line after the last `let`.
   it { expect(w).to be_valid }
 end
+
+RSpec.feature "FullWidthContainer", type: :feature do
+  let(:contained_classes) { "container classes" }
+  let(:is_not_contained) { is_expected.not_to include contained_classes }
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/EmptyLineAfterFinalLet: Add an empty line after the last `let`.
+  subject do
+    page.body
+  end
+end
+
+RSpec.describe VersionCompatibility do
+  let(:version_list) { <<~YML }
+    2.5.0.beta6: twofivebetasix
+    2.5.0.beta4: twofivebetafour
+  YML
+  ^^^ RSpec/EmptyLineAfterFinalLet: Add an empty line after the last `let`.
+  include_examples "test compatible resource"
+end

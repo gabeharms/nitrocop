@@ -1,4 +1,7 @@
-use crate::cop::node_type::{BLOCK_NODE, CALL_NODE, STATEMENTS_NODE};
+use std::collections::HashSet;
+
+use ruby_prism::Visit;
+
 use crate::cop::util::{
     self, RSPEC_DEFAULT_INCLUDE, is_blank_line, is_rspec_example_group, is_rspec_let,
     is_rspec_shared_group, line_at,
@@ -9,10 +12,28 @@ use crate::parse::source::SourceFile;
 
 /// RSpec/EmptyLineAfterFinalLet
 ///
-/// Investigation: RuboCop's `example_group_with_body?` only matches ExampleGroups
-/// (describe, context, feature, etc.) and NOT SharedGroups (shared_examples,
-/// shared_examples_for, shared_context). 47+ corpus FPs were caused by our cop
-/// firing inside shared group blocks. Fix: exclude shared groups from the check.
+/// ## Corpus investigation (2026-03-07)
+///
+/// Corpus oracle reported FP=11, FN=6.
+///
+/// Previous fix: RuboCop's `example_group_with_body?` only matches ExampleGroups
+/// (describe/context/feature/etc.) and NOT SharedGroups
+/// (`shared_examples`/`shared_examples_for`/`shared_context`). Excluding shared
+/// groups removed a large FP cluster.
+///
+/// Remaining gaps:
+/// - FP from `let ... end` followed by a line that has an inline trailing
+///   comment (`before { foo } # comment`) and then a blank line.
+/// - FN from explicit receiver example groups (`RSpec.feature`) not being
+///   recognized.
+/// - FP/FN line mismatch around heredoc lets: RuboCop reports on heredoc
+///   terminator lines (and checks separation after terminator), while our cop
+///   used the `let` line end.
+///
+/// Fix: traverse call nodes from `check_source`, match all ExampleGroup forms
+/// including explicit `RSpec.<group>`, and reuse RuboCop-equivalent separator
+/// scanning (comment-line skipping + `rubocop:enable` reporting + heredoc final
+/// end location).
 pub struct EmptyLineAfterFinalLet;
 
 impl Cop for EmptyLineAfterFinalLet {
@@ -28,55 +49,70 @@ impl Cop for EmptyLineAfterFinalLet {
         RSPEC_DEFAULT_INCLUDE
     }
 
-    fn interested_node_types(&self) -> &'static [u8] {
-        &[BLOCK_NODE, CALL_NODE, STATEMENTS_NODE]
-    }
-
-    fn check_node(
+    fn check_source(
         &self,
         source: &SourceFile,
-        node: &ruby_prism::Node<'_>,
-        _parse_result: &ruby_prism::ParseResult<'_>,
+        parse_result: &ruby_prism::ParseResult<'_>,
+        _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let call = match node.as_call_node() {
-            Some(c) => c,
-            None => return,
+        let (comment_lines, enable_directive_lines) = build_comment_line_sets(source, parse_result);
+        let mut visitor = FinalLetVisitor {
+            source,
+            cop: self,
+            diagnostics,
+            comment_lines: &comment_lines,
+            enable_directive_lines: &enable_directive_lines,
         };
+        visitor.visit(&parse_result.node());
+    }
+}
 
-        let method_name = call.name().as_slice();
+struct FinalLetVisitor<'a> {
+    source: &'a SourceFile,
+    cop: &'a EmptyLineAfterFinalLet,
+    diagnostics: &'a mut Vec<Diagnostic>,
+    comment_lines: &'a HashSet<usize>,
+    enable_directive_lines: &'a HashSet<usize>,
+}
 
-        // Check for example group calls (including ::RSpec.describe), but NOT
-        // shared groups (shared_examples, shared_examples_for, shared_context).
-        // RuboCop's example_group_with_body? only matches ExampleGroups, not SharedGroups.
-        let is_example_group = if let Some(recv) = call.receiver() {
-            util::constant_name(&recv).is_some_and(|n| n == b"RSpec") && method_name == b"describe"
-        } else {
-            is_rspec_example_group(method_name) && !is_rspec_shared_group(method_name)
-        };
-
-        if !is_example_group {
+impl<'a, 'pr> Visit<'pr> for FinalLetVisitor<'a> {
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        if !is_example_group_call(node) {
+            ruby_prism::visit_call_node(self, node);
             return;
         }
 
-        let block = match call.block() {
+        let block = match node.block() {
             Some(b) => match b.as_block_node() {
                 Some(bn) => bn,
-                None => return,
+                None => {
+                    ruby_prism::visit_call_node(self, node);
+                    return;
+                }
             },
-            None => return,
+            None => {
+                ruby_prism::visit_call_node(self, node);
+                return;
+            }
         };
 
         let body = match block.body() {
             Some(b) => b,
-            None => return,
+            None => {
+                ruby_prism::visit_call_node(self, node);
+                return;
+            }
         };
 
         let stmts = match body.as_statements_node() {
             Some(s) => s,
-            None => return,
+            None => {
+                ruby_prism::visit_call_node(self, node);
+                return;
+            }
         };
 
         // Find the last let/let! in this block
@@ -92,54 +128,31 @@ impl Cop for EmptyLineAfterFinalLet {
 
         let last_idx = match last_let_idx {
             Some(i) => i,
-            None => return,
+            None => {
+                ruby_prism::visit_call_node(self, node);
+                return;
+            }
         };
 
         // Check if there's a next statement after the last let
         if last_idx + 1 >= nodes.len() {
+            ruby_prism::visit_call_node(self, node);
             return; // let is the last statement
         }
 
-        // Get the start line of the next sibling after the last let
-        let next_sibling = &nodes[last_idx + 1];
-        let next_start_line = {
-            let loc = next_sibling.location();
-            let (line, _) = source.offset_to_line_col(loc.start_offset());
-            line
-        };
-
-        // Get the end line of the last let (report location)
         let last_let = &nodes[last_idx];
-        let loc = last_let.location();
-        let end_offset = loc.end_offset().saturating_sub(1).max(loc.start_offset());
-        let (end_line, _) = source.offset_to_line_col(end_offset);
-
-        // Check if there's a blank line between the last let and the next sibling.
-        // We check ALL lines between the let's end line and the next sibling's start
-        // line to handle cases where comments appear between them.
-        let check_start = end_line + 1;
-        let check_end = next_start_line;
-        if check_start < check_end {
-            // There are lines between the let end and next sibling start.
-            // Check if ANY of those lines is blank.
-            for line_num in check_start..check_end {
-                if let Some(line) = line_at(source, line_num) {
-                    if is_blank_line(line) {
-                        return;
-                    }
-                }
-            }
-        } else {
-            // Adjacent line — check the line right after the let
-            let next_line = end_line + 1;
-            if let Some(line) = line_at(source, next_line) {
-                if is_blank_line(line) {
-                    return;
-                }
-            } else {
+        let report_line = match missing_separating_line(
+            self.source,
+            last_let,
+            self.comment_lines,
+            self.enable_directive_lines,
+        ) {
+            Some(line) => line,
+            None => {
+                ruby_prism::visit_call_node(self, node);
                 return;
             }
-        }
+        };
 
         let let_name = if let Some(c) = last_let.as_call_node() {
             std::str::from_utf8(c.name().as_slice()).unwrap_or("let")
@@ -147,19 +160,138 @@ impl Cop for EmptyLineAfterFinalLet {
             "let"
         };
 
-        let report_col = if let Some(line_bytes) = line_at(source, end_line) {
+        let report_col = if let Some(line_bytes) = line_at(self.source, report_line) {
             line_bytes.iter().take_while(|&&b| b == b' ').count()
         } else {
             0
         };
 
-        diagnostics.push(self.diagnostic(
-            source,
-            end_line,
+        self.diagnostics.push(self.cop.diagnostic(
+            self.source,
+            report_line,
             report_col,
             format!("Add an empty line after the last `{let_name}`."),
         ));
+
+        ruby_prism::visit_call_node(self, node);
     }
+}
+
+fn is_example_group_call(call: &ruby_prism::CallNode<'_>) -> bool {
+    let method_name = call.name().as_slice();
+    if let Some(recv) = call.receiver() {
+        util::constant_name(&recv).is_some_and(|n| n == b"RSpec")
+            && is_rspec_example_group(method_name)
+            && !is_rspec_shared_group(method_name)
+    } else {
+        is_rspec_example_group(method_name) && !is_rspec_shared_group(method_name)
+    }
+}
+
+fn missing_separating_line(
+    source: &SourceFile,
+    last_let: &ruby_prism::Node<'_>,
+    comment_lines: &HashSet<usize>,
+    enable_directive_lines: &HashSet<usize>,
+) -> Option<usize> {
+    // Match RuboCop's FinalEndLocation to handle heredoc lets.
+    let loc = last_let.location();
+    let mut max_end_offset = loc.end_offset();
+    let heredoc_max = find_max_heredoc_end_offset(source, last_let);
+    if heredoc_max > max_end_offset {
+        max_end_offset = heredoc_max;
+    }
+    let end_offset = max_end_offset.saturating_sub(1).max(loc.start_offset());
+    let (end_line, _) = source.offset_to_line_col(end_offset);
+
+    let mut line = end_line;
+    let mut enable_directive_line = None;
+    while comment_lines.contains(&(line + 1)) {
+        line += 1;
+        if enable_directive_lines.contains(&line) {
+            enable_directive_line = Some(line);
+        }
+    }
+
+    match line_at(source, line + 1) {
+        Some(next_line) if is_blank_line(next_line) => None,
+        Some(_) => Some(enable_directive_line.unwrap_or(end_line)),
+        None => None,
+    }
+}
+
+fn build_comment_line_sets(
+    source: &SourceFile,
+    parse_result: &ruby_prism::ParseResult<'_>,
+) -> (HashSet<usize>, HashSet<usize>) {
+    let mut comment_lines = HashSet::new();
+    let mut enable_directive_lines = HashSet::new();
+
+    for comment in parse_result.comments() {
+        let loc = comment.location();
+        let (start_line, _) = source.offset_to_line_col(loc.start_offset());
+        let end_offset = loc.end_offset().saturating_sub(1).max(loc.start_offset());
+        let (end_line, _) = source.offset_to_line_col(end_offset);
+
+        for line in start_line..=end_line {
+            comment_lines.insert(line);
+        }
+
+        let comment_bytes = &source.as_bytes()[loc.start_offset()..loc.end_offset()];
+        if comment_bytes
+            .windows(b"rubocop:enable".len())
+            .any(|window| window == b"rubocop:enable")
+        {
+            enable_directive_lines.insert(start_line);
+        }
+    }
+
+    (comment_lines, enable_directive_lines)
+}
+
+fn find_max_heredoc_end_offset(source: &SourceFile, node: &ruby_prism::Node<'_>) -> usize {
+    struct MaxHeredocVisitor<'a> {
+        source: &'a SourceFile,
+        max_offset: usize,
+    }
+
+    impl<'pr> Visit<'pr> for MaxHeredocVisitor<'_> {
+        fn visit_string_node(&mut self, node: &ruby_prism::StringNode<'pr>) {
+            if let Some(opening) = node.opening_loc() {
+                let bytes = &self.source.as_bytes()[opening.start_offset()..opening.end_offset()];
+                if bytes.starts_with(b"<<") {
+                    if let Some(closing) = node.closing_loc() {
+                        self.max_offset = self.max_offset.max(closing.end_offset());
+                    }
+                    return;
+                }
+            }
+            ruby_prism::visit_string_node(self, node);
+        }
+
+        fn visit_interpolated_string_node(
+            &mut self,
+            node: &ruby_prism::InterpolatedStringNode<'pr>,
+        ) {
+            if let Some(opening) = node.opening_loc() {
+                let bytes = &self.source.as_bytes()[opening.start_offset()..opening.end_offset()];
+                if bytes.starts_with(b"<<") {
+                    if let Some(closing) = node.closing_loc() {
+                        self.max_offset = self.max_offset.max(closing.end_offset());
+                    }
+                    return;
+                }
+            }
+            ruby_prism::visit_interpolated_string_node(self, node);
+        }
+    }
+
+    let mut visitor = MaxHeredocVisitor {
+        source,
+        max_offset: 0,
+    };
+    visitor.visit(node);
+    visitor.max_offset
 }
 
 #[cfg(test)]
