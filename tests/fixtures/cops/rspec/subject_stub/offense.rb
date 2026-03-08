@@ -32,3 +32,40 @@ describe Baz do
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/SubjectStub: Do not stub methods of the object under test.
   end
 end
+
+# do...end block on receive chain followed by chain method
+describe Processor do
+  subject { described_class.new }
+
+  it 'detects do...end with chain' do
+    expect(subject).to receive(:process).and_wrap_original do |original, item|
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/SubjectStub: Do not stub methods of the object under test.
+      original.call(item)
+    end.at_least(:once)
+    subject.call
+  end
+end
+
+# Explicit parens on .to(receive(...)).and_return(...)
+describe Handler do
+  subject { described_class.new }
+
+  it 'detects explicit parens with chain' do
+    allow(subject).to(receive(:load_resource)).and_return(resource)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/SubjectStub: Do not stub methods of the object under test.
+    subject.run
+  end
+end
+
+# do...end block on receive chain followed by .and_return
+describe Forwarder do
+  subject(:forwarder) { described_class.new }
+
+  it 'detects do...end with and_return' do
+    expect(forwarder).to receive(:spawn) do |*args|
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/SubjectStub: Do not stub methods of the object under test.
+      expect(args).to start_with('ssh')
+    end.and_return(9999)
+    forwarder.forward
+  end
+end

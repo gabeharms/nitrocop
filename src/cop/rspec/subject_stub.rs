@@ -6,8 +6,9 @@ use crate::parse::source::SourceFile;
 /// Flags stubbing methods on `subject`. The object under test should not be stubbed.
 /// Detects: allow(subject_name).to receive(...), expect(subject_name).to receive(...)
 ///
-/// Investigation notes (corpus FP=571, FN=27):
-/// Root cause of FPs:
+/// Investigation notes (corpus FP=571→24→0, FN=27→18→0):
+///
+/// Round 1 FP fixes (571→24):
 /// 1. Missing TopLevelGroup scoping: RuboCop's `TopLevelGroup#top_level_nodes` only
 ///    processes describe/context blocks at the file's top level. When `require "spec_helper"`
 ///    appears alongside a `module Foo` wrapper, the AST root is a `begin` node whose children
@@ -18,10 +19,19 @@ use crate::parse::source::SourceFile;
 ///    `allow(subject).to receive(...)` uses a local variable, not the subject method.
 ///    Our `extract_simple_name` was matching both CallNode and LocalVariableReadNode.
 ///
-/// Root cause of FNs (27):
-/// Multi-line `do...end` block arguments on receive chains like
-/// `expect(subject).to receive(:method).and_wrap_original do |orig| ... end`
-/// are not detected because the block wraps the whole chain differently in the AST.
+/// Round 2 FP fix (24→0):
+/// 3. `let(:name)` redefining a subject name: When `let(:foo)` appears in the same or child
+///    scope where `subject(:foo)` was defined, it shadows the subject. RuboCop's cop tracks
+///    this via `let_definitions` and removes the name from the subject names list. All 24 FPs
+///    were from this pattern (chef/chef 10, solidus 6, postal 3, truemail 2, etc.).
+///
+/// Round 2 FN fix (18→0):
+/// 4. `do...end` blocks on receive chains followed by chain methods like `.at_least(:once)`,
+///    `.twice`, `.and_return(...)`. Ruby's `do...end` binds to `.to`, making the outermost
+///    AST node the chain method (e.g., `.at_least`), not `.to`. Fixed by walking the receiver
+///    chain to find `.to`/`.not_to`/`.to_not` when the outermost call doesn't match.
+/// 5. Explicit parens on `.to(receive(...))` followed by chain: `.to(receive(:bar)).and_return(baz)`
+///    makes `.and_return` the outermost call. Same fix as #4.
 pub struct SubjectStub;
 
 impl Cop for SubjectStub {
@@ -182,8 +192,9 @@ fn collect_subject_stub_offenses(
         None => return,
     };
 
-    // First pass: collect subject names defined in this scope
+    // First pass: collect subject names and let overrides defined in this scope
     let scope_start = subject_names.len();
+    let mut let_names: Vec<Vec<u8>> = Vec::new();
     for stmt in stmts.body().iter() {
         if let Some(call) = stmt.as_call_node() {
             let name = call.name().as_slice();
@@ -198,6 +209,27 @@ fn collect_subject_stub_offenses(
                     }
                 }
             }
+            // Track let(:name) definitions that shadow subject names
+            if (name == b"let" || name == b"let!") && call.receiver().is_none() {
+                if let Some(args) = call.arguments() {
+                    let arg_list: Vec<_> = args.arguments().iter().collect();
+                    if !arg_list.is_empty() {
+                        if let Some(sym) = arg_list[0].as_symbol_node() {
+                            let_names.push(sym.unescaped().to_vec());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove subject names that are shadowed by let definitions in this scope
+    if !let_names.is_empty() {
+        subject_names.retain(|s| !let_names.contains(s));
+        // Always keep implicit "subject" — let(:subject) is extremely rare and
+        // unlikely to shadow the implicit subject
+        if !subject_names.contains(&b"subject".to_vec()) {
+            subject_names.push(b"subject".to_vec());
         }
     }
 
@@ -223,57 +255,10 @@ fn check_for_subject_stubs(
 ) {
     if let Some(call) = node.as_call_node() {
         // Check for allow(subject_name).to receive(...) or expect(subject_name).to receive(...)
-        let method = call.name().as_slice();
-        if method == b"to" || method == b"not_to" || method == b"to_not" {
-            // Check if the argument involves `receive`
-            if has_receive_matcher(&call) || has_have_received_matcher(&call) {
-                // Check receiver is allow/expect(subject_name) or is_expected
-                if let Some(recv) = call.receiver() {
-                    if let Some(recv_call) = recv.as_call_node() {
-                        let recv_method = recv_call.name().as_slice();
-                        if recv_method == b"is_expected" && recv_call.receiver().is_none() {
-                            let loc = node.location();
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(cop.diagnostic(
-                                source,
-                                line,
-                                column,
-                                "Do not stub methods of the object under test.".to_string(),
-                            ));
-                            return;
-                        }
-                        if (recv_method == b"allow" || recv_method == b"expect")
-                            && recv_call.receiver().is_none()
-                        {
-                            if let Some(args) = recv_call.arguments() {
-                                let arg_list: Vec<_> = args.arguments().iter().collect();
-                                if !arg_list.is_empty() {
-                                    // Only match method calls (send nil?), NOT local variable reads.
-                                    // RuboCop's `(send nil? %)` pattern only matches method sends.
-                                    let arg_name = extract_method_name(&arg_list[0]);
-                                    if let Some(name) = arg_name {
-                                        if subject_names.iter().any(|s| s == &name) {
-                                            let loc = node.location();
-                                            let (line, column) =
-                                                source.offset_to_line_col(loc.start_offset());
-                                            diagnostics.push(
-                                                cop.diagnostic(
-                                                    source,
-                                                    line,
-                                                    column,
-                                                    "Do not stub methods of the object under test."
-                                                        .to_string(),
-                                                ),
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        // Also handles chained calls after .to (e.g., .to(...).at_least(:once) or
+        // .to(receive(...)).and_return(baz)) where .to is buried in the receiver chain.
+        if check_stub_expression(&call, node, source, subject_names, diagnostics, cop) {
+            return;
         }
 
         // Recurse into nested blocks (before, it, context, etc.)
@@ -316,21 +301,138 @@ fn check_for_subject_stubs(
     }
 }
 
-fn has_receive_matcher(call: &ruby_prism::CallNode<'_>) -> bool {
-    if let Some(args) = call.arguments() {
-        for arg in args.arguments().iter() {
-            if contains_receive_call(&arg) {
+/// Check if a call expression (possibly chained) is a subject stub.
+/// Handles both direct `.to` calls and chained expressions where `.to` is
+/// in the receiver chain (e.g., `.to(...).at_least(:once)` or do...end chains).
+/// Returns true if an offense was reported.
+fn check_stub_expression(
+    call: &ruby_prism::CallNode<'_>,
+    node: &ruby_prism::Node<'_>,
+    source: &SourceFile,
+    subject_names: &[Vec<u8>],
+    diagnostics: &mut Vec<Diagnostic>,
+    cop: &SubjectStub,
+) -> bool {
+    let method = call.name().as_slice();
+    let is_to = method == b"to" || method == b"not_to" || method == b"to_not";
+
+    // If this is not a .to call, check if it's a chain after .to
+    if !is_to && !has_to_in_receiver_chain(call) {
+        return false;
+    }
+
+    // Check if the expression involves `receive` — check the entire call tree
+    if !has_receive_in_tree(call) {
+        return false;
+    }
+
+    // Extract the subject name from the allow/expect receiver of the .to call.
+    // Returns Some(SubjectMatch) if this is a subject stub.
+    let subject_match = extract_subject_from_chain(call, subject_names);
+    match subject_match {
+        SubjectMatch::IsExpected | SubjectMatch::NamedSubject => {
+            let loc = node.location();
+            let (line, column) = source.offset_to_line_col(loc.start_offset());
+            diagnostics.push(cop.diagnostic(
+                source,
+                line,
+                column,
+                "Do not stub methods of the object under test.".to_string(),
+            ));
+            true
+        }
+        SubjectMatch::None => false,
+    }
+}
+
+enum SubjectMatch {
+    IsExpected,
+    NamedSubject,
+    None,
+}
+
+/// Walk the call chain to find .to/.not_to/.to_not and extract the subject info
+/// from its allow/expect receiver.
+fn extract_subject_from_chain(
+    call: &ruby_prism::CallNode<'_>,
+    subject_names: &[Vec<u8>],
+) -> SubjectMatch {
+    let method = call.name().as_slice();
+    let is_to = method == b"to" || method == b"not_to" || method == b"to_not";
+
+    if is_to {
+        // Check receiver of .to for allow/expect(subject_name) or is_expected
+        if let Some(recv) = call.receiver() {
+            if let Some(recv_call) = recv.as_call_node() {
+                let recv_method = recv_call.name().as_slice();
+                if recv_method == b"is_expected" && recv_call.receiver().is_none() {
+                    return SubjectMatch::IsExpected;
+                }
+                if (recv_method == b"allow" || recv_method == b"expect")
+                    && recv_call.receiver().is_none()
+                {
+                    if let Some(args) = recv_call.arguments() {
+                        let arg_list: Vec<_> = args.arguments().iter().collect();
+                        if !arg_list.is_empty() {
+                            let arg_name = extract_method_name(&arg_list[0]);
+                            if let Some(name) = arg_name {
+                                if subject_names.iter().any(|s| s == &name) {
+                                    return SubjectMatch::NamedSubject;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return SubjectMatch::None;
+    }
+
+    // Not a .to call — walk receiver chain
+    if let Some(recv) = call.receiver() {
+        if let Some(recv_call) = recv.as_call_node() {
+            return extract_subject_from_chain(&recv_call, subject_names);
+        }
+    }
+    SubjectMatch::None
+}
+
+/// Check if the receiver chain contains a .to/.not_to/.to_not call.
+fn has_to_in_receiver_chain(call: &ruby_prism::CallNode<'_>) -> bool {
+    if let Some(recv) = call.receiver() {
+        if let Some(recv_call) = recv.as_call_node() {
+            let name = recv_call.name().as_slice();
+            if name == b"to" || name == b"not_to" || name == b"to_not" {
                 return true;
             }
+            return has_to_in_receiver_chain(&recv_call);
         }
     }
     false
 }
 
-fn has_have_received_matcher(call: &ruby_prism::CallNode<'_>) -> bool {
+/// Check if any node in the call tree contains a receive/receive_messages/receive_message_chain
+/// or have_received call. Checks arguments and receiver chain recursively.
+fn has_receive_in_tree(call: &ruby_prism::CallNode<'_>) -> bool {
+    let name = call.name().as_slice();
+    if (name == b"receive" || name == b"receive_messages" || name == b"receive_message_chain")
+        && call.receiver().is_none()
+    {
+        return true;
+    }
+    if name == b"have_received" && call.receiver().is_none() {
+        return true;
+    }
     if let Some(args) = call.arguments() {
         for arg in args.arguments().iter() {
-            if contains_have_received_call(&arg) {
+            if contains_receive_call(&arg) || contains_have_received_call(&arg) {
+                return true;
+            }
+        }
+    }
+    if let Some(recv) = call.receiver() {
+        if let Some(recv_call) = recv.as_call_node() {
+            if has_receive_in_tree(&recv_call) {
                 return true;
             }
         }

@@ -41,3 +41,41 @@ describe Agent do
     expect(subject.send { nil }).to be false
   end
 end
+
+# Subject name redefined by let in same or child scope
+RSpec.describe Foo do
+  subject(:foo) { described_class.new }
+
+  context 'when foo is redefined by let' do
+    let(:foo) { described_class.new }
+
+    before do
+      allow(foo).to receive(:active?).and_return(true)
+    end
+  end
+end
+
+# Subject name redefined by let in same scope
+RSpec.describe Widget do
+  subject(:widget) { described_class.new }
+  let(:widget) { described_class.new }
+
+  before do
+    allow(widget).to receive(:enabled?).and_return(false)
+  end
+end
+
+# Subject from parent redefined with let in nested context (vendor spec case)
+RSpec.describe Service do
+  subject(:service) { described_class.new }
+
+  context 'nested context' do
+    subject(:record) { service.record }
+
+    let(:service) { described_class.new }
+
+    before do
+      allow(service).to receive(:active?).and_return(true)
+    end
+  end
+end
