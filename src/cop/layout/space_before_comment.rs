@@ -3,6 +3,21 @@ use crate::diagnostic::Diagnostic;
 use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=8, FN=0.
+///
+/// FP=8 root cause: files beginning with a UTF-8 BOM followed by a standalone
+/// magic comment were treated as inline comments because the BOM bytes appeared
+/// before `#` on line 1. RuboCop tokenizes those files as a leading comment and
+/// does not require a separating space.
+///
+/// Fix: treat a line-prefix UTF-8 BOM like leading whitespace when deciding
+/// whether a comment starts the line.
+///
+/// Rerun outcome: removed the CI-baseline false positives from `ifme` (5),
+/// `dryrun` (1), and one `natalie` case. Local reruns still show one legacy
+/// `jruby` false positive plus offenses in an excluded local-only corpus repo.
 pub struct SpaceBeforeComment;
 
 impl Cop for SpaceBeforeComment {
@@ -43,6 +58,9 @@ impl Cop for SpaceBeforeComment {
                 line_start -= 1;
             }
             let before_on_line = &bytes[line_start..start];
+            let before_on_line = before_on_line
+                .strip_prefix(b"\xEF\xBB\xBF")
+                .unwrap_or(before_on_line);
             if before_on_line.iter().all(|&b| b == b' ' || b == b'\t') {
                 continue;
             }
