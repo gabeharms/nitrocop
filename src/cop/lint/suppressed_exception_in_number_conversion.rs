@@ -6,6 +6,15 @@ use crate::parse::source::SourceFile;
 
 /// Checks for cases where exceptions from numeric constructors like `Integer()`,
 /// `Float()`, etc. may be unintentionally swallowed using `rescue nil`.
+///
+/// ## Investigation (2026-03-08)
+/// 4 FPs across celluloid, sentry-ruby, redmine, sharetribe.
+/// Root causes:
+/// 1. `visit_begin_node` did not check for `else_clause` — RuboCop skips begin blocks
+///    with an else clause (e.g., `begin; Integer(arg); rescue; nil; else; 42; end`).
+/// 2. `is_numeric_constructor` did not validate argument counts — `Float()` only accepts
+///    1 positional arg, so `Float(arg, extra) rescue nil` should not be flagged.
+///    Valid arg counts: Integer 1-2, Float 1, BigDecimal 1-2, Complex 1-2, Rational 1-2.
 pub struct SuppressedExceptionInNumberConversion;
 
 const NUMERIC_METHODS: &[&[u8]] = &[b"Integer", b"Float", b"BigDecimal", b"Complex", b"Rational"];
@@ -71,23 +80,26 @@ impl<'pr> Visit<'pr> for NumConvVisitor<'_, '_> {
 
     fn visit_begin_node(&mut self, node: &ruby_prism::BeginNode<'pr>) {
         // Handle: begin; Integer(arg); rescue; nil; end
+        // Skip if there's an else clause — RuboCop doesn't flag these.
         if let Some(rescue_node) = node.rescue_clause() {
-            if let Some(stmts) = node.statements() {
-                let body: Vec<_> = stmts.body().iter().collect();
-                if body.len() == 1 && is_numeric_constructor(&body[0]) {
-                    // Check if rescue body is nil or empty
-                    let is_nil_rescue = is_rescue_nil_or_empty(&rescue_node);
-                    if is_nil_rescue {
-                        let call = body[0].as_call_node().unwrap();
-                        let prefer = build_preferred(&call, self.source);
-                        let loc = node.location();
-                        let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                        self.diagnostics.push(self.cop.diagnostic(
-                            self.source,
-                            line,
-                            column,
-                            format!("Use `{}` instead.", prefer),
-                        ));
+            if node.else_clause().is_none() {
+                if let Some(stmts) = node.statements() {
+                    let body: Vec<_> = stmts.body().iter().collect();
+                    if body.len() == 1 && is_numeric_constructor(&body[0]) {
+                        // Check if rescue body is nil or empty
+                        let is_nil_rescue = is_rescue_nil_or_empty(&rescue_node);
+                        if is_nil_rescue {
+                            let call = body[0].as_call_node().unwrap();
+                            let prefer = build_preferred(&call, self.source);
+                            let loc = node.location();
+                            let (line, column) = self.source.offset_to_line_col(loc.start_offset());
+                            self.diagnostics.push(self.cop.diagnostic(
+                                self.source,
+                                line,
+                                column,
+                                format!("Use `{}` instead.", prefer),
+                            ));
+                        }
                     }
                 }
             }
@@ -117,6 +129,16 @@ fn is_numeric_constructor(node: &ruby_prism::Node<'_>) -> bool {
         } else {
             return false;
         }
+    }
+
+    // Validate argument counts. Float only accepts 1 positional arg;
+    // Integer, BigDecimal, Complex, Rational accept 1-2.
+    let arg_count = call
+        .arguments()
+        .map_or(0, |args| args.arguments().iter().count());
+    let max_args = if method_name == b"Float" { 1 } else { 2 };
+    if arg_count == 0 || arg_count > max_args {
+        return false;
     }
 
     true
