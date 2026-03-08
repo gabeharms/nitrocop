@@ -3,6 +3,21 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Naming/PredicatePrefix checks that predicate method names end with `?`
+/// and do not start with a forbidden prefix.
+///
+/// ## Investigation findings (FN=66 fix):
+/// - Root cause 1: nitrocop only iterated over ForbiddenPrefixes to identify predicates,
+///   but RuboCop iterates over NamePrefix. When a prefix is in NamePrefix but NOT in
+///   ForbiddenPrefixes, the method should still be flagged to add `?` suffix.
+/// - Root cause 2: `is_attr?` with forbidden prefix `is_` was not flagged. RuboCop
+///   computes expected_name by stripping the prefix (→ `attr?`), so method != expected
+///   and it gets flagged. Nitrocop returned early because `?` was already present.
+/// - Root cause 3: Singleton methods (`def self.is_attr`) were not checked. RuboCop
+///   uses `alias on_defs on_def` to check both instance and singleton methods.
+/// - Fix: iterate over NamePrefix, compute expected_name per RuboCop logic (strip prefix
+///   if in ForbiddenPrefixes, else keep; append `?` if not present), skip if method_name
+///   already equals expected_name. Support singleton methods via DefNode receiver check.
 pub struct PredicatePrefix;
 
 impl PredicatePrefix {
@@ -15,7 +30,7 @@ impl PredicatePrefix {
     ) -> Vec<Diagnostic> {
         // NamePrefix identifies which prefixes mark a method as a predicate.
         // ForbiddenPrefixes is the subset that should be removed.
-        let _name_prefixes = config
+        let name_prefixes = config
             .get_string_array("NamePrefix")
             .unwrap_or_else(|| vec!["is_".into(), "has_".into(), "have_".into(), "does_".into()]);
 
@@ -35,37 +50,61 @@ impl PredicatePrefix {
             return Vec::new();
         }
 
-        if allowed_methods.iter().any(|m| m == name_str) {
-            return Vec::new();
-        }
-
         // Setter methods (ending in =) are not predicates
         if name_str.ends_with('=') {
             return Vec::new();
         }
 
-        let matching_prefix = forbidden_prefixes
-            .iter()
-            .find(|p| name_str.starts_with(p.as_str()));
-        let prefix = match matching_prefix {
-            Some(p) => p,
-            None => return Vec::new(),
-        };
-
-        let suggested = &name_str[prefix.len()..];
-
-        // Skip if suggested name starts with a digit — invalid Ruby identifier
-        if suggested.starts_with(|c: char| c.is_ascii_digit()) {
+        // Check AllowedMethods
+        if allowed_methods.iter().any(|m| m == name_str) {
             return Vec::new();
         }
-        let (line, column) = source.offset_to_line_col(name_offset);
 
-        vec![self.diagnostic(
-            source,
-            line,
-            column,
-            format!("Rename `{name_str}` to `{suggested}`."),
-        )]
+        // Iterate over NamePrefix (not ForbiddenPrefixes) to identify predicates,
+        // matching RuboCop's `predicate_prefixes.each` loop.
+        for prefix in &name_prefixes {
+            // Check if method starts with this prefix followed by a non-digit
+            if !name_str.starts_with(prefix.as_str()) {
+                continue;
+            }
+            let after_prefix = &name_str[prefix.len()..];
+            if after_prefix.is_empty() || after_prefix.starts_with(|c: char| c.is_ascii_digit()) {
+                continue;
+            }
+
+            // Compute expected_name per RuboCop logic:
+            // - If prefix is in ForbiddenPrefixes, strip it
+            // - Otherwise, keep the name as-is
+            // - Append ? if not already present
+            let expected = if forbidden_prefixes.iter().any(|fp| fp == prefix) {
+                let stripped = &name_str[prefix.len()..];
+                if name_str.ends_with('?') {
+                    stripped.to_string()
+                } else {
+                    format!("{stripped}?")
+                }
+            } else if name_str.ends_with('?') {
+                name_str.to_string()
+            } else {
+                format!("{name_str}?")
+            };
+
+            // Skip if method already equals the expected name
+            if name_str == expected {
+                continue;
+            }
+
+            let (line, column) = source.offset_to_line_col(name_offset);
+
+            return vec![self.diagnostic(
+                source,
+                line,
+                column,
+                format!("Rename `{name_str}` to `{expected}`."),
+            )];
+        }
+
+        Vec::new()
     }
 }
 

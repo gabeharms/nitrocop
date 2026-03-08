@@ -30,3 +30,12 @@ end
 
 # define_method with explicit receiver should not be flagged
 SomeClass.define_method(:is_ready?) { true }
+
+# Singleton methods with correct naming are fine
+def self.active?
+  @active
+end
+
+def self.ready?
+  @ready
+end
