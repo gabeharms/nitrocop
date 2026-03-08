@@ -147,3 +147,17 @@ if condition
 elsif(other_condition)
   do_other
 end
+
+# Comment before else; (semicolon after else, e.g. rescue blocks)
+begin
+rescue Errno::EACCES
+  # Permission denied
+else; fail 'not raised'
+end
+
+# Comment at keyword indentation before else;
+begin
+rescue Errno::EACCES
+# Permission denied
+else; fail 'not raised'
+end

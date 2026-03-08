@@ -29,6 +29,14 @@ use crate::parse::source::SourceFile;
 ///    non-blank content at column 0, corrupting expected indentation. (17 FPs)
 /// 2. `elsif(` (parenthesized condition without space) not recognized as a
 ///    two-alternative keyword. Only `elsif ` and `elsif\n` were checked. (9 FPs)
+///
+/// ## Follow-up fix: 3 FPs from `else;` pattern (2026-03-08)
+///
+/// `else; fail 'not raised'` (semicolon-separated statement on same line as `else`)
+/// was not recognized by `is_two_alternative_keyword`. The function checked for
+/// `else\n`, `else\r`, `else `, and bare `else`, but not `else;`. Fixed by using
+/// a general delimiter check: `else` followed by any non-alphanumeric, non-underscore
+/// character (matching the pattern already used for `end` in `is_less_indented`).
 pub struct CommentIndentation;
 
 /// Check if a line starts with one of the "two alternative" keywords.
@@ -39,10 +47,8 @@ fn is_two_alternative_keyword(line: &[u8]) -> bool {
         .iter()
         .position(|&b| b != b' ' && b != b'\t')
         .unwrap_or(line.len())..];
-    trimmed.starts_with(b"else\n")
-        || trimmed.starts_with(b"else\r")
-        || trimmed == b"else"
-        || trimmed.starts_with(b"else ")
+    trimmed.starts_with(b"else")
+        && (trimmed.len() == 4 || !trimmed[4].is_ascii_alphanumeric() && trimmed[4] != b'_')
         || trimmed.starts_with(b"elsif ")
         || trimmed.starts_with(b"elsif\n")
         || trimmed.starts_with(b"elsif(")
