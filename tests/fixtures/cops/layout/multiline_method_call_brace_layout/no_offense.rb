@@ -36,3 +36,17 @@ foo(<<~RUBY
   content
 RUBY
 )
+
+# Heredoc as value of keyword argument — closing paren on heredoc opening line
+run_fresh(
+  full_command: 'yes | fresh new\ file',
+  success: <<-EOF.strip_heredoc)
+    Add fresh new file
+  EOF
+
+# Heredoc as keyword arg value with closing paren on next line
+process(
+  input: "hello",
+  template: <<~SQL)
+    SELECT * FROM users
+SQL

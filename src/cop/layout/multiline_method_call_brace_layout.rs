@@ -3,6 +3,11 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// FP=41 fixed: `is_heredoc_node` did not recurse into `KeywordHashNode` /
+/// `AssocNode` pairs, so heredocs used as keyword argument values
+/// (e.g., `success: <<-EOF.strip_heredoc)`) were missed and the closing
+/// paren position was incorrectly flagged. Added recursion into keyword
+/// hash elements and assoc node values.
 pub struct MultilineMethodCallBraceLayout;
 
 impl Cop for MultilineMethodCallBraceLayout {
@@ -147,7 +152,8 @@ impl Cop for MultilineMethodCallBraceLayout {
 
 /// Check if a node is or contains a heredoc string (opening starts with `<<`).
 /// Also walks into method call receivers to detect `<<~SQL.tr(...)` patterns
-/// where the heredoc is wrapped in a method call.
+/// where the heredoc is wrapped in a method call, and into keyword hash pairs
+/// to detect heredocs used as keyword argument values (e.g., `key: <<~HEREDOC`).
 fn is_heredoc_node(node: &ruby_prism::Node<'_>) -> bool {
     if let Some(s) = node.as_interpolated_string_node() {
         if let Some(open) = s.opening_loc() {
@@ -164,6 +170,18 @@ fn is_heredoc_node(node: &ruby_prism::Node<'_>) -> bool {
         if let Some(recv) = call.receiver() {
             return is_heredoc_node(&recv);
         }
+    }
+    // Check inside keyword hash nodes (keyword arguments like `key: <<~HEREDOC`)
+    if let Some(kw_hash) = node.as_keyword_hash_node() {
+        for element in kw_hash.elements().iter() {
+            if is_heredoc_node(&element) {
+                return true;
+            }
+        }
+    }
+    // Check the value side of association (key-value) pairs
+    if let Some(assoc) = node.as_assoc_node() {
+        return is_heredoc_node(&assoc.value());
     }
     false
 }
