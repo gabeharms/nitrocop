@@ -24,6 +24,15 @@ use crate::parse::source::SourceFile;
 ///   Characters like `@` and non-ASCII (e.g., unicode curly quote U+2019) are NOT in the
 ///   whitelist, so RuboCop does not flag them. Fixed by restricting the regular char branch
 ///   to only match the LITERAL_REGEX whitelist and rejecting non-ASCII bytes.
+///
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=2, FN=0.
+///
+/// FP=2: Both from `gsub(/\0/, ...)` — null byte regex escape. RuboCop's LITERAL_REGEX
+/// excludes digits 0-9 from valid escape chars: `\\[^AbBdDgGhHkpPRwWXsSzZ0-9]`. Our
+/// `is_deterministic_single_char_regex` was missing `0-9`, `g`, `k`, `X` from its exclusion
+/// list. Fixed by adding those to the match arm that rejects non-literal escape sequences.
 pub struct StringReplacement;
 
 impl Cop for StringReplacement {
@@ -179,9 +188,29 @@ fn is_deterministic_single_char_regex(regex: ruby_prism::RegularExpressionNode<'
                 }
                 let next = content[i + 1];
                 match next {
-                    // Regex-specific char classes — non-deterministic
-                    b'd' | b'D' | b's' | b'S' | b'w' | b'W' | b'b' | b'B' | b'A' | b'Z' | b'z'
-                    | b'G' | b'h' | b'H' | b'R' | b'p' | b'P' => return false,
+                    // Regex-specific escape classes — non-deterministic.
+                    // Must match RuboCop's LITERAL_REGEX exclusion: [^AbBdDgGhHkpPRwWXsSzZ0-9]
+                    b'd'
+                    | b'D'
+                    | b's'
+                    | b'S'
+                    | b'w'
+                    | b'W'
+                    | b'b'
+                    | b'B'
+                    | b'A'
+                    | b'Z'
+                    | b'z'
+                    | b'G'
+                    | b'g'
+                    | b'h'
+                    | b'H'
+                    | b'R'
+                    | b'p'
+                    | b'P'
+                    | b'k'
+                    | b'X'
+                    | b'0'..=b'9' => return false,
                     // Unicode escape: \uXXXX or \u{...} — counts as one char
                     b'u' => {
                         i += 2;
