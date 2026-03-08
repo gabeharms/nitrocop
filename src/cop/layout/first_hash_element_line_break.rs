@@ -3,6 +3,11 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// FP=30 investigation: All 30 false positives were from hashes where all elements
+/// fit on one line but the closing `}` wraps to the next line. RuboCop's
+/// `FirstElementLineBreak#check_children_line_break` has `return if line == max_line`,
+/// skipping when the first element's line equals the last element's last_line.
+/// Fix: added the same check — skip when first and last elements are on the same line.
 pub struct FirstHashElementLineBreak;
 
 impl Cop for FirstHashElementLineBreak {
@@ -61,6 +66,15 @@ impl Cop for FirstHashElementLineBreak {
 
         let first = &elements[0];
         let (first_line, first_col) = source.offset_to_line_col(first.location().start_offset());
+
+        // RuboCop skips when all elements end on the same line as the opening brace
+        // (only the closing brace wraps to a new line)
+        let last = elements.last().unwrap();
+        let (last_elem_line, _) =
+            source.offset_to_line_col(last.location().end_offset().saturating_sub(1));
+        if first_line == last_elem_line {
+            return;
+        }
 
         if first_line == open_line {
             diagnostics.push(self.diagnostic(
