@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Update README.md conformance section from corpus oracle results.
+"""Update README.md sections from corpus oracle results.
 
-Reads corpus-results.json and manifest.jsonl to update the conformance
-percentages, offense counts, and top-15 repo table in README.md.
+Reads corpus-results.json and manifest.jsonl to update the generated Cops
+breakdown plus the conformance percentages, offense counts, and top-15 repo
+table in README.md.
 
 Usage:
     python3 bench/corpus/update_readme.py \
@@ -20,6 +21,52 @@ import math
 import re
 import sys
 from pathlib import Path
+
+COPS_SECTION_START = "<!-- corpus-cops:start -->"
+COPS_SECTION_END = "<!-- corpus-cops:end -->"
+
+GEMS = [
+    {
+        "key": "rubocop",
+        "url": "https://github.com/rubocop/rubocop",
+        "departments": [
+            "Layout",
+            "Lint",
+            "Style",
+            "Metrics",
+            "Naming",
+            "Security",
+            "Bundler",
+            "Gemspec",
+            "Migration",
+        ],
+    },
+    {
+        "key": "rubocop-rails",
+        "url": "https://github.com/rubocop/rubocop-rails",
+        "departments": ["Rails"],
+    },
+    {
+        "key": "rubocop-performance",
+        "url": "https://github.com/rubocop/rubocop-performance",
+        "departments": ["Performance"],
+    },
+    {
+        "key": "rubocop-rspec",
+        "url": "https://github.com/rubocop/rubocop-rspec",
+        "departments": ["RSpec"],
+    },
+    {
+        "key": "rubocop-rspec_rails",
+        "url": "https://github.com/rubocop/rubocop-rspec_rails",
+        "departments": ["RSpecRails"],
+    },
+    {
+        "key": "rubocop-factory_bot",
+        "url": "https://github.com/rubocop/rubocop-factory_bot",
+        "departments": ["FactoryBot"],
+    },
+]
 
 
 def load_manifest_stars(path: Path) -> dict[str, tuple[str, int]]:
@@ -64,6 +111,137 @@ def format_count_summary(n: int) -> str:
 def format_match_rate(rate: float) -> str:
     """Format match rate floored to 0.1%: 0.9999 -> '99.9%', never rounds up to 100%."""
     return f"{math.floor(rate * 1000) / 10:.1f}%"
+
+
+def build_department_stats(data: dict) -> dict[str, dict]:
+    """Build per-department cop counts for the generated README Cops section."""
+    derived: dict[str, dict] = {}
+    for cop in data.get("by_cop", []):
+        dept = cop["cop"].split("/")[0]
+        stats = derived.setdefault(dept, {
+            "department": dept,
+            "cops": 0,
+            "seen_cops": 0,
+            "perfect_cops": 0,
+            "diverging_cops": 0,
+            "no_data_cops": 0,
+            "matches": 0,
+            "fp": 0,
+            "fn": 0,
+        })
+        matches = cop.get("matches", 0)
+        fp = cop.get("fp", 0)
+        fn = cop.get("fn", 0)
+        seen = matches + fp + fn > 0
+        diverging = fp + fn > 0
+        stats["cops"] += 1
+        stats["matches"] += matches
+        stats["fp"] += fp
+        stats["fn"] += fn
+        if seen:
+            stats["seen_cops"] += 1
+        if diverging:
+            stats["diverging_cops"] += 1
+        elif seen:
+            stats["perfect_cops"] += 1
+        else:
+            stats["no_data_cops"] += 1
+
+    stats_by_department: dict[str, dict] = {}
+    for entry in data.get("by_department", []):
+        dept = entry["department"]
+        derived_entry = derived.get(dept, {})
+        stats_by_department[dept] = {
+            "department": dept,
+            "cops": entry.get("cops", derived_entry.get("cops", 0)),
+            "seen_cops": entry.get("seen_cops", entry.get("exercised_cops", derived_entry.get("seen_cops", 0))),
+            "perfect_cops": entry.get("perfect_cops", derived_entry.get("perfect_cops", 0)),
+            "diverging_cops": entry.get("diverging_cops", derived_entry.get("diverging_cops", 0)),
+            "no_data_cops": entry.get("no_data_cops", entry.get("inactive_cops", derived_entry.get("no_data_cops", 0))),
+            "matches": entry.get("matches", derived_entry.get("matches", 0)),
+            "fp": entry.get("fp", derived_entry.get("fp", 0)),
+            "fn": entry.get("fn", derived_entry.get("fn", 0)),
+        }
+
+    for dept, entry in derived.items():
+        stats_by_department.setdefault(dept, entry)
+
+    for gem in GEMS:
+        for dept in gem["departments"]:
+            stats_by_department.setdefault(dept, {
+                "department": dept,
+                "cops": 0,
+                "seen_cops": 0,
+                "perfect_cops": 0,
+                "diverging_cops": 0,
+                "no_data_cops": 0,
+                "matches": 0,
+                "fp": 0,
+                "fn": 0,
+            })
+
+    return stats_by_department
+
+
+def build_cops_section(data: dict) -> str:
+    """Build the generated README Cops section."""
+    summary = data.get("summary", {})
+    baseline = data.get("baseline", {})
+    by_department = build_department_stats(data)
+
+    total_cops = summary.get("registered_cops", sum(d["cops"] for d in by_department.values()))
+    perfect_cops = summary.get("perfect_cops", sum(d["perfect_cops"] for d in by_department.values()))
+    diverging_cops = summary.get("diverging_cops", sum(d["diverging_cops"] for d in by_department.values()))
+    no_data_cops = summary.get("no_data_cops", summary.get("inactive_cops", sum(d["no_data_cops"] for d in by_department.values())))
+
+    lines = []
+    lines.append(f"nitrocop supports {total_cops:,} cops from {len(GEMS)} RuboCop gems.")
+    lines.append("")
+    lines.append(
+        f"Current corpus status: {perfect_cops:,} cops seen in the corpus are at 100% conformance, "
+        f"{diverging_cops:,} diverge, and {no_data_cops:,} have no corpus data."
+    )
+    lines.append("")
+    lines.append("100% conformance here means the cop was seen in the corpus and had 0 FP and 0 FN.")
+    lines.append("")
+
+    for gem in GEMS:
+        rows = [by_department[dept] for dept in gem["departments"]]
+        total = sum(r["cops"] for r in rows)
+        seen = sum(r["seen_cops"] for r in rows)
+        perfect = sum(r["perfect_cops"] for r in rows)
+        diverging = sum(r["diverging_cops"] for r in rows)
+        no_data = sum(r["no_data_cops"] for r in rows)
+        version = baseline.get(gem["key"], "?")
+        lines.append(f"**[{gem['key']}]({gem['url']})** `{version}` ({total:,} cops)")
+        lines.append("")
+        lines.append("| Department | Total cops | Seen in corpus | 100% | Diverging | No corpus data |")
+        lines.append("|------------|-----------:|---------------:|-----:|----------:|---------------:|")
+        for row in rows:
+            lines.append(
+                f"| {row['department']} | {row['cops']:,} | {row['seen_cops']:,} | "
+                f"{row['perfect_cops']:,} | {row['diverging_cops']:,} | {row['no_data_cops']:,} |"
+            )
+        lines.append(
+            f"| **Total** | **{total:,}** | **{seen:,}** | **{perfect:,}** | "
+            f"**{diverging:,}** | **{no_data:,}** |"
+        )
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+def replace_marked_section(text: str, start_marker: str, end_marker: str, body: str) -> str:
+    """Replace the section between two explicit markers."""
+    start = text.find(start_marker)
+    end = text.find(end_marker)
+    if start == -1 or end == -1 or end < start:
+        raise ValueError(
+            f"README is missing generated section markers: {start_marker} ... {end_marker}"
+        )
+
+    start += len(start_marker)
+    return text[:start] + "\n" + body + "\n" + text[end:]
 
 
 def build_top15_table(by_repo: list, manifest: dict[str, tuple[str, int]]) -> str:
@@ -128,9 +306,10 @@ def build_summary_table(summary: dict) -> str:
     return "\n".join(lines)
 
 
-def update_readme(readme_text: str, summary: dict, by_repo: list,
-                  manifest: dict[str, tuple[str, int]]) -> str:
+def update_readme(readme_text: str, data: dict, manifest: dict[str, tuple[str, int]]) -> str:
     """Replace conformance data in README text."""
+    summary = data["summary"]
+    by_repo = data["by_repo"]
     total_repos = summary["total_repos"]
     matches = summary["matches"]
     fp = summary["fp"]
@@ -141,6 +320,14 @@ def update_readme(readme_text: str, summary: dict, by_repo: list,
 
     rate_str = format_match_rate(conformance_rate)
     files_str = format_files(files) if files > 0 else None
+
+    # 0. Generated Cops section between explicit markers
+    readme_text = replace_marked_section(
+        readme_text,
+        COPS_SECTION_START,
+        COPS_SECTION_END,
+        build_cops_section(data),
+    )
 
     # 1. Features bullet: **XX.X% conformance**
     readme_text = re.sub(
@@ -194,13 +381,10 @@ def main():
     args = parser.parse_args()
 
     data = json.loads(args.input.read_text())
-    summary = data["summary"]
-    by_repo = data["by_repo"]
-
     manifest = load_manifest_stars(args.manifest)
 
     readme_text = args.readme.read_text()
-    updated = update_readme(readme_text, summary, by_repo, manifest)
+    updated = update_readme(readme_text, data, manifest)
 
     if updated == readme_text:
         print("No changes needed", file=sys.stderr)
@@ -219,6 +403,7 @@ def main():
         args.readme.write_text(updated)
         print(f"Updated {args.readme}", file=sys.stderr)
 
+    summary = data["summary"]
     rate = format_match_rate(summary["overall_match_rate"])
     print(f"Conformance: {rate} across {summary['total_repos']} repos", file=sys.stderr)
 

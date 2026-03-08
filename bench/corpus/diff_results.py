@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Diff nitrocop vs RuboCop JSON results and produce a corpus report.
 
 Usage:
@@ -326,8 +327,11 @@ def main():
 
         repo_results.append(result)
 
-    # Build per-cop table (sorted by divergence descending)
-    all_cops = sorted(set(by_cop_matches) | set(by_cop_fp) | set(by_cop_fn))
+    # Build per-cop table. When a full cop list is available from `--list-cops`,
+    # include zero-activity cops so downstream reports can distinguish
+    # "perfect in corpus" from "never exercised by the corpus".
+    observed_cops = set(by_cop_matches) | set(by_cop_fp) | set(by_cop_fn)
+    all_cops = sorted((covered_cops or set()) | observed_cops)
     by_cop = []
     for cop in all_cops:
         m = by_cop_matches.get(cop, 0)
@@ -335,25 +339,47 @@ def main():
         fn = by_cop_fn.get(cop, 0)
         total = m + fp + fn
         rate = m / total if total > 0 else 1.0
+        diverging = fp + fn > 0
+        exercised = total > 0
         by_cop.append({
             "cop": cop,
             "matches": m,
             "fp": fp,
             "fn": fn,
             "match_rate": trunc4(rate),
+            "exercised": exercised,
+            "perfect_match": exercised and not diverging,
+            "diverging": diverging,
             "fp_examples": by_cop_fp_examples.get(cop, []),
             "fn_examples": by_cop_fn_examples.get(cop, []),
         })
     by_cop.sort(key=lambda x: x["fp"] + x["fn"], reverse=True)
 
     # Aggregate by department
-    dept_stats = defaultdict(lambda: {"matches": 0, "fp": 0, "fn": 0, "cops": 0})
+    dept_stats = defaultdict(lambda: {
+        "matches": 0,
+        "fp": 0,
+        "fn": 0,
+        "cops": 0,
+        "exercised_cops": 0,
+        "perfect_cops": 0,
+        "diverging_cops": 0,
+        "inactive_cops": 0,
+    })
     for c in by_cop:
         dept = c["cop"].split("/")[0]
         dept_stats[dept]["matches"] += c["matches"]
         dept_stats[dept]["fp"] += c["fp"]
         dept_stats[dept]["fn"] += c["fn"]
         dept_stats[dept]["cops"] += 1
+        if c["diverging"]:
+            dept_stats[dept]["diverging_cops"] += 1
+        elif c["exercised"]:
+            dept_stats[dept]["perfect_cops"] += 1
+        else:
+            dept_stats[dept]["inactive_cops"] += 1
+        if c["exercised"]:
+            dept_stats[dept]["exercised_cops"] += 1
     by_department = []
     for dept in sorted(dept_stats):
         s = dept_stats[dept]
@@ -366,7 +392,17 @@ def main():
             "fn": s["fn"],
             "match_rate": trunc4(rate),
             "cops": s["cops"],
+            "exercised_cops": s["exercised_cops"],
+            "perfect_cops": s["perfect_cops"],
+            "diverging_cops": s["diverging_cops"],
+            "inactive_cops": s["inactive_cops"],
         })
+
+    registered_cops = len(by_cop)
+    exercised_cops = sum(1 for c in by_cop if c["exercised"])
+    perfect_cops = sum(1 for c in by_cop if c["perfect_match"])
+    diverging_cops = sum(1 for c in by_cop if c["diverging"])
+    inactive_cops = registered_cops - exercised_cops
 
     # Overall stats
     oracle_total = total_matches + total_fp + total_fn
@@ -393,6 +429,11 @@ def main():
             "matches": total_matches,
             "fp": total_fp,
             "fn": total_fn,
+            "registered_cops": registered_cops,
+            "exercised_cops": exercised_cops,
+            "perfect_cops": perfect_cops,
+            "diverging_cops": diverging_cops,
+            "inactive_cops": inactive_cops,
             "overall_match_rate": trunc4(overall_rate),
             "total_files_inspected": total_files,
             "rubocop_files_dropped": total_files_dropped,
@@ -426,6 +467,11 @@ def main():
     md.append(f"| Matches (both agree) | {total_matches:,} |")
     md.append(f"| FP (nitrocop extra) | {total_fp:,} |")
     md.append(f"| FN (nitrocop missing) | {total_fn:,} |")
+    md.append(f"| Registered cops | {registered_cops:,} |")
+    md.append(f"| Cops seen in corpus | {exercised_cops:,} |")
+    md.append(f"| Cops at 100% conformance | {perfect_cops:,} |")
+    md.append(f"| Cops with divergence | {diverging_cops:,} |")
+    md.append(f"| Cops with no corpus data | {inactive_cops:,} |")
     md.append(f"| **Match rate** | **{fmt_pct(overall_rate)}** |")
     if repos_error > 0 or warning_repos:
         md.append(f"| Repos with errors | {repos_error} |")
@@ -438,12 +484,16 @@ def main():
     if by_department:
         md.append("## Department Breakdown")
         md.append("")
-        md.append("| Department | Cops | Matches | FP | FN | Match % |")
-        md.append("|------------|-----:|--------:|---:|---:|--------:|")
+        md.append("| Department | Total cops | Seen in corpus | 100% | Diverging | No corpus data | Matches | FP | FN | Match % |")
+        md.append("|------------|-----------:|---------------:|-----:|----------:|---------------:|--------:|---:|---:|--------:|")
         for d in by_department:
             total = d["matches"] + d["fp"] + d["fn"]
             pct = fmt_pct(d['match_rate']) if total > 0 else "N/A"
-            md.append(f"| {d['department']} | {d['cops']:,} | {d['matches']:,} | {d['fp']:,} | {d['fn']:,} | {pct} |")
+            md.append(
+                f"| {d['department']} | {d['cops']:,} | {d['exercised_cops']:,} | "
+                f"{d['perfect_cops']:,} | {d['diverging_cops']:,} | {d['inactive_cops']:,} | "
+                f"{d['matches']:,} | {d['fp']:,} | {d['fn']:,} | {pct} |"
+            )
         md.append("")
 
     # ── Compute ok/error repo lists (used by multiple sections below) ──
@@ -471,12 +521,16 @@ def main():
         md.append("")
 
     # ── Diverging cops with <details> for examples ──
-    diverging = [c for c in by_cop if c["fp"] + c["fn"] > 0]
-    perfect_cops = [c for c in by_cop if c["fp"] + c["fn"] == 0 and c["matches"] > 0]
+    diverging = [c for c in by_cop if c["diverging"]]
+    perfect_cop_list = [c for c in by_cop if c["perfect_match"]]
     if diverging:
         md.append("## Diverging Cops")
         md.append("")
-        md.append(f"{len(diverging)} cops have divergence. {len(perfect_cops)} cops match perfectly.")
+        md.append(
+            f"{len(diverging)} cops have divergence. "
+            f"{len(perfect_cop_list)} cops seen in the corpus match perfectly. "
+            f"{inactive_cops} cops have no corpus data."
+        )
         md.append("")
         md.append("| Cop | Matches | FP | FN | Match % |")
         md.append("|-----|--------:|---:|---:|--------:|")
@@ -545,13 +599,13 @@ def main():
         md.append("")
 
     # ── Perfect cops ──
-    if perfect_cops:
+    if perfect_cop_list:
         md.append("<details>")
-        md.append(f"<summary>Perfect cops ({len(perfect_cops)} cops with 100% match rate)</summary>")
+        md.append(f"<summary>Perfect cops ({len(perfect_cop_list)} cops with 100% match rate)</summary>")
         md.append("")
         md.append("| Cop | Matches |")
         md.append("|-----|--------:|")
-        for c in sorted(perfect_cops, key=lambda x: x["matches"], reverse=True):
+        for c in sorted(perfect_cop_list, key=lambda x: x["matches"], reverse=True):
             md.append(f"| {c['cop']} | {c['matches']:,} |")
         md.append("")
         md.append("</details>")

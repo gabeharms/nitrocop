@@ -30,9 +30,21 @@ def write_fixture(tmp: Path):
                 "offenses": [
                     {"location": {"line": 1}, "cop_name": "Style/FrozenStringLiteralComment"}
                 ]
+            },
+            {
+                "path": "repos/repo_a/extra.rb",
+                "offenses": []
             }
         ],
-        "summary": {"target_file_count": 1, "inspected_file_count": 1}
+        "summary": {"target_file_count": 2, "inspected_file_count": 2}
+    }))
+
+    # Repo with a true FP on an inspected file
+    nitrocop_dir.joinpath("repo_a.json").write_text(json.dumps({
+        "offenses": [
+            {"path": "repos/repo_a/app.rb", "line": 1, "cop_name": "Style/FrozenStringLiteralComment"},
+            {"path": "repos/repo_a/extra.rb", "line": 5, "cop_name": "Layout/TrailingWhitespace"},
+        ]
     }))
 
     # Repo with only nitrocop results (rubocop missing → error repo)
@@ -49,14 +61,21 @@ def write_fixture(tmp: Path):
         + json.dumps({"id": "repo_b"}) + "\n"
     )
 
-    return nitrocop_dir, rubocop_dir, manifest
+    cop_list = tmp / "cops.txt"
+    cop_list.write_text(
+        "Style/FrozenStringLiteralComment\n"
+        "Layout/TrailingWhitespace\n"
+        "Lint/UnusedMethodArgument\n"
+    )
+
+    return nitrocop_dir, rubocop_dir, manifest, cop_list
 
 
 def test_end_to_end():
     """Run diff_results.py with minimal fixtures and verify it exits 0."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        nc_dir, rc_dir, manifest = write_fixture(tmp)
+        nc_dir, rc_dir, manifest, cop_list = write_fixture(tmp)
         out_json = tmp / "out.json"
         out_md = tmp / "out.md"
 
@@ -68,6 +87,7 @@ def test_end_to_end():
                 "--manifest", str(manifest),
                 "--output-json", str(out_json),
                 "--output-md", str(out_md),
+                "--cop-list", str(cop_list),
             ],
             capture_output=True,
             text=True,
@@ -81,10 +101,27 @@ def test_end_to_end():
         assert data["summary"]["total_repos"] == 2
         assert data["summary"]["repos_error"] == 1  # repo_b missing rubocop
         assert data["summary"]["matches"] == 1
+        assert data["summary"]["registered_cops"] == 3
+        assert data["summary"]["perfect_cops"] == 1
+        assert data["summary"]["diverging_cops"] == 1
+        assert data["summary"]["inactive_cops"] == 1
+
+        by_cop = {entry["cop"]: entry for entry in data["by_cop"]}
+        assert by_cop["Style/FrozenStringLiteralComment"]["perfect_match"] is True
+        assert by_cop["Layout/TrailingWhitespace"]["diverging"] is True
+        assert by_cop["Lint/UnusedMethodArgument"]["exercised"] is False
+
+        by_dept = {entry["department"]: entry for entry in data["by_department"]}
+        assert by_dept["Style"]["perfect_cops"] == 1
+        assert by_dept["Layout"]["diverging_cops"] == 1
+        assert by_dept["Lint"]["inactive_cops"] == 1
 
         md = out_md.read_text()
         assert "## Summary" in md
         assert "## Per-Repo Results" in md
+        assert "| Cops seen in corpus | 2 |" in md
+        assert "| Department | Total cops | Seen in corpus | 100% | Diverging | No corpus data |" in md
+        assert "1 cops seen in the corpus match perfectly. 1 cops have no corpus data." in md
 
 
 def test_match_rate_never_rounds_up_to_100():
