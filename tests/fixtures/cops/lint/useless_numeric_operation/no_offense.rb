@@ -9,3 +9,20 @@ x *= 2
 attachment_count = 5
 result = attachment_count * 1
 result = @count + 0
+# Float operands are not matched by RuboCop (intentional float coercion)
+val *= 1.0
+val += 0.0
+val /= 1.0
+val **= 1.0
+val -= 0.0
+# Instance variable op-assigns are not matched by RuboCop
+@index += 0
+@count -= 0
+@total *= 1
+@value /= 1
+# Class variable op-assigns are not matched by RuboCop
+@@counter += 0
+@@total *= 1
+# Global variable op-assigns are not matched by RuboCop
+$counter += 0
+$total *= 1

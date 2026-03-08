@@ -1,11 +1,17 @@
-use crate::cop::node_type::{
-    CALL_NODE, CLASS_VARIABLE_OPERATOR_WRITE_NODE, FLOAT_NODE, GLOBAL_VARIABLE_OPERATOR_WRITE_NODE,
-    INSTANCE_VARIABLE_OPERATOR_WRITE_NODE, INTEGER_NODE, LOCAL_VARIABLE_OPERATOR_WRITE_NODE,
-};
+use crate::cop::node_type::{CALL_NODE, INTEGER_NODE, LOCAL_VARIABLE_OPERATOR_WRITE_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation: 13 FP, 0 FN.
+/// Two root causes:
+/// 1. Float operands (`*= 1.0`, `+= 0.0`): RuboCop's NodePattern only matches
+///    `(int $_)`, not `(float $_)`. Multiplying by 1.0 is intentional float coercion.
+/// 2. Instance/class/global variable op-assigns (`@index += 0`, `@@count -= 0`,
+///    `$counter += 0`): RuboCop's `useless_abbreviated_assignment?` pattern uses
+///    `(op-asgn (lvasgn $_) ...)` which only matches local variable assignments.
+/// Fix: removed float literal checks from `is_zero`/`is_one`, and removed
+/// ivar/cvar/gvar operator write node handling.
 pub struct UselessNumericOperation;
 
 const MSG: &str = "Do not apply inconsequential numeric operations to variables.";
@@ -20,15 +26,7 @@ impl Cop for UselessNumericOperation {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[
-            CALL_NODE,
-            CLASS_VARIABLE_OPERATOR_WRITE_NODE,
-            FLOAT_NODE,
-            GLOBAL_VARIABLE_OPERATOR_WRITE_NODE,
-            INSTANCE_VARIABLE_OPERATOR_WRITE_NODE,
-            INTEGER_NODE,
-            LOCAL_VARIABLE_OPERATOR_WRITE_NODE,
-        ]
+        &[CALL_NODE, INTEGER_NODE, LOCAL_VARIABLE_OPERATOR_WRITE_NODE]
     }
 
     fn check_node(
@@ -106,60 +104,6 @@ impl Cop for UselessNumericOperation {
                 diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
             }
         }
-
-        // Also handle instance variable operator writes
-        if let Some(op_assign) = node.as_instance_variable_operator_write_node() {
-            let operator = op_assign.binary_operator().as_slice();
-            let value = op_assign.value();
-
-            let is_useless = match operator {
-                b"+" | b"-" => is_zero(&value, source),
-                b"*" | b"/" | b"**" => is_one(&value, source),
-                _ => false,
-            };
-
-            if is_useless {
-                let loc = op_assign.location();
-                let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
-            }
-        }
-
-        // Global variable operator writes
-        if let Some(op_assign) = node.as_global_variable_operator_write_node() {
-            let operator = op_assign.binary_operator().as_slice();
-            let value = op_assign.value();
-
-            let is_useless = match operator {
-                b"+" | b"-" => is_zero(&value, source),
-                b"*" | b"/" | b"**" => is_one(&value, source),
-                _ => false,
-            };
-
-            if is_useless {
-                let loc = op_assign.location();
-                let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
-            }
-        }
-
-        // Class variable operator writes
-        if let Some(op_assign) = node.as_class_variable_operator_write_node() {
-            let operator = op_assign.binary_operator().as_slice();
-            let value = op_assign.value();
-
-            let is_useless = match operator {
-                b"+" | b"-" => is_zero(&value, source),
-                b"*" | b"/" | b"**" => is_one(&value, source),
-                _ => false,
-            };
-
-            if is_useless {
-                let loc = op_assign.location();
-                let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
-            }
-        }
     }
 }
 
@@ -169,11 +113,6 @@ fn is_zero(node: &ruby_prism::Node<'_>, source: &SourceFile) -> bool {
             [int_node.location().start_offset()..int_node.location().end_offset()];
         return src == b"0";
     }
-    if let Some(float_node) = node.as_float_node() {
-        let src = &source.as_bytes()
-            [float_node.location().start_offset()..float_node.location().end_offset()];
-        return src == b"0.0";
-    }
     false
 }
 
@@ -182,11 +121,6 @@ fn is_one(node: &ruby_prism::Node<'_>, source: &SourceFile) -> bool {
         let src = &source.as_bytes()
             [int_node.location().start_offset()..int_node.location().end_offset()];
         return src == b"1";
-    }
-    if let Some(float_node) = node.as_float_node() {
-        let src = &source.as_bytes()
-            [float_node.location().start_offset()..float_node.location().end_offset()];
-        return src == b"1.0";
     }
     false
 }
