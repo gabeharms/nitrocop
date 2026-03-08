@@ -118,6 +118,18 @@ describe NestedScopes do
   end
 end
 
+# Hooks inside RSpec.shared_context are a new scope and should not conflict
+# with hooks in the surrounding example group.
+describe SharedContextScopeBoundary do
+  before { setup_outer }
+
+  RSpec.shared_context 'inner setup' do
+    before { setup_inner }
+  end
+
+  it { expect(true).to eq(true) }
+end
+
 # around hooks are never flagged
 describe AroundHooks do
   around { |example| example.run }

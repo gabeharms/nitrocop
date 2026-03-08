@@ -11,6 +11,17 @@ use crate::parse::source::SourceFile;
 /// RSpec/ScatteredSetup flags multiple `before`/`after` hooks of the same type,
 /// scope, and metadata in the same example group.
 ///
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=2, FN=0.
+///
+/// FP=2: hooks inside `RSpec.shared_context` were incorrectly treated as part
+/// of the surrounding example-group scope when the shared-context call used an
+/// explicit `RSpec.` receiver. Fixed by treating receiverful `RSpec.shared_*`
+/// calls as scope boundaries in the recursive collector.
+///
+/// FN=0: no missing detections were reported for this cop in corpus data.
+///
 /// ## Investigation notes
 /// - **FP root cause (28 FPs):** The cop incorrectly triggered inside `shared_context`
 ///   and `shared_examples` blocks. RuboCop's `example_group?` matcher only matches
@@ -175,10 +186,10 @@ impl<'a> HookCollector<'a> {
     fn is_scope_change(&self, call: &ruby_prism::CallNode<'_>) -> bool {
         let name = call.name().as_slice();
         if call.receiver().is_some() {
-            // RSpec.describe is a scope change
+            // Receiverful RSpec group/shared-group declarations are scope changes.
             if let Some(recv) = call.receiver() {
                 return util::constant_name(&recv).is_some_and(|n| n == b"RSpec")
-                    && name == b"describe";
+                    && (is_rspec_example_group(name) || is_rspec_shared_group(name));
             }
             return false;
         }
