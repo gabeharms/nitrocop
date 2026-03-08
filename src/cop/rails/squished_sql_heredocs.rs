@@ -3,26 +3,73 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Rails/SquishedSQLHeredocs: checks that SQL heredocs use `.squish`.
+///
+/// **Investigation (2026-03-08):** 53 FP caused by `contains_sql_comments`
+/// only checking for `--` at the start of trimmed lines. RuboCop strips SQL
+/// identifier markers (`"..."`, `'...'`, `[...]`) then checks for `--`
+/// ANYWHERE in the remaining content. Inline comments like
+/// `WHERE id = 1 -- filter` were missed, causing false positives (we
+/// reported an offense on heredocs that RuboCop skips).
+///
+/// Fix: rewrote `contains_sql_comments` to scan byte-by-byte, skipping
+/// over quoted (`'`/`"`) and bracket (`[...]`) sections, then detecting
+/// `--` anywhere in the unquoted content. Matches RuboCop's
+/// `singleline_comments_present?` / `SQL_IDENTIFIER_MARKERS` logic.
 pub struct SquishedSQLHeredocs;
 
-/// Check if heredoc content contains SQL comments (lines starting with --)
-/// that would break if squished. We only check for `--` at the start of
-/// content lines (after trimming), not inside strings/identifiers.
+/// Check if heredoc content contains SQL single-line comments (`--`).
+///
+/// Matches RuboCop's approach: strip SQL identifier markers (double-quoted,
+/// single-quoted, and bracket-quoted identifiers) then check for `--`
+/// anywhere in the remaining content.
 fn contains_sql_comments(source: &SourceFile, content_start: usize, content_end: usize) -> bool {
     let bytes = source.as_bytes();
     if content_start >= content_end || content_end > bytes.len() {
         return false;
     }
     let content = &bytes[content_start..content_end];
-    for line in content.split(|&b| b == b'\n') {
-        let trimmed = line.iter().position(|&c| c != b' ' && c != b'\t');
-        if let Some(start) = trimmed {
-            if line[start..].starts_with(b"--") {
-                // Check this isn't inside a string literal or bracket identifier
-                // Simple heuristic: if the line starts with --, it's a comment
-                return true;
+    let mut i = 0;
+    while i < content.len() {
+        let b = content[i];
+        // Skip single-quoted strings: '...'
+        if b == b'\'' {
+            i += 1;
+            while i < content.len() && content[i] != b'\'' {
+                i += 1;
             }
+            if i < content.len() {
+                i += 1; // skip closing quote
+            }
+            continue;
         }
+        // Skip double-quoted strings: "..."
+        if b == b'"' {
+            i += 1;
+            while i < content.len() && content[i] != b'"' {
+                i += 1;
+            }
+            if i < content.len() {
+                i += 1; // skip closing quote
+            }
+            continue;
+        }
+        // Skip bracket identifiers: [...]
+        if b == b'[' {
+            i += 1;
+            while i < content.len() && content[i] != b']' {
+                i += 1;
+            }
+            if i < content.len() {
+                i += 1; // skip closing bracket
+            }
+            continue;
+        }
+        // Check for -- (SQL comment)
+        if b == b'-' && i + 1 < content.len() && content[i + 1] == b'-' {
+            return true;
+        }
+        i += 1;
     }
     false
 }

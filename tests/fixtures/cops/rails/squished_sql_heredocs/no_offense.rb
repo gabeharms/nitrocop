@@ -18,3 +18,19 @@ execute(<<~SQL.squish, "Post Load")
   SELECT * FROM posts
     WHERE post_id = 1
 SQL
+
+<<~SQL
+  SELECT * FROM posts
+  WHERE id = 1 -- filter active records
+SQL
+
+<<-SQL
+  SELECT name FROM users
+  WHERE role = 'admin' -- only admins
+  ORDER BY name
+SQL
+
+<<~SQL
+  SELECT "col--name" FROM posts
+  WHERE status = 1 -- inline comment
+SQL
