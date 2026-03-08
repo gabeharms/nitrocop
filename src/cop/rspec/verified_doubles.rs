@@ -6,10 +6,21 @@ use crate::parse::source::SourceFile;
 
 /// RSpec/VerifiedDoubles - flags `double(...)` and `spy(...)` calls.
 ///
-/// Root cause of 606 FNs: previously only flagged when first arg was a
-/// string or symbol literal. RuboCop flags ALL double/spy calls regardless
-/// of argument type (constants, variables, etc.). Only IgnoreNameless and
-/// IgnoreSymbolicNames config keys filter them.
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=11, FN=0.
+///
+/// FP=11: calls like `double({ body: { id: '1234' } })` were treated as
+/// named doubles because the first argument is a `HashNode` (explicit braces),
+/// not a `KeywordHashNode`. RuboCop treats this as nameless methods/stubs data,
+/// so with default `IgnoreNameless: true` it should be ignored. Fixed by
+/// treating both `KeywordHashNode` and `HashNode` first args as nameless.
+///
+/// FN=0: no missing detections were reported for this cop in corpus data.
+///
+/// Historical fix (already implemented here): this cop now flags `double/spy`
+/// regardless of name argument type, with filtering controlled by
+/// `IgnoreNameless` and `IgnoreSymbolicNames`.
 pub struct VerifiedDoubles;
 impl Cop for VerifiedDoubles {
     fn name(&self) -> &'static str {
@@ -59,7 +70,10 @@ impl Cop for VerifiedDoubles {
         // Check arguments for name
         let (has_name_arg, is_symbolic) = if let Some(args) = call.arguments() {
             let arg_list: Vec<_> = args.arguments().iter().collect();
-            if arg_list.is_empty() || arg_list[0].as_keyword_hash_node().is_some() {
+            if arg_list.is_empty()
+                || arg_list[0].as_keyword_hash_node().is_some()
+                || arg_list[0].as_hash_node().is_some()
+            {
                 (false, false)
             } else {
                 let sym = arg_list[0].as_symbol_node().is_some();

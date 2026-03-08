@@ -13,3 +13,7 @@ end
 it do
   foo = double(call: :bar)
 end
+it do
+  # Explicit hash arg is method stubs, not a name.
+  foo = double({ body: { id: '1234' } })
+end
