@@ -3,6 +3,11 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Corpus conformance fix: `each_with_object` called without its required
+/// object argument (e.g., `ary.each_with_object { |v| v }`) is NOT flagged by
+/// RuboCop — only calls that actually pass an argument like `each_with_object([])`
+/// are candidates for the redundancy check.  The 2 corpus FPs (jruby spec,
+/// opal spec) were caused by missing this arguments-present guard.
 pub struct RedundantWithObject;
 
 impl Cop for RedundantWithObject {
@@ -35,6 +40,15 @@ impl Cop for RedundantWithObject {
         let method_name = call.name().as_slice();
 
         if method_name != b"each_with_object" {
+            return;
+        }
+
+        // RuboCop only flags when the object argument is actually provided,
+        // e.g. `each_with_object([])`.  Without arguments it's not redundant.
+        let has_args = call
+            .arguments()
+            .is_some_and(|args| !args.arguments().is_empty());
+        if !has_args {
             return;
         }
 
