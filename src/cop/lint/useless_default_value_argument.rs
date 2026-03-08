@@ -6,6 +6,14 @@ use crate::parse::source::SourceFile;
 
 /// Checks for `fetch` or `Array.new` with both a default value argument and a block.
 /// The block always supersedes the default value argument.
+///
+/// ## Corpus investigation (2026-03-07)
+/// 17 FPs, 0 FNs. All FPs were `fetch` calls with a forwarded `&block` argument
+/// (e.g., `@cache.fetch(key, options, &block)`). In Prism, `call.block()` returns
+/// `Some(BlockArgumentNode)` for `&block` forwarding, not just `Some(BlockNode)` for
+/// literal blocks. RuboCop's NodePattern uses `any_block` which only matches literal
+/// blocks (`block`/`numblock`), so `&block` forwarding is never flagged. Fixed by
+/// checking that the block is a `BlockNode`, not a `BlockArgumentNode`.
 pub struct UselessDefaultValueArgument;
 
 impl Cop for UselessDefaultValueArgument {
@@ -35,8 +43,14 @@ impl Cop for UselessDefaultValueArgument {
             None => return,
         };
 
-        // Must have a block
-        if call.block().is_none() {
+        // Must have a literal block (not a forwarded &block argument).
+        // In Prism, call.block() returns BlockArgumentNode for &block forwarding,
+        // but only literal blocks ({ } / do..end) should trigger the cop.
+        let block = match call.block() {
+            Some(b) => b,
+            None => return,
+        };
+        if block.as_block_argument_node().is_some() {
             return;
         }
 
