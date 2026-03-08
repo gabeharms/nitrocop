@@ -4,17 +4,36 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
-/// Investigation: 149 FPs caused by matching `receive('string_arg')` calls.
-/// RuboCop only groups `receive(:symbol_arg)` stubs for the `receive_messages`
-/// suggestion. Fixed by requiring the first arg to `receive()` to be a symbol node.
+/// ## Corpus investigation (2026-03-07)
+///
+/// Corpus oracle reported FP=102, FN=317.
+///
+/// FP root causes:
+/// 1) Non-symbol `receive` args (e.g., `receive('action_name')`) were matched.
+/// 2) The matcher accepted chains RuboCop excludes, including:
+///    - heredoc returns (`and_return(<<~SQL)`)
+///    - splat returns (`and_return(*values)`)
+///    - multi-arg returns (`and_return(1, 2)`)
+///    - calls with additional chained methods after `and_return` (e.g., `.ordered`)
+///
+/// Fix: mirror RuboCop's node pattern shape exactly:
+/// `allow(...).to receive(:symbol).and_return(single_non_heredoc_non_splat_arg)`.
+///
+/// Acceptance gate after fix (`check-cop --verbose --rerun`):
+/// - Expected: 4,670
+/// - Actual: 4,373
+/// - Excess: 0 (FP resolved)
+/// - Missing: 297
+///
+/// Remaining gap (FN): this cop currently scans block bodies only, while RuboCop also
+/// catches repeated stubs in other `begin` contexts (for example method bodies in
+/// helper/spec support code). FN work is deferred to a follow-up pass.
 pub struct ReceiveMessages;
 
 struct StubInfo {
     receiver_text: String,
     receive_msg: String,
     offset: usize,
-    has_block: bool,
-    has_with: bool,
 }
 
 impl Cop for ReceiveMessages {
@@ -69,13 +88,13 @@ impl Cop for ReceiveMessages {
         let mut processed = vec![false; stubs.len()];
 
         for i in 0..stubs.len() {
-            if processed[i] || stubs[i].has_block || stubs[i].has_with {
+            if processed[i] {
                 continue;
             }
 
             let mut group = vec![i];
             for j in (i + 1)..stubs.len() {
-                if processed[j] || stubs[j].has_block || stubs[j].has_with {
+                if processed[j] {
                     continue;
                 }
                 if stubs[i].receiver_text == stubs[j].receiver_text {
@@ -120,20 +139,16 @@ fn extract_allow_receive_info(
     source: &SourceFile,
     node: &ruby_prism::Node<'_>,
 ) -> Option<StubInfo> {
-    // Pattern: allow(X).to receive(:y).and_return(z)
-    // AST: CallNode(.to)
-    //   receiver: CallNode(allow) with arg X
-    //   arguments: [CallNode(.and_return)
-    //     receiver: CallNode(receive) with arg :y
-    //     arguments: [z]
-    //   ]
+    // RuboCop node pattern:
+    // (send (send nil? :allow ...) :to
+    //   (send (send nil? :receive (sym _)) :and_return !#heredoc_or_splat?))
     let to_call = node.as_call_node()?;
 
-    if to_call.name().as_slice() != b"to" {
+    if to_call.name().as_slice() != b"to" || to_call.block().is_some() {
         return None;
     }
 
-    // Check receiver is allow(X)
+    // Receiver must be bare allow(...)
     let allow_call = to_call.receiver()?.as_call_node()?;
     if allow_call.name().as_slice() != b"allow" || allow_call.receiver().is_some() {
         return None;
@@ -153,73 +168,70 @@ fn extract_allow_receive_info(
     // Get the argument chain: receive(:y).and_return(z)
     let to_args = to_call.arguments()?;
     let to_arg_list: Vec<_> = to_args.arguments().iter().collect();
-    if to_arg_list.is_empty() {
+    if to_arg_list.len() != 1 {
         return None;
     }
 
-    let arg = &to_arg_list[0];
-
-    // Walk the argument chain to find receive() and and_return()
-    let mut has_and_return = false;
-    let mut has_block = false;
-    let mut has_with = false;
-    let mut receive_msg = String::new();
-
-    let mut current = arg.as_call_node()?;
-
-    loop {
-        let method = current.name().as_slice();
-        match method {
-            b"receive" if current.receiver().is_none() => {
-                // Found the receive call — only match symbol args (RuboCop
-                // ignores string args like receive('method_name'))
-                if let Some(args) = current.arguments() {
-                    let arg_list: Vec<_> = args.arguments().iter().collect();
-                    if !arg_list.is_empty() {
-                        arg_list[0].as_symbol_node()?;
-                        let msg_loc = arg_list[0].location();
-                        receive_msg = source
-                            .byte_slice(msg_loc.start_offset(), msg_loc.end_offset(), "")
-                            .to_string();
-                    }
-                }
-                break;
-            }
-            b"and_return" => {
-                has_and_return = true;
-            }
-            b"with" => {
-                has_with = true;
-            }
-            _ => {}
-        }
-
-        if current.block().is_some() {
-            has_block = true;
-        }
-
-        let recv = current.receiver()?;
-        current = recv.as_call_node()?;
-    }
-
-    if !has_and_return || receive_msg.is_empty() {
+    // Must be direct .and_return(...) call as the only `to` argument.
+    let and_return_call = to_arg_list[0].as_call_node()?;
+    if and_return_call.name().as_slice() != b"and_return" || and_return_call.block().is_some() {
         return None;
     }
 
-    // Also check for block on the to_call itself
-    if to_call.block().is_some() {
-        has_block = true;
+    // and_return receiver must be direct bare receive(:symbol)
+    let receive_call = and_return_call.receiver()?.as_call_node()?;
+    if receive_call.name().as_slice() != b"receive"
+        || receive_call.receiver().is_some()
+        || receive_call.block().is_some()
+    {
+        return None;
+    }
+
+    let receive_args = receive_call.arguments()?;
+    let receive_arg_list: Vec<_> = receive_args.arguments().iter().collect();
+    if receive_arg_list.len() != 1 {
+        return None;
+    }
+    let receive_symbol = receive_arg_list[0].as_symbol_node()?;
+
+    // and_return must have exactly one non-heredoc/non-splat arg.
+    let and_return_args = and_return_call.arguments()?;
+    let and_return_arg_list: Vec<_> = and_return_args.arguments().iter().collect();
+    if and_return_arg_list.len() != 1 || heredoc_or_splat(&and_return_arg_list[0]) {
+        return None;
     }
 
     let stmt_loc = node.location();
+    let msg_loc = receive_symbol.location();
+    let receive_msg = source
+        .byte_slice(msg_loc.start_offset(), msg_loc.end_offset(), "")
+        .to_string();
 
     Some(StubInfo {
         receiver_text,
         receive_msg,
         offset: stmt_loc.start_offset(),
-        has_block,
-        has_with,
     })
+}
+
+fn heredoc_or_splat(node: &ruby_prism::Node<'_>) -> bool {
+    if node.as_splat_node().is_some() {
+        return true;
+    }
+
+    if let Some(string) = node.as_string_node() {
+        return string
+            .opening_loc()
+            .is_some_and(|opening| opening.as_slice().starts_with(b"<<"));
+    }
+
+    if let Some(string) = node.as_interpolated_string_node() {
+        return string
+            .opening_loc()
+            .is_some_and(|opening| opening.as_slice().starts_with(b"<<"));
+    }
+
+    false
 }
 
 #[cfg(test)]
