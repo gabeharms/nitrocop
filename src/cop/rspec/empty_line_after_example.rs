@@ -1,19 +1,26 @@
 use crate::cop::node_type::CALL_NODE;
 use crate::cop::util::{
-    RSPEC_DEFAULT_INCLUDE, RSPEC_EXAMPLES, is_blank_line, is_rspec_example, line_at,
+    RSPEC_DEFAULT_INCLUDE, RSPEC_EXAMPLES, is_blank_or_whitespace_line, is_rspec_example, line_at,
     node_on_single_line,
 };
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
-/// FP investigation (2026-03): 86 false positives caused by heredocs inside
-/// examples. When an example contains a heredoc like `it { should == normalize_indent(<<-OUT) }`,
-/// Prism's CallNode/BlockNode location ends at the `}` on the call line, but the heredoc
-/// content and terminator extend below. The cop saw non-blank lines (heredoc content) after
-/// the example's computed end line and incorrectly fired. Fix: walk the node's descendants
-/// to find heredoc StringNode/InterpolatedStringNode closing_loc offsets that extend past
-/// the node's own location, and use the maximum offset as the true end line.
+/// ## Corpus investigation (2026-03-08)
+///
+/// Corpus oracle reported FP=1,547, FN=2.
+///
+/// FP root cause (this pass): separator lines containing only spaces/tabs were
+/// treated as non-blank by `is_blank_line`, so examples followed by whitespace-only
+/// lines were flagged. RuboCop uses `blank?` semantics here.
+///
+/// Historical FP root cause (already fixed): heredoc content extending past the
+/// example call location. We account for this using heredoc closing offsets.
+///
+/// FN=2: no code changes here were aimed at FN behavior in this pass.
+///
+/// Fix: use whitespace-aware blank-line checks for separator detection in this cop.
 pub struct EmptyLineAfterExample;
 
 impl Cop for EmptyLineAfterExample {
@@ -80,7 +87,7 @@ impl Cop for EmptyLineAfterExample {
         let next_content = line_at(source, next_line);
         match next_content {
             Some(line) => {
-                if is_blank_line(line) {
+                if is_blank_or_whitespace_line(line) {
                     return; // already has blank line
                 }
 
@@ -92,7 +99,7 @@ impl Cop for EmptyLineAfterExample {
                     let mut scan = next_line + 1;
                     loop {
                         match line_at(source, scan) {
-                            Some(l) if is_blank_line(l) => return,
+                            Some(l) if is_blank_or_whitespace_line(l) => return,
                             Some(l) if is_comment_line(l) => {}
                             Some(l) => break l,
                             None => return, // end of file

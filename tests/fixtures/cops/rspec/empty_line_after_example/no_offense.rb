@@ -113,4 +113,13 @@ RSpec.describe Foo do
       expect(true).to be true
     end
   end
+
+  # Whitespace-only separator lines should count as blank.
+  it 'handles whitespace separator' do
+    expect(true).to be true
+  end
+  
+  it 'next example after whitespace separator' do
+    expect(true).to be true
+  end
 end
