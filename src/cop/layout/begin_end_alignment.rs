@@ -3,6 +3,10 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (FP=35, FN=0): All 35 FPs were from tab-indented files.
+/// The `expected_col` calculation only counted spaces (`b' '`), not tabs, so on
+/// tab-indented code `indent` was 0 while `offset_to_line_col` returned the byte
+/// offset (counting tabs). Fixed by including `b'\t'` in the whitespace count.
 pub struct BeginEndAlignment;
 
 impl Cop for BeginEndAlignment {
@@ -62,7 +66,9 @@ impl Cop for BeginEndAlignment {
                     line_start -= 1;
                 }
                 let mut indent = 0;
-                while line_start + indent < bytes.len() && bytes[line_start + indent] == b' ' {
+                while line_start + indent < bytes.len()
+                    && (bytes[line_start + indent] == b' ' || bytes[line_start + indent] == b'\t')
+                {
                     indent += 1;
                 }
                 indent

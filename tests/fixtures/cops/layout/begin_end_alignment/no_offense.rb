@@ -17,3 +17,15 @@ end
 result ||= begin
   compute
 end
+
+# Tab-indented begin/end (should not flag)
+if outfile
+	begin
+	end
+end
+
+def tab_method
+	x = begin
+		1
+	end
+end
