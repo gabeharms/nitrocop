@@ -161,14 +161,37 @@ def _github_api_get(url: str, token: str | None = None) -> dict:
 
 
 def _github_api_download(url: str, token: str) -> bytes:
-    """Download binary content from the GitHub API (follows redirects)."""
+    """Download binary content from the GitHub API (follows redirects).
+
+    GitHub artifact downloads return a 302 redirect to Azure blob storage.
+    Python's urlopen forwards the Authorization header to the redirect target,
+    which Azure rejects with 401. We handle the redirect manually, stripping
+    the auth header for the cross-domain follow-up request.
+    """
+    import urllib.request
+
+    class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            # Don't auto-follow; we'll handle it ourselves
+            raise HTTPError(newurl, code, msg, headers, fp)
+
+    opener = urllib.request.build_opener(NoRedirectHandler)
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
     }
     req = Request(url, headers=headers)
-    with urlopen(req, timeout=120) as resp:
-        return resp.read()
+    try:
+        with opener.open(req, timeout=30) as resp:
+            return resp.read()
+    except HTTPError as e:
+        if e.code in (301, 302, 303, 307, 308):
+            # Follow the redirect WITHOUT the Authorization header
+            redirect_url = e.headers.get("Location") or str(e.url)
+            req2 = Request(redirect_url)
+            with urlopen(req2, timeout=120) as resp:
+                return resp.read()
+        raise
 
 
 def _try_curl_api(repo: str | None) -> tuple[Path, int, str] | None:
