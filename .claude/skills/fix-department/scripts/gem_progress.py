@@ -158,6 +158,9 @@ def build_gem_stats(by_cop: list[dict], registry_cops: set[str] | None = None,
             "total_fp": 0,
             "total_fn": 0,
             "total_matches": 0,
+            "syn_fp": 0,         # synthetic-only FP (cops with 0 corpus activity)
+            "syn_fn": 0,         # synthetic-only FN (cops with 0 corpus activity)
+            "syn_diverging": 0,  # synthetic-only diverging cops
             "cops": [],          # all cops in this gem from corpus data
             "fixed_cops": [],    # cop names treated as fixed
             "untested_cops": [],  # cop names missing from corpus
@@ -206,6 +209,34 @@ def build_gem_stats(by_cop: list[dict], registry_cops: set[str] | None = None,
             g["both"] += 1
             g["diverging"] += 1
 
+    # Aggregate synthetic-only divergence per gem
+    if synthetic:
+        for gem_name_key, g in gems.items():
+            gem_depts = set(GEM_DEPARTMENTS.get(gem_name_key, []))
+            for c in g["cops"]:
+                if c["matches"] == 0 and c["fp"] == 0 and c["fn"] == 0:
+                    syn = synthetic.get(c["cop"])
+                    if syn and syn.get("diverging"):
+                        g["syn_fp"] += syn.get("fp", 0)
+                        g["syn_fn"] += syn.get("fn", 0)
+                        g["syn_diverging"] += 1
+            # Also check untested cops that only exist in synthetic
+            for cop in list(synthetic.keys()):
+                dept = cop_department(cop)
+                if dept not in gem_depts:
+                    continue
+                gem = DEPT_TO_GEM.get(dept)
+                if gem != gem_name_key:
+                    continue
+                # Skip cops already in corpus
+                if any(c["cop"] == cop for c in g["cops"]):
+                    continue
+                syn = synthetic[cop]
+                if syn.get("diverging"):
+                    g["syn_fp"] += syn.get("fp", 0)
+                    g["syn_fn"] += syn.get("fn", 0)
+                    g["syn_diverging"] += 1
+
     # Sort lists for stable output
     for g in gems.values():
         g["untested_cops"].sort()
@@ -228,6 +259,7 @@ def print_summary(gems: dict[str, dict], run_date: str, summary: dict, has_regis
     gem_w = max(gem_w, 3)
 
     has_fixed = any(g["fixed"] > 0 for _, g in sorted_gems)
+    has_syn = any(g["syn_diverging"] > 0 for _, g in sorted_gems)
 
     # Adapt columns based on whether we have registry data
     if has_registry:
@@ -236,8 +268,13 @@ def print_summary(gems: dict[str, dict], run_date: str, summary: dict, has_regis
         if has_fixed:
             hdr += f"  {'Fixed':>5}"
             sep += f"  {'':->5}"
-        hdr += f"  {'Dvrg':>5}  {'Total FP':>9}  {'Total FN':>9}  Status"
-        sep += f"  {'':->5}  {'':->9}  {'':->9}  {'':->30}"
+        hdr += f"  {'Dvrg':>5}  {'Total FP':>9}  {'Total FN':>9}"
+        sep += f"  {'':->5}  {'':->9}  {'':->9}"
+        if has_syn:
+            hdr += f"  {'SynFP':>5}  {'SynFN':>5}"
+            sep += f"  {'':->5}  {'':->5}"
+        hdr += "  Status"
+        sep += f"  {'':->30}"
         print(hdr)
         print(sep)
     else:
@@ -246,8 +283,13 @@ def print_summary(gems: dict[str, dict], run_date: str, summary: dict, has_regis
         if has_fixed:
             hdr += f"  {'Fixed':>5}"
             sep += f"  {'':->5}"
-        hdr += f"  {'Dvrg':>5}  {'Total FP':>9}  {'Total FN':>9}  Status"
-        sep += f"  {'':->5}  {'':->9}  {'':->9}  {'':->30}"
+        hdr += f"  {'Dvrg':>5}  {'Total FP':>9}  {'Total FN':>9}"
+        sep += f"  {'':->5}  {'':->9}  {'':->9}"
+        if has_syn:
+            hdr += f"  {'SynFP':>5}  {'SynFN':>5}"
+            sep += f"  {'':->5}  {'':->5}"
+        hdr += "  Status"
+        sep += f"  {'':->30}"
         print(hdr)
         print(sep)
 
@@ -256,8 +298,11 @@ def print_summary(gems: dict[str, dict], run_date: str, summary: dict, has_regis
             continue
 
         # Determine status
-        if g["diverging"] == 0 and g["untested"] == 0 and g["fixed"] == 0:
+        syn_dvrg = g["syn_diverging"]
+        if g["diverging"] == 0 and g["untested"] == 0 and g["fixed"] == 0 and syn_dvrg == 0:
             status = "100% conformance"
+        elif g["diverging"] == 0 and g["untested"] == 0 and g["fixed"] == 0 and syn_dvrg > 0:
+            status = f"corpus 100%, {syn_dvrg} syn diverge"
         elif g["diverging"] == 0 and g["fixed"] > 0 and g["untested"] == 0:
             status = "done (pending corpus confirmation)"
         elif g["diverging"] == 0 and g["untested"] > 0:
@@ -270,18 +315,26 @@ def print_summary(gems: dict[str, dict], run_date: str, summary: dict, has_regis
                 parts.append(f"{g['fixed']} fixed")
             if g["untested"] > 0:
                 parts.append(f"{g['untested']} untested")
+            if syn_dvrg > 0:
+                parts.append(f"{syn_dvrg} syn diverge")
             status = ", ".join(parts)
 
         if has_registry:
             row = f"  {gem:<{gem_w}}  {g['total_in_registry']:>4}  {g['total_in_corpus']:>6}  {g['untested']:>6}  {g['perfect']:>5}"
             if has_fixed:
                 row += f"  {g['fixed']:>5}"
-            row += f"  {g['diverging']:>5}  {fmt_count(g['total_fp']):>9}  {fmt_count(g['total_fn']):>9}  {status}"
+            row += f"  {g['diverging']:>5}  {fmt_count(g['total_fp']):>9}  {fmt_count(g['total_fn']):>9}"
+            if has_syn:
+                row += f"  {g['syn_fp']:>5}  {g['syn_fn']:>5}"
+            row += f"  {status}"
         else:
             row = f"  {gem:<{gem_w}}  {g['total_in_corpus']:>6}  {g['perfect']:>5}"
             if has_fixed:
                 row += f"  {g['fixed']:>5}"
-            row += f"  {g['diverging']:>5}  {fmt_count(g['total_fp']):>9}  {fmt_count(g['total_fn']):>9}  {status}"
+            row += f"  {g['diverging']:>5}  {fmt_count(g['total_fp']):>9}  {fmt_count(g['total_fn']):>9}"
+            if has_syn:
+                row += f"  {g['syn_fp']:>5}  {g['syn_fn']:>5}"
+            row += f"  {status}"
         print(row)
 
     print()
@@ -292,6 +345,8 @@ def print_summary(gems: dict[str, dict], run_date: str, summary: dict, has_regis
         if has_fixed:
             legend += "  Fixed=pending confirm"
         legend += "  Dvrg=FP or FN >0"
+        if has_syn:
+            legend += "  SynFP/SynFN=synthetic-only divergence"
         print(legend)
         print()
 
@@ -301,7 +356,7 @@ def print_summary(gems: dict[str, dict], run_date: str, summary: dict, has_regis
     total_fixed = sum(g["fixed"] for g in gems.values())
     total_untested = sum(g["untested"] for g in gems.values())
     gems_at_100 = sum(1 for g in gems.values()
-                      if g["diverging"] == 0 and g["untested"] == 0
+                      if g["diverging"] == 0 and g["untested"] == 0 and g["syn_diverging"] == 0
                       and (g["total_in_corpus"] > 0 or g["total_in_registry"] > 0))
     total_gems = sum(1 for g in gems.values()
                      if g["total_in_corpus"] > 0 or g["total_in_registry"] > 0)

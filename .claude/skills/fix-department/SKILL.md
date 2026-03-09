@@ -327,11 +327,16 @@ The scoreboard (`gem_progress.py --summary`) shows per-gem stats. Prioritize by:
 1. **Zero uncovered cops** — only gems where every cop has either corpus coverage
    or synthetic coverage can claim true 100% conformance. The "Untest" column in the
    scoreboard shows cops missing from both.
-2. **Fewest diverging cops** — less work to complete the gem. The "Dvrg" column shows this.
-3. **Adoption value** — rubocop-performance is the most commonly added plugin, so completing
+2. **Zero synthetic divergence** — the "SynFP" and "SynFN" columns show FP/FN from
+   cops that only have synthetic coverage (no corpus activity). A gem showing
+   "corpus 100%, N syn diverge" in the Status column is NOT at true 100% — the
+   synthetic-only cops must also be fixed.
+3. **Fewest diverging cops** — less work to complete the gem. The "Dvrg" column shows this.
+4. **Adoption value** — rubocop-performance is the most commonly added plugin, so completing
    it has more impact than rubocop-factory_bot, even if factory_bot is smaller.
-4. **FP-free first** — a gem with 0 FP but some FN is already safe to adopt (no false alarms).
+5. **FP-free first** — a gem with 0 FP but some FN is already safe to adopt (no false alarms).
    Fix FNs later for completeness.
 
-Always inspect the gem deep-dive before declaring a gem complete. Synthetic-only divergence
-is surfaced there, not just from the summary row.
+The scoreboard's Status column distinguishes "100% conformance" (all corpus AND synthetic
+cops perfect) from "corpus 100%, N syn diverge" (corpus cops perfect but synthetic-only
+cops have FP/FN). Always fix synthetic divergence before declaring a gem complete.
