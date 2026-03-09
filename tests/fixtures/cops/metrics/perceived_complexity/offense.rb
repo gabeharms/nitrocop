@@ -173,3 +173,28 @@ def method_with_nested_rescues(flag)
     6
   end
 end
+
+# if with elsif chain: outer if scores +2 (has subsequent, not itself elsif),
+# each elsif scores +1 (is itself elsif). This is a FN fix.
+# Score: base 1 + if(2) + elsif(1) + elsif(1) + elsif(1) + if(1) + if(1) + if(1) = 9 > 8
+def method_with_elsif_chain(x)
+^^^ Metrics/PerceivedComplexity: Perceived complexity for method_with_elsif_chain is too high. [9/8]
+  if x == 1
+    :a
+  elsif x == 2
+    :b
+  elsif x == 3
+    :c
+  elsif x == 4
+    :d
+  end
+  if x == 5
+    :e
+  end
+  if x == 6
+    :f
+  end
+  if x == 7
+    :g
+  end
+end

@@ -84,6 +84,21 @@ use crate::parse::source::SourceFile;
 /// candidate, but the excess side is now clean under a proper rerun
 /// environment, so future work should focus on recovering the remaining 241
 /// missing offenses without reopening FP regressions.
+///
+/// ## Fix (2026-03-09) — if/elsif scoring + numblock over-counting
+///
+/// Root cause #1 (FN): if/elsif scoring. RuboCop scores +2 for any non-ternary,
+/// non-elsif IfNode with ANY subsequent (else or elsif). nitrocop only scored +2
+/// when subsequent was ElseNode, missing elsif. Fix: check `subsequent().is_some()`
+/// and `!is_elsif` instead of `subsequent().as_else_node().is_some()`.
+///
+/// Root cause #2 (latent FP): numbered-param blocks (_1) and `it` blocks were
+/// counted as iterating blocks. RuboCop uses :numblock/:itblock types not in
+/// COUNTED_NODES. In Prism all blocks are BlockNode. Fix: check parameters()
+/// for NumberedParametersNode/ItParametersNode (same pattern as CyclomaticComplexity).
+///
+/// Both fixes applied simultaneously to avoid net FP regression that occurred
+/// when only fix #1 was applied in isolation (commit 044592b8, previously reverted).
 pub struct PerceivedComplexity;
 
 /// Known iterating method names that make blocks count toward complexity.
@@ -205,11 +220,10 @@ impl PerceivedCounter {
                 if !self.in_pattern_guard {
                     if let Some(if_node) = node.as_if_node() {
                         let is_ternary = if_node.if_keyword_loc().is_none();
-                        if !is_ternary
-                            && if_node
-                                .subsequent()
-                                .is_some_and(|s| s.as_else_node().is_some())
-                        {
+                        let is_elsif = if_node
+                            .if_keyword_loc()
+                            .is_some_and(|loc| loc.as_slice() == b"elsif");
+                        if !is_ternary && !is_elsif && if_node.subsequent().is_some() {
                             self.complexity += 2;
                         } else {
                             self.complexity += 1;
@@ -292,13 +306,32 @@ impl PerceivedCounter {
                     {
                         self.complexity += 1;
                     }
-                    // Iterating block or block_pass counts
-                    if call.block().is_some_and(|b| {
-                        b.as_block_node().is_some() || b.as_block_argument_node().is_some()
-                    }) {
-                        let method_name = call.name().as_slice();
-                        if KNOWN_ITERATING_METHODS.contains(&method_name) {
-                            self.complexity += 1;
+                    // Iterating block or block_pass counts.
+                    // Note: RuboCop's Parser gem produces :numblock for numbered
+                    // parameter blocks (_1, _2) and :itblock for `it` blocks,
+                    // neither of which is in COUNTED_NODES. Only regular :block
+                    // and :block_pass count. In Prism all blocks are BlockNode,
+                    // so we check parameters to distinguish.
+                    if let Some(block) = call.block() {
+                        let should_count = if let Some(block_node) = block.as_block_node() {
+                            // Skip blocks with numbered parameters (_1) or `it` params
+                            match block_node.parameters() {
+                                Some(params) => {
+                                    params.as_numbered_parameters_node().is_none()
+                                        && params.as_it_parameters_node().is_none()
+                                }
+                                // No parameters — regular block, counts
+                                None => true,
+                            }
+                        } else {
+                            // BlockArgumentNode (&:method) — always counts
+                            block.as_block_argument_node().is_some()
+                        };
+                        if should_count {
+                            let method_name = call.name().as_slice();
+                            if KNOWN_ITERATING_METHODS.contains(&method_name) {
+                                self.complexity += 1;
+                            }
                         }
                     }
                 }
@@ -604,6 +637,100 @@ mod tests {
         assert!(
             !diags.is_empty(),
             "Should count block_pass (&:method) in iterating methods"
+        );
+    }
+
+    /// Numbered parameter blocks (_1) should NOT count as iterating blocks.
+    /// RuboCop's Parser gem produces :numblock (not :block) for these, and
+    /// :numblock is not in COUNTED_NODES.
+    #[test]
+    fn numblock_not_counted_as_iterating() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(0.into()))]),
+            ..CopConfig::default()
+        };
+
+        // Regular block: map { |x| x } should count +1
+        let source_regular = b"def foo\n  items.map { |x| x }\nend\n";
+        let diags = run_cop_full_with_config(&PerceivedComplexity, source_regular, config.clone());
+        assert!(
+            diags[0].message.contains("[2/0]"),
+            "Regular block should count: got {}",
+            diags[0].message
+        );
+
+        // Numbered param block: map { _1 } should NOT count
+        let source_numblock = b"def foo\n  items.map { _1 }\nend\n";
+        let diags = run_cop_full_with_config(&PerceivedComplexity, source_numblock, config.clone());
+        assert!(
+            diags[0].message.contains("[1/0]"),
+            "Numbered param block should NOT count: got {}",
+            diags[0].message
+        );
+
+        // `it` block: map { it } should NOT count
+        let source_it = b"def foo\n  items.map { it }\nend\n";
+        let diags = run_cop_full_with_config(&PerceivedComplexity, source_it, config.clone());
+        assert!(
+            diags[0].message.contains("[1/0]"),
+            "`it` block should NOT count: got {}",
+            diags[0].message
+        );
+
+        // No-param block: map { 42 } should still count
+        let source_noparam = b"def foo\n  items.map { 42 }\nend\n";
+        let diags = run_cop_full_with_config(&PerceivedComplexity, source_noparam, config.clone());
+        assert!(
+            diags[0].message.contains("[2/0]"),
+            "No-param block should count: got {}",
+            diags[0].message
+        );
+    }
+
+    /// if with elsif should score +2 for the outer if (has subsequent, not itself elsif)
+    /// and +1 for each elsif (is itself an elsif).
+    #[test]
+    fn if_elsif_scores_two_for_outer_if() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+
+        // if with elsif: outer if scores 2 + elsif scores 1 = base 1 + 3 = 4
+        let source = b"def foo\n  if x\n    a\n  elsif y\n    b\n  end\nend\n";
+        let diags = run_cop_full_with_config(&PerceivedComplexity, source, config.clone());
+        assert!(!diags.is_empty(), "if/elsif should fire");
+        assert!(
+            diags[0].message.contains("[4/1]"),
+            "Expected [4/1] got: {}",
+            diags[0].message
+        );
+
+        // if with else (not elsif): scores 2 = base 1 + 2 = 3
+        let source_else = b"def foo\n  if x\n    a\n  else\n    b\n  end\nend\n";
+        let diags = run_cop_full_with_config(&PerceivedComplexity, source_else, config.clone());
+        assert!(
+            diags[0].message.contains("[3/1]"),
+            "Expected [3/1] got: {}",
+            diags[0].message
+        );
+
+        // elsif itself should score 1, not 2 (even when it has an else)
+        // if(2) + elsif(1) + else counted via if = base 1 + 3 = 4
+        let source_elsif_else =
+            b"def foo\n  if x\n    a\n  elsif y\n    b\n  else\n    c\n  end\nend\n";
+        let diags =
+            run_cop_full_with_config(&PerceivedComplexity, source_elsif_else, config.clone());
+        assert!(
+            diags[0].message.contains("[4/1]"),
+            "Expected [4/1] for if/elsif/else, got: {}",
+            diags[0].message
         );
     }
 }

@@ -150,8 +150,8 @@ def method_with_non_iterating_each_line(data)
   end
 end
 
-# if/elsif without else: outer if counts +1 (no ElseNode), elsif counts +1
-# Base 1 + 1 (if) + 1 (elsif) + 1 (if) + 1 (if) + 2 (if/else) = 7 <= 8
+# if/elsif: outer if counts +2 (has subsequent, not itself elsif), elsif counts +1
+# Base 1 + 2 (if w/ elsif) + 1 (elsif) + 1 (if) + 1 (if) + 2 (if/else) = 8 <= 8
 def method_with_elsif_under_threshold(x)
   if x == 1
     :a
@@ -211,5 +211,35 @@ def method_with_case_in(value)
     s
   in Array => a
     a
+  end
+end
+
+# Numbered parameter blocks (_1) and `it` blocks should NOT count as
+# iterating blocks. RuboCop uses :numblock/:itblock (not in COUNTED_NODES).
+# Base 1 + 7 ifs = 8 <= 8. If numblocks were counted, it would be 11 > 8.
+def method_with_numblocks(items)
+  items.map { _1 + 1 }
+  items.select { _1 > 0 }
+  items.reject { _1.nil? }
+  if items.empty?
+    return
+  end
+  if items.length > 1
+    :many
+  end
+  if items.length > 2
+    :lots
+  end
+  if items.first
+    :has_first
+  end
+  if items.last
+    :has_last
+  end
+  if items.frozen?
+    :frozen
+  end
+  if items.respond_to?(:each)
+    :enumerable
   end
 end
