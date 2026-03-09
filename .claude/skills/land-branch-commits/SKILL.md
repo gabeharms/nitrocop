@@ -46,14 +46,21 @@ Use this when the user wants commits from one or more branches landed onto
    - Stay on `main`.
    - Cherry-pick each patch-new commit individually in oldest-first order.
      Do NOT pass multiple SHAs to a single `git cherry-pick` invocation.
+   - **Always use `--reset-author`** so the local git user is the author.
+   - After each cherry-pick, amend the commit message to:
+     1. Strip any `https://claude.ai/...` URLs (full lines containing them).
+     2. If the original author differs from the local git user, append a
+        `Co-Authored-By: Original Name <original@email>` trailer.
+     Skip the amend if neither cleanup applies.
    - Verify each cherry-pick succeeds before moving to the next.
    - If multiple branches are independent, keep the user's branch order unless
      file overlap suggests a safer order.
    ```bash
-   git cherry-pick <sha1>
-   # verify success, then:
-   git cherry-pick <sha2>
-   # ... and so on for each patch-new commit
+   # read original author before cherry-picking
+   git log -1 --format='%an <%ae>' <sha1>
+   git cherry-pick --reset-author <sha1>
+   # amend to add Co-Authored-By if original author differs from local user
+   # verify success, then repeat for next commit
    ```
 
 5. If a cherry-pick conflicts:
