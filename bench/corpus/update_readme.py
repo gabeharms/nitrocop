@@ -101,6 +101,14 @@ def format_match_rate(rate: float) -> str:
     return f"{math.floor(rate * 1000) / 10:.1f}%"
 
 
+def format_exact_match_pct(exact: int, total: int) -> str:
+    """Format cop exact-match coverage across total cops."""
+    if total <= 0:
+        return "N/A"
+    pct = format_match_rate(exact / total)
+    return f"✓ {pct}" if exact == total else pct
+
+
 def format_offense_match_pct(matches: int, fp: int, fn: int) -> str:
     """Format match rate across all compared issue reports."""
     total = matches + fp + fn
@@ -218,26 +226,27 @@ def build_cops_section(data: dict, synthetic: dict[str, dict] | None = None) -> 
     lines.append(f"nitrocop supports {total_cops:,} cops from {len(GEMS)} RuboCop gems.")
     lines.append("")
     if total_repos > 0:
-        corpus_line = "The coverage numbers below come from comparing nitrocop against RuboCop on "
+        corpus_line = "Compared with RuboCop on "
         corpus_line += f"[**{total_repos:,} open-source repos**](docs/corpus.md)"
         if files_str:
             corpus_line += f" ({files_str} Ruby files)"
-        corpus_line += ". Every reported issue is compared by file, line, and cop name."
+        corpus_line += "."
         lines.append(corpus_line)
         lines.append("")
     if total_compared > 0:
-        lines.append(
-            f"Matched RuboCop on {format_offense_match_pct(total_matches, total_fp, total_fn)} "
-            f"of compared issue reports ({format_count_summary(total_matches)} of {format_count_summary(total_compared)})."
-        )
-    lines.append(f"{perfect_cops:,} of {total_cops:,} rules (cops) matched RuboCop exactly across the corpus.")
-    if no_data_cops > 0:
-        lines.append(
-            f"{diverging_cops:,} rules (cops) differed from RuboCop, and "
-            f"{no_data_cops:,} had no corpus data."
+        summary_line = (
+            f"{format_offense_match_pct(total_matches, total_fp, total_fn)} of compared issue reports matched "
+            f"({format_count_summary(total_matches)} of {format_count_summary(total_compared)}). "
+            f"{perfect_cops:,} of {total_cops:,} cops matched exactly"
         )
     else:
-        lines.append(f"{diverging_cops:,} rules (cops) differed from RuboCop.")
+        summary_line = f"{perfect_cops:,} of {total_cops:,} cops matched exactly"
+    if diverging_cops > 0:
+        summary_line += f"; {diverging_cops:,} differed"
+    if no_data_cops > 0:
+        summary_line += f"; {no_data_cops:,} had no corpus data"
+    summary_line += "."
+    lines.append(summary_line)
     lines.append("")
 
     for gem in GEMS:
@@ -250,30 +259,34 @@ def build_cops_section(data: dict, synthetic: dict[str, dict] | None = None) -> 
         lines.append(f"**[{gem['key']}]({gem['url']})** `{version}` ({total:,} cops)")
         lines.append("")
         if no_data > 0:
-            lines.append("| Department | Rules (cops) | Matched exactly | Differed | No corpus data |")
-            lines.append("|------------|-------------:|----------------:|---------:|---------------:|")
+            lines.append("| Department | Cops | Matched exactly | Differed | No corpus data | Matched exactly % |")
+            lines.append("|------------|-----:|----------------:|---------:|---------------:|------------------:|")
             for row in rows:
                 lines.append(
                     f"| {row['department']} | {row['cops']:,} | "
-                    f"{row['perfect_cops']:,} | {row['diverging_cops']:,} | {row['no_data_cops']:,} |"
+                    f"{row['perfect_cops']:,} | {row['diverging_cops']:,} | {row['no_data_cops']:,} | "
+                    f"{format_exact_match_pct(row['perfect_cops'], row['cops'])} |"
                 )
             if len(rows) > 1:
                 lines.append(
                     f"| **Total** | **{total:,}** | **{perfect:,}** | "
-                    f"**{diverging:,}** | **{no_data:,}** |"
+                    f"**{diverging:,}** | **{no_data:,}** | "
+                    f"**{format_exact_match_pct(perfect, total)}** |"
                 )
         else:
-            lines.append("| Department | Rules (cops) | Matched exactly | Differed |")
-            lines.append("|------------|-------------:|----------------:|---------:|")
+            lines.append("| Department | Cops | Matched exactly | Differed | Matched exactly % |")
+            lines.append("|------------|-----:|----------------:|---------:|------------------:|")
             for row in rows:
                 lines.append(
                     f"| {row['department']} | {row['cops']:,} | "
-                    f"{row['perfect_cops']:,} | {row['diverging_cops']:,} |"
+                    f"{row['perfect_cops']:,} | {row['diverging_cops']:,} | "
+                    f"{format_exact_match_pct(row['perfect_cops'], row['cops'])} |"
                 )
             if len(rows) > 1:
                 lines.append(
                     f"| **Total** | **{total:,}** | **{perfect:,}** | "
-                    f"**{diverging:,}** |"
+                    f"**{diverging:,}** | "
+                    f"**{format_exact_match_pct(perfect, total)}** |"
                 )
         lines.append("")
 
