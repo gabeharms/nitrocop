@@ -67,6 +67,23 @@ use crate::parse::source::SourceFile;
 /// sources (investigate the 154 FP locations) so the net effect is 0 excess.
 /// The if/elsif approach itself is correct; the problem is combinatorial
 /// interaction with other scoring differences.
+///
+/// ## Corpus investigation (2026-03-09)
+///
+/// Re-ran the cop under the repository's Ruby 3.4 toolchain:
+/// `mise exec ruby@3.4 -- python3 scripts/check-cop.py
+/// Metrics/PerceivedComplexity --verbose --rerun`.
+///
+/// Result:
+/// - Expected: 19,094
+/// - Actual:   18,853
+/// - Excess:   0 over CI baseline after file-drop adjustment
+/// - Missing:  241
+///
+/// No code change was taken in this run. The cop is still a real FN-only
+/// candidate, but the excess side is now clean under a proper rerun
+/// environment, so future work should focus on recovering the remaining 241
+/// missing offenses without reopening FP regressions.
 pub struct PerceivedComplexity;
 
 /// Known iterating method names that make blocks count toward complexity.

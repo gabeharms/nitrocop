@@ -46,6 +46,22 @@ use crate::parse::source::SourceFile;
 /// - Counting nested rescues separately via manual rescue-chain traversal closed
 ///   remaining FN but introduced potential FP (+12 vs RuboCop expected offenses).
 ///   The manual traversal approach was reverted to preserve zero-excess behavior.
+///
+/// ## Corpus investigation (2026-03-09)
+///
+/// Re-ran the cop under the repository's Ruby 3.4 toolchain:
+/// `mise exec ruby@3.4 -- python3 scripts/check-cop.py
+/// Metrics/CyclomaticComplexity --verbose --rerun`.
+///
+/// Result:
+/// - Expected: 22,768
+/// - Actual:   22,871
+/// - Excess:   0 over CI baseline after file-drop adjustment
+/// - Missing:  0
+///
+/// No code change was needed in this run. The artifact snapshot's FP/FN counts
+/// were stale relative to a proper rerun; current behavior is within file-drop
+/// noise and has no remaining missing offenses.
 pub struct CyclomaticComplexity;
 
 #[derive(Default)]

@@ -33,6 +33,22 @@ use crate::parse::source::SourceFile;
 ///
 /// Follow-up work should verify edge-cases around all assignment forms from the
 /// upstream spec matrix (e.g., constant-path writes and mixed multi-targets).
+///
+/// ## Corpus investigation (2026-03-09)
+///
+/// Re-ran the cop under the repository's Ruby 3.4 toolchain:
+/// `mise exec ruby@3.4 -- python3 scripts/check-cop.py Metrics/ClassLength
+/// --verbose --rerun`.
+///
+/// Result:
+/// - Expected: 14,152
+/// - Actual:   14,498
+/// - Excess:   0 over CI baseline after file-drop adjustment
+/// - Missing:  0
+///
+/// No code change was taken in this run. The artifact-reported FP=1 does not
+/// reproduce as an excess regression once the corpus rerun uses the correct
+/// Ruby/Bundler environment.
 pub struct ClassLength;
 
 struct LengthSettings<'a> {

@@ -86,6 +86,22 @@ use crate::parse::source::SourceFile;
 /// CallNode without block: args end line). For multi-child bodies, uses
 /// `end_line_of` for each child. This includes nested block `end` keywords
 /// while excluding the outermost body, matching `each_descendant` semantics.
+///
+/// ## Corpus investigation (2026-03-09)
+///
+/// Re-ran the cop under the repository's Ruby 3.4 toolchain:
+/// `mise exec ruby@3.4 -- python3 scripts/check-cop.py Metrics/MethodLength
+/// --verbose --rerun`.
+///
+/// Result:
+/// - Expected: 107,344
+/// - Actual:   113,392
+/// - Excess:   0 over CI baseline after file-drop adjustment
+/// - Missing:  0
+///
+/// No code change was taken in this run. The artifact-reported FP/FN counts
+/// are dominated by jruby file-drop noise; with the correct rerun environment
+/// the cop has no remaining missing offenses and no excess regression.
 pub struct MethodLength;
 
 /// Parsed config values for MethodLength.

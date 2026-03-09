@@ -69,6 +69,28 @@ use crate::parse::source::SourceFile;
 /// A correct fix should: (1) rewrite heredoc_descendant_max_line to track all
 /// descendant types, (2) validate in an environment with proper corpus bundle
 /// symlinks, (3) handle the Parser each_descendant root-exclusion semantics.
+///
+/// ## Corpus investigation (2026-03-09)
+///
+/// Re-applied the descendant-tracking fix in a worktree with the required
+/// corpus wiring. The prior revert was environmental, not a behavioral
+/// regression in the BlockLength logic.
+///
+/// Fix: track end lines for all descendants, not just string descendants.
+/// For heredocs, continue using `closing_loc` so the terminator line matches
+/// RuboCop's `loc.heredoc_end.line`. For single-statement bodies wrapped by
+/// Prism `StatementsNode`, skip the wrapper and the single child expression so
+/// the traversal matches Parser's `each_descendant` root exclusion.
+///
+/// Acceptance gate with `mise exec ruby@3.4 -- python3 scripts/check-cop.py
+/// Metrics/BlockLength --verbose --rerun`:
+/// - Expected: 19,376
+/// - Actual:   19,248
+/// - Excess:   0 over CI baseline after file-drop adjustment
+/// - Missing:  128
+///
+/// Result: accepted. The fix recovered 65 missing offenses vs the prior CI
+/// baseline (193 -> 128) without introducing false-positive regressions.
 pub struct BlockLength;
 
 impl Cop for BlockLength {
@@ -332,16 +354,56 @@ fn count_block_lines(
 /// When the body contains heredoc descendants, compute the max last_line across
 /// all descendants (matching RuboCop's `source_from_node_with_heredoc`).
 /// Returns `Some(max_line)` if heredocs are found, `None` otherwise.
+///
+/// RuboCop calls `each_descendant` on `extract_body(node)` which excludes the
+/// root body node itself. In Parser AST, the body of a single-statement block
+/// is the expression directly; in Prism it's always wrapped in StatementsNode.
+/// For single-statement bodies, we skip both StatementsNode (depth 0) and the
+/// single child expression (depth 1) to match Parser's exclusion of the root.
+/// For multi-statement bodies, depth-1 children are proper descendants.
 fn heredoc_descendant_max_line(source: &SourceFile, body: &ruby_prism::Node<'_>) -> Option<usize> {
     use ruby_prism::Visit;
+
+    let single_child_body = body
+        .as_statements_node()
+        .map(|s| s.body().iter().count() == 1)
+        .unwrap_or(false);
+    let exclude_depth: usize = if single_child_body { 2 } else { 1 };
 
     struct DescendantMaxLineFinder<'s> {
         source: &'s SourceFile,
         max_line: usize,
         has_heredoc: bool,
+        depth: usize,
+        exclude_depth: usize,
+    }
+
+    impl DescendantMaxLineFinder<'_> {
+        fn track_node_end(&mut self, node: ruby_prism::Node<'_>) {
+            if self.depth < self.exclude_depth {
+                return;
+            }
+            let (line, _) = self
+                .source
+                .offset_to_line_col(node.location().end_offset().saturating_sub(1));
+            self.max_line = self.max_line.max(line);
+        }
     }
 
     impl<'pr> Visit<'pr> for DescendantMaxLineFinder<'_> {
+        fn visit_branch_node_enter(&mut self, node: ruby_prism::Node<'pr>) {
+            self.track_node_end(node);
+            self.depth += 1;
+        }
+
+        fn visit_branch_node_leave(&mut self) {
+            self.depth -= 1;
+        }
+
+        fn visit_leaf_node_enter(&mut self, node: ruby_prism::Node<'pr>) {
+            self.track_node_end(node);
+        }
+
         fn visit_string_node(&mut self, node: &ruby_prism::StringNode<'pr>) {
             if let Some(opening) = node.opening_loc() {
                 let bytes = &self.source.as_bytes()[opening.start_offset()..opening.end_offset()];
@@ -354,13 +416,8 @@ fn heredoc_descendant_max_line(source: &SourceFile, body: &ruby_prism::Node<'_>)
                             .offset_to_line_col(closing.end_offset().saturating_sub(1));
                         self.max_line = self.max_line.max(line);
                     }
-                    return;
                 }
             }
-            let (line, _) = self
-                .source
-                .offset_to_line_col(node.location().end_offset().saturating_sub(1));
-            self.max_line = self.max_line.max(line);
         }
 
         fn visit_interpolated_string_node(
@@ -380,10 +437,6 @@ fn heredoc_descendant_max_line(source: &SourceFile, body: &ruby_prism::Node<'_>)
                     return;
                 }
             }
-            let (line, _) = self
-                .source
-                .offset_to_line_col(node.location().end_offset().saturating_sub(1));
-            self.max_line = self.max_line.max(line);
             ruby_prism::visit_interpolated_string_node(self, node);
         }
     }
@@ -392,10 +445,9 @@ fn heredoc_descendant_max_line(source: &SourceFile, body: &ruby_prism::Node<'_>)
         source,
         max_line: 0,
         has_heredoc: false,
+        depth: 0,
+        exclude_depth,
     };
-    // visit() traverses body and all descendants. Since body is typically
-    // StatementsNode/BeginNode (not a string node), the visitor methods
-    // only fire on actual descendants, matching RuboCop's each_descendant.
     finder.visit(body);
 
     if finder.has_heredoc {
@@ -497,6 +549,51 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Should not fire when array is folded (3/3)"
+        );
+    }
+
+    #[test]
+    fn heredoc_with_code_after() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(3.into()))]),
+            ..CopConfig::default()
+        };
+        let source = b"records.transaction do\n  sql = <<~SQL\n    SELECT 1\n  SQL\n  a = 1\n  b = 2\n  c = 3\nend\n";
+        let diags = run_cop_full_with_config(&BlockLength, source, config);
+        assert!(
+            !diags.is_empty(),
+            "Should fire on block with heredoc + code after (6 body lines > Max:3)"
+        );
+        assert!(
+            diags[0].message.contains("[6/3]"),
+            "Expected [6/3] but got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn multi_statement_heredoc_body() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(3.into()))]),
+            ..CopConfig::default()
+        };
+        let source =
+            b"items.each do |i|\n  x = 1\n  sql = <<~SQL\n    SELECT 1\n  SQL\n  y = 2\nend\n";
+        let diags = run_cop_full_with_config(&BlockLength, source, config);
+        assert!(
+            !diags.is_empty(),
+            "Should fire on multi-statement block with heredoc (5 body lines > Max:3)"
+        );
+        assert!(
+            diags[0].message.contains("[5/3]"),
+            "Expected [5/3] but got: {}",
+            diags[0].message
         );
     }
 

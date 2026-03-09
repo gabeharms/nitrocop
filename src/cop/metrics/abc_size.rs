@@ -76,6 +76,22 @@ use crate::parse::source::SourceFile;
 /// `CONDITION_NODES`. Fix: added `visit_in_node` override with
 /// `in_pattern_guard` flag to suppress IfNode/UnlessNode counting inside
 /// InNode patterns.
+///
+/// ## Corpus investigation (2026-03-09)
+///
+/// Re-ran the cop under the repository's Ruby 3.4 toolchain:
+/// `mise exec ruby@3.4 -- python3 scripts/check-cop.py Metrics/AbcSize
+/// --verbose --rerun`.
+///
+/// Result:
+/// - Expected: 65,966
+/// - Actual:   69,118
+/// - Excess:   0 over CI baseline after file-drop adjustment
+/// - Missing:  0
+///
+/// No code change was taken in this run. The stale artifact FP/FN counts do
+/// not represent a current excess regression once the corpus rerun uses the
+/// correct Ruby/Bundler environment.
 pub struct AbcSize;
 
 /// Known iterating method names that make blocks count toward conditions.

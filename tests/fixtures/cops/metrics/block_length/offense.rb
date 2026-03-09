@@ -182,3 +182,36 @@ payload = {
     }
   )}
 }
+
+# Block with heredoc in the middle and code after it.
+# RuboCop includes heredoc content lines in the body count.
+# Total body lines = 26 (heredoc content + surrounding code).
+records.transaction do
+^ Metrics/BlockLength: Block has too many lines. [26/25]
+  sql = <<~SQL
+    INSERT INTO items (name, value)
+    SELECT :name, :value
+    WHERE NOT EXISTS (
+      SELECT 1 FROM items
+      WHERE name = :name
+    )
+  SQL
+  builder = build_query(sql)
+  builder.where("name = :name")
+  result = builder.exec(name: name, value: value)
+  if result > 0
+    update_counter
+  end
+  process_record(result)
+  validate_output(result)
+  log_activity(:insert, name)
+  notify_watchers(name)
+  cache_invalidate(name)
+  audit_trail(:insert, name)
+  refresh_index
+  a1 = 1
+  a2 = 2
+  a3 = 3
+  a4 = 4
+  a5 = 5
+end
