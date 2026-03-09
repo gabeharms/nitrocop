@@ -5,22 +5,40 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// ## Corpus investigation (2026-03-04)
+/// ## Corpus investigation (2026-03-09)
 ///
-/// Corpus oracle reported FP=5, FN=15.
+/// Corpus oracle reported FP=3, FN=17.
 ///
-/// FP=5: examples were concentrated in generated/fixture-style files and
-/// legacy paths (for example long generated build filenames and mixed-case
-/// library paths). Some reducer runs suggest path/config interactions rather
-/// than a single filename-rule bug.
+/// ### FP=3 (all david942j/one_gadget)
+/// Files like `libc-2.23-89cc3bb9361ad139a1967462175759416c9dc82b.rb` under
+/// `lib/one_gadget/builds/`. The repo's `.rubocop.yml` has
+/// `AllCops: Exclude: - lib/one_gadget/builds/*.rb`, so RuboCop never sees them.
+/// This is a config-exclude issue, not a cop logic bug — nitrocop's config
+/// loader needs to honor the project's AllCops/Exclude for these paths.
 ///
-/// FN=15: misses include acronym/extension/path variants (for example
-/// `URI_test.rb`-style names and non-`.rb` Ruby sources) that appear sensitive
-/// to project-specific include/exclude/config layering.
+/// ### FN=17 — two cop logic bugs fixed:
 ///
-/// Deferred in this batch: a safe fix requires end-to-end path matching parity
-/// with RuboCop config resolution across multi-extension and per-project
-/// include/exclude overrides.
+/// **Bug 1: AllowedAcronyms incorrectly applied to filename check (10 FNs).**
+/// nitrocop was replacing AllowedAcronyms (e.g., URI, HTML, HTTP) in the
+/// filename before the snake_case check, causing filenames like `URI_test.rb`
+/// and `escapeHTML_spec.rb` to pass. RuboCop's `filename_good?` only uses the
+/// `SNAKE_CASE` regex — AllowedAcronyms is for `ExpectMatchingDefinition` only.
+/// Fix: removed acronym substitution from the snake_case check.
+///
+/// **Bug 2: ALLOWED_NAMES matched on file_stem instead of full filename (2 FNs).**
+/// `Rakefile.rb` had stem `Rakefile` matching the allow list, but RuboCop's
+/// `allowed_camel_case_file?` checks AllCops/Include patterns like `**/Rakefile`
+/// which only match the exact filename. `Rakefile.rb` and `Vagrantfile.spec`
+/// are different files and should be flagged.
+/// Fix: check ALLOWED_NAMES against the full filename (with extension), not stem.
+///
+/// ### Remaining 5 FNs (not fixable in cop logic):
+/// - `iso-8859-9-encoding.rb`, `euc-jp.rb`: contain hyphens which `is_snake_case`
+///   already rejects. These are likely config/file-discovery layer issues.
+/// - `💪.test.rb`: emoji filename — `is_snake_case` allows all non-ASCII bytes,
+///   but RuboCop's SNAKE_CASE only allows `[[:lower:]]`. Fixing this would
+///   require changing the shared `is_snake_case` utility, risking regressions
+///   in other cops.
 pub struct FileName;
 
 /// Well-known Ruby files that don't follow snake_case convention.
@@ -153,7 +171,7 @@ impl Cop for FileName {
         let check_def_path_roots = config.get_string_array("CheckDefinitionPathHierarchyRoots");
         let regex_pattern = config.get_str("Regex", "");
         let ignore_executable_scripts = config.get_bool("IgnoreExecutableScripts", true);
-        let allowed_acronyms = config.get_string_array("AllowedAcronyms");
+        let _allowed_acronyms = config.get_string_array("AllowedAcronyms");
 
         let path = Path::new(source.path_str());
         let file_stem = match path.file_stem().and_then(|s| s.to_str()) {
@@ -175,20 +193,19 @@ impl Cop for FileName {
             }
         }
 
-        // Allow well-known Ruby files
-        if ALLOWED_NAMES.contains(&file_stem) {
-            return;
-        }
-
-        // Also allow if the full filename (no extension) is in the allowed list
+        // Allow well-known Ruby files — only when the full filename (with extension)
+        // exactly matches an allowed name. RuboCop's `allowed_camel_case_file?` checks
+        // AllCops/Include patterns like `**/Rakefile` which match the exact filename,
+        // NOT `Rakefile.rb` or `Vagrantfile.spec`.
         let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if ALLOWED_NAMES.contains(&file_name) {
             return;
         }
 
-        // Allow files whose name ends with a known CamelCase name (e.g., ImportFastfile,
-        // SwitcherFastfile). This matches RuboCop's `allowed_camel_case_file?` which
-        // checks AllCops/Include patterns containing uppercase letters like `**/*Fastfile`.
+        // Allow files whose full name (with extension) ends with a known CamelCase name
+        // (e.g., ImportFastfile, SwitcherFastfile). This matches RuboCop's
+        // `allowed_camel_case_file?` which checks AllCops/Include patterns containing
+        // uppercase letters like `**/*Fastfile`.
         if ALLOWED_NAMES
             .iter()
             .any(|name| file_name.len() > name.len() && file_name.ends_with(name))
@@ -213,16 +230,13 @@ impl Cop for FileName {
             }
         }
 
-        // AllowedAcronyms: allow acronyms in snake_case names (e.g., "my_HTML_parser")
-        let mut check_name = file_stem.to_string();
-        if let Some(acronyms) = &allowed_acronyms {
-            for acronym in acronyms {
-                check_name = check_name.replace(acronym.as_str(), &acronym.to_lowercase());
-            }
-        }
-
+        // RuboCop strips leading dot from dotfiles before checking (e.g., .pryrc -> pryrc)
         // RuboCop replaces + with _ before the snake_case check, to support
         // Action Pack Variants filenames like `some_file.xlsx+mobile.axlsx`.
+        // Note: AllowedAcronyms is NOT applied to the filename check — RuboCop's
+        // filename_good? only uses the SNAKE_CASE regex without acronym substitution.
+        // AllowedAcronyms is only used for ExpectMatchingDefinition matching.
+        let mut check_name = file_stem.strip_prefix('.').unwrap_or(file_stem).to_string();
         check_name = check_name.replacen('+', "_", 1);
 
         // RuboCop allows dots in filenames (e.g., show.html.haml_spec).
@@ -275,6 +289,10 @@ mod tests {
         camel_case = "camel_case.rb",
         bad_name = "bad_name.rb",
         with_dash = "with_dash.rb",
+        acronym_in_name = "acronym_in_name.rb",
+        camelcase_acronym = "camelcase_acronym.rb",
+        allowed_name_with_ext = "allowed_name_with_ext.rb",
+        allowed_name_diff_ext = "allowed_name_diff_ext.rb",
     );
 
     #[test]
@@ -418,7 +436,9 @@ mod tests {
     }
 
     #[test]
-    fn config_allowed_acronyms() {
+    fn config_allowed_acronyms_does_not_affect_filename_check() {
+        // AllowedAcronyms only affects ExpectMatchingDefinition, NOT the snake_case check.
+        // RuboCop's filename_good? uses SNAKE_CASE regex without acronym substitution.
         use std::collections::HashMap;
         let config = CopConfig {
             options: HashMap::from([(
@@ -430,7 +450,11 @@ mod tests {
         let source = SourceFile::from_bytes("my_HTML_parser.rb", b"x = 1\n".to_vec());
         let mut diags = Vec::new();
         FileName.check_lines(&source, &config, &mut diags, None);
-        assert!(diags.is_empty(), "Should allow AllowedAcronyms in filename");
+        assert_eq!(
+            diags.len(),
+            1,
+            "AllowedAcronyms should not skip the snake_case filename check"
+        );
     }
 
     #[test]
@@ -529,6 +553,48 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Should allow files matching *Fastfile pattern"
+        );
+    }
+
+    #[test]
+    fn offense_allowed_name_with_extension() {
+        // Rakefile.rb is NOT the same as Rakefile — it should be flagged.
+        // RuboCop's allowed_camel_case_file? checks AllCops/Include patterns,
+        // which match exact filenames like "Rakefile", not "Rakefile.rb".
+        let source = SourceFile::from_bytes("Rakefile.rb", b"task :default\n".to_vec());
+        let mut diags = Vec::new();
+        FileName.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Rakefile.rb should be flagged (only exact Rakefile is allowed)"
+        );
+    }
+
+    #[test]
+    fn offense_vagrantfile_with_spec_extension() {
+        // Vagrantfile.spec is NOT the same as Vagrantfile — it should be flagged.
+        let source = SourceFile::from_bytes("Vagrantfile.spec", b"# spec file\n".to_vec());
+        let mut diags = Vec::new();
+        FileName.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Vagrantfile.spec should be flagged (only exact Vagrantfile is allowed)"
+        );
+    }
+
+    #[test]
+    fn offense_acronym_filename() {
+        // Filenames with uppercase acronyms should be flagged even when acronyms are
+        // in the AllowedAcronyms list. AllowedAcronyms only affects definition matching.
+        let source = SourceFile::from_bytes("URI_test.rb", b"x = 1\n".to_vec());
+        let mut diags = Vec::new();
+        FileName.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "URI_test.rb should be flagged for snake_case"
         );
     }
 
