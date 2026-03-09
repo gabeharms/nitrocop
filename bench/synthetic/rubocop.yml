@@ -1,0 +1,10 @@
+# Synthetic corpus config — inherits the corpus baseline (all cops enabled).
+# The run_synthetic.py script filters results to only the 62 target cops.
+
+inherit_from: ../corpus/baseline_rubocop.yml
+
+AllCops:
+  Exclude:
+    - "vendor/**/*"
+    - "node_modules/**/*"
+    - "tmp/**/*"
