@@ -232,6 +232,7 @@ def main():
     repos_error = 0
     total_files = 0
     total_files_dropped = 0
+    cop_src_counts: dict[str, int] = {}  # tracks context examples per cop for global cap
     warning_repos = []  # repos with partial RuboCop crashes (file drops)
 
     for repo_id in all_ids:
@@ -323,15 +324,22 @@ def main():
         # Load source context for this repo (if available)
         repo_context = load_context(args.context_dir, repo_id) if args.context_dir else {}
 
-        def _make_example(loc: str, msg: str, filepath: str, line: int) -> dict | str:
-            """Build an example entry with optional message and source context."""
-            ctx = repo_context.get(f"{filepath}:{line}", {}).get("context")
+        def _make_example(loc: str, msg: str, filepath: str, line: int, cop: str) -> dict | str:
+            """Build an example entry with optional message and source context.
+            Context is capped at SRC_CAP_PER_COP examples per cop to keep JSON size manageable."""
+            SRC_CAP_PER_COP = 50
+            ctx = None
+            if repo_context:
+                ctx = repo_context.get(f"{filepath}:{line}", {}).get("context")
+                if ctx and cop_src_counts.get(cop, 0) >= SRC_CAP_PER_COP:
+                    ctx = None  # over cap, drop context for this cop
             if msg or ctx:
                 entry = {"loc": loc}
                 if msg:
                     entry["msg"] = msg
                 if ctx:
                     entry["src"] = ctx
+                    cop_src_counts[cop] = cop_src_counts.get(cop, 0) + 1
                 return entry
             return loc
 
@@ -346,7 +354,7 @@ def main():
             loc = f"{repo_id}: {filepath}:{line}" if multi_repo else f"{filepath}:{line}"
             # FP = nitrocop fires but RuboCop doesn't → message comes from nitrocop
             msg = tc_messages.get(key, "")
-            by_cop_fp_examples[cop].append(_make_example(loc, msg, filepath, line))
+            by_cop_fp_examples[cop].append(_make_example(loc, msg, filepath, line, cop))
             if multi_repo:
                 by_repo_cop[repo_id][cop]["fp"] += 1
         for filepath, line, cop in fn:
@@ -355,7 +363,7 @@ def main():
             loc = f"{repo_id}: {filepath}:{line}" if multi_repo else f"{filepath}:{line}"
             # FN = RuboCop fires but nitrocop doesn't → message comes from RuboCop
             msg = rc_messages.get(key, "")
-            by_cop_fn_examples[cop].append(_make_example(loc, msg, filepath, line))
+            by_cop_fn_examples[cop].append(_make_example(loc, msg, filepath, line, cop))
             if multi_repo:
                 by_repo_cop[repo_id][cop]["fn"] += 1
 
