@@ -8,6 +8,8 @@ allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob
 
 This skill runs after a corpus oracle run. It triages the results, chooses the
 highest-impact cops, and fixes them in a dedicated git worktree using TDD.
+It is corpus-only: synthetic-only cops will not appear here and should be handled
+via `$fix-department`.
 
 ## Workflow
 

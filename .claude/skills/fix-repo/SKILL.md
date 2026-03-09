@@ -10,6 +10,8 @@ This skill targets a specific corpus repo (e.g., rails, discourse, mastodon) and
 the cops that contribute the most FP/FN for that repo. Unlike `/fix-cops` (globally worst
 cops) or `/fix-department` (all cops in a gem), this focuses on improving a specific repo's
 match rate.
+It is corpus-repo scoped: synthetic-only cops have no repo attribution here and
+should be handled via `/fix-department`.
 
 If you edit code yourself (without dispatching teammates), do that work in a dedicated
 git worktree by default. Only skip this when the user explicitly asks to use the current tree.

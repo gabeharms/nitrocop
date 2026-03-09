@@ -10,6 +10,9 @@ Run the triage script to find the top cops to fix:
 python3 .claude/skills/triage/scripts/triage.py $ARGUMENTS
 ```
 
+This report is corpus-only. Synthetic-only cops do not appear here; use
+`/fix-department` when the synthetic benchmark is the only signal.
+
 If no `--input` is provided, it auto-downloads the latest `corpus-results.json` from CI via `gh run download`.
 
 Common invocations:

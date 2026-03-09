@@ -1,13 +1,14 @@
 ---
 name: fix-department
-description: Bring all cops in a gem to 100% corpus conformance with triage, TDD, and per-cop corpus verification.
+description: Bring all cops in a gem to 100% conformance with triage, TDD, and per-cop corpus or synthetic verification.
 allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob
 ---
 
 # Fix Department (Codex)
 
 This skill targets one gem (for example `rubocop-performance`, `rubocop-rspec`,
-or `rubocop-rails`) and drives it toward full corpus conformance (0 FP + 0 FN).
+or `rubocop-rails`) and drives it toward full conformance (0 FP + 0 FN on
+corpus-backed cops, plus no synthetic-only divergence).
 Run fix work from a dedicated git worktree by default.
 
 ## Workflow
@@ -18,10 +19,13 @@ Run fix work from a dedicated git worktree by default.
    ```bash
    python3 .agents/skills/fix-department/scripts/gem_progress.py --summary
    ```
+   The summary treats cops covered by the synthetic benchmark as covered, but
+   synthetic-only divergence is called out in the gem deep-dive rather than the
+   summary row alone.
 
 2. If no gem is specified, pick one with:
    - Few diverging cops
-   - Zero untested cops (preferred)
+   - No uncovered cops (preferred) - `Untest` means no corpus or synthetic coverage
    - High adoption value
 
 3. Run deep-dive for the selected gem:
@@ -43,7 +47,19 @@ python3 scripts/investigate-cop.py Department/CopName --context --fp-only --limi
 python3 scripts/investigate-cop.py Department/CopName --context --fn-only --limit 10
 ```
 
-Reduce up to 3 examples per cop:
+**Synthetic-only cops** (zero corpus activity): If `investigate-cop.py` shows no results, the cop
+only has data in the synthetic corpus. Investigate using:
+```bash
+# Read synthetic results for the cop
+python3 -c "import json; d=json.loads(open('bench/synthetic/synthetic-results.json').read()); [print(c) for c in d['by_cop'] if c['cop']=='Department/CopName']"
+# Read the synthetic source files directly (paths from fp_examples/fn_examples)
+# Source files are at bench/synthetic/project/<path>
+```
+The synthetic corpus files at `bench/synthetic/project/` are handcrafted trigger patterns - read
+the relevant source file to understand the expected behavior. Run `python3 bench/synthetic/run_synthetic.py --verbose`
+to re-verify after fixing.
+
+Reduce up to 3 examples per cop (corpus cops only - not applicable to synthetic-only cops):
 ```bash
 python3 scripts/reduce-mismatch.py Department/CopName repo_id filepath:line
 python3 scripts/reduce-mismatch.py Department/CopName repo_id filepath:line --type fn
@@ -70,13 +86,16 @@ Read reduced repros from `/tmp/nitrocop-reduce/` and capture root-cause hypothes
 
 4. Re-run targeted tests and ensure they pass.
 
-5. Verify with corpus (acceptance gate for cops changed in this loop):
+5. Verify with the right acceptance gate for cops changed in this loop:
    ```bash
    python3 scripts/check-cop.py Department/CopName --verbose --rerun
+   python3 bench/synthetic/run_synthetic.py --verbose
    ```
-   Corpus validation is the acceptance gate. Unit tests passing is necessary but not sufficient.
+   Corpus validation is the acceptance gate for corpus-backed cops. For synthetic-only cops,
+   rerun the synthetic benchmark and inspect that cop's entry in `bench/synthetic/synthetic-results.json`;
+   `check-cop.py` has no signal there. Unit tests passing is necessary but not sufficient.
    Use `--rerun` only for cops whose behavior may have changed (cop source or related parsing/config logic).
-   For untouched cops, prefer artifact mode (`python3 scripts/check-cop.py Department/CopName --verbose`)
+   For untouched corpus cops, prefer artifact mode (`python3 scripts/check-cop.py Department/CopName --verbose`)
    when the latest corpus oracle run is current.
 
 6. Handle regressions:
@@ -124,10 +143,12 @@ cargo clippy --release -- -D warnings
 cargo test --release
 ```
 
-Re-check each fixed cop:
+Re-check each fixed cop with the right acceptance gate:
 ```bash
 python3 scripts/check-cop.py Department/CopName --verbose --rerun
+python3 bench/synthetic/run_synthetic.py --verbose
 ```
+Use `check-cop.py` for corpus-backed cops and `run_synthetic.py` for synthetic-only cops.
 
 Refresh department status:
 ```bash
@@ -147,7 +168,7 @@ Report:
 - Gem targeted
 - Cops fixed with FP/FN deltas
 - Cops deferred/reverted and why
-- Verification status (`fmt`, `clippy`, `test`, `check-cop`, benchmark artifacts if requested)
+- Verification status (`fmt`, `clippy`, `test`, `check-cop`, `run_synthetic` when needed, benchmark artifacts if requested)
 
 ### Phase 5: Integrate Back to Main (Default)
 

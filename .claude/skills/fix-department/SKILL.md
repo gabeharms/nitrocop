@@ -1,15 +1,15 @@
 ---
 name: fix-department
-description: Get all cops in a gem to 100% corpus conformance. Assesses, triages, and fixes all diverging cops in a target gem using worktree-isolated teammates.
+description: Get all cops in a gem to 100% conformance. Assesses, triages, and fixes all diverging cops in a target gem using worktree-isolated teammates.
 allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob, Task, TeamCreate, TaskCreate, TaskUpdate, TaskList, TaskGet, SendMessage
 ---
 
 # Fix Department — Gem-Level 100% Conformance
 
 This skill targets a specific gem (e.g., rubocop-performance) and fixes ALL diverging
-cops until it reaches 100% corpus conformance (0 FP + 0 FN). Unlike `/fix-cops` which
-fixes the globally worst cops, this focuses on *completing* one gem at a time to unlock
-incremental adoption.
+cops until it reaches 100% conformance (0 FP + 0 FN on corpus-backed cops, plus
+no synthetic-only divergence). Unlike `/fix-cops` which fixes the globally worst
+cops, this focuses on *completing* one gem at a time to unlock incremental adoption.
 
 If you edit code yourself (without dispatching teammates), do that work in a dedicated
 git worktree by default. Only skip this when the user explicitly asks to use the current tree.
@@ -107,7 +107,7 @@ Summarize: cop name, FP/FN counts, minimal repro(s), root cause hypothesis.
 
 ```
 You are fixing false positives/negatives in a single nitrocop cop to bring its gem
-to 100% corpus conformance. Follow the CLAUDE.md rules strictly.
+to 100% conformance. Follow the CLAUDE.md rules strictly.
 
 **NEVER use git stash or git stash pop.** You should be in an isolated git worktree — just commit directly.
 Parallel-agent activity is common. If you see unrelated modified files, do not edit/revert them.
@@ -133,7 +133,9 @@ directly on main.
    env vars (BUNDLE_GEMFILE, BUNDLE_PATH, GIT_CEILING_DIRECTORIES) that only `check-cop.py`
    sets up correctly. If you need to verify corpus behavior, use `check-cop.py --rerun`
    for the cop you modified; use `check-cop.py --verbose` for untouched cops when the
-   latest corpus oracle run is current.
+   latest corpus oracle run is current. For synthetic-only cops, use the synthetic
+   source files listed in `bench/synthetic/synthetic-results.json` and re-run
+   `python3 bench/synthetic/run_synthetic.py --verbose` instead.
 
 3. **Add test cases (TDD)**:
    - For FP fixes: add the false-positive pattern to `tests/fixtures/cops/<dept>/<cop_name>/no_offense.rb`
@@ -197,13 +199,17 @@ directly on main.
    cargo test --release
    ```
 
-4. Verify each fixed cop against the corpus:
+4. Verify each fixed cop with the right acceptance gate:
    ```bash
    python3 scripts/check-cop.py Department/CopName --verbose --rerun
+   python3 bench/synthetic/run_synthetic.py --verbose
    ```
-   **Corpus validation is the acceptance gate** — unit tests passing is necessary but
-   NOT sufficient. Use `--rerun` only for cops changed in this batch; for untouched
-   cops, use artifact mode (`--verbose`).
+   **Corpus validation is the acceptance gate** for corpus-backed cops — unit tests
+   passing is necessary but NOT sufficient. For synthetic-only cops, re-run the
+   synthetic benchmark and inspect that cop's entry in
+   `bench/synthetic/synthetic-results.json`; `check-cop.py` has no signal there.
+   Use `--rerun` only for cops changed in this batch; for untouched corpus cops,
+   use artifact mode (`--verbose`).
 
 5. **Handle regressions**: if a fix increases FP count (even if unit tests pass), revert
    the code change but **add a detailed investigation comment** to the cop source file
@@ -225,8 +231,8 @@ directly on main.
    ```bash
    python3 .claude/skills/fix-department/scripts/gem_progress.py --gem <gem-name>
    ```
-   Note: This still reads the original corpus data. Per-cop verification via check-cop.py
-   gives the ground truth for fixed cops.
+   Note: This still reads the original corpus data. Per-cop verification via
+   `check-cop.py` or `run_synthetic.py` gives the ground truth for fixed cops.
 
 6. If diverging cops remain, go back to Phase 1 for the next batch.
 
@@ -271,9 +277,10 @@ When all cops in the gem are at 0 FP + 0 FN (or explicitly deferred):
    - How many cops were fixed (with FP/FN reduction)
    - How many cops were already perfect
    - Any deferred cops with reasons
-   - Summary: "rubocop-performance: 100% corpus conformance (N cops, M fixed in this session)"
+   - Summary: "rubocop-performance: 100% conformance (N cops, M fixed in this session)"
 
-3. Remind the user to trigger a fresh corpus oracle run to confirm the result.
+3. Remind the user to trigger a fresh corpus oracle run to confirm the result, and
+   re-run the synthetic benchmark if the gem had synthetic-only cops.
 
 ### Phase 6: Integrate Back to Main (Default)
 
@@ -313,11 +320,14 @@ Do not leave retained progress only in a worktree/collector branch.
 
 The scoreboard (`gem_progress.py --summary`) shows per-gem stats. Prioritize by:
 
-1. **Zero untested cops** — only gems where every cop triggered on the corpus
-   can claim true 100% conformance. Gems with untested cops get an asterisk. The "Untest"
-   column in the scoreboard shows this.
+1. **Zero uncovered cops** — only gems where every cop has either corpus coverage
+   or synthetic coverage can claim true 100% conformance. The "Untest" column in the
+   scoreboard shows cops missing from both.
 2. **Fewest diverging cops** — less work to complete the gem. The "Dvrg" column shows this.
 3. **Adoption value** — rubocop-performance is the most commonly added plugin, so completing
    it has more impact than rubocop-factory_bot, even if factory_bot is smaller.
 4. **FP-free first** — a gem with 0 FP but some FN is already safe to adopt (no false alarms).
    Fix FNs later for completeness.
+
+Always inspect the gem deep-dive before declaring a gem complete. Synthetic-only divergence
+is surfaced there, not just from the summary row.
