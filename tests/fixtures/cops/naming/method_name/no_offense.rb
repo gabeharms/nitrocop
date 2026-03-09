@@ -39,17 +39,6 @@ def nowµs
   Time.now
 end
 
-# CamelCase singleton factory methods (def self.X)
-module Foo
-  def self.Dimension(*args)
-    new(*args)
-  end
-
-  def self.Point(*args)
-    new(*args)
-  end
-end
-
 # attr_reader with snake_case is fine
 attr_reader :my_method
 attr_accessor :my_method

@@ -47,3 +47,18 @@ alias fooBar foo
 # alias_method with camelCase symbol
 alias_method :fooBar, :foo
              ^^^^^^^ Naming/MethodName: Use snake_case for method names.
+
+# SCREAMING_CASE singleton methods should be flagged (not CamelCase factory exceptions)
+def self.IF(test, then_e, else_e)
+         ^^ Naming/MethodName: Use snake_case for method names.
+end
+
+def self.UNLESS(test, then_e, else_e)
+         ^^^^^^ Naming/MethodName: Use snake_case for method names.
+end
+
+# CamelCase singleton factory methods are also flagged by RuboCop
+def self.Dimension(*args)
+         ^^^^^^^^^ Naming/MethodName: Use snake_case for method names.
+  new(*args)
+end

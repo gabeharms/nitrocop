@@ -18,6 +18,18 @@ use crate::parse::source::SourceFile;
 /// `# rubocop:disable Style/MethodName`. RuboCop still suppresses
 /// `Naming/MethodName` for that moved legacy name because the short name stayed
 /// `MethodName`. Fixed centrally in `parse/directives.rs`.
+///
+/// ## Investigation (2026-03-09)
+/// Corpus oracle reported FP=2, FN=162.
+///
+/// FN=162: Root cause was an incorrect CamelCase singleton method skip.
+/// Lines 155-161 skipped ALL uppercase-starting singleton methods (`def self.IF`,
+/// `def self.UNLESS`, `def self.Dimension`) as "factory methods". But RuboCop
+/// has NO such exception — it flags all non-snake_case methods uniformly.
+/// The skip was an incorrect approximation. Removed it entirely.
+///
+/// FP=2: Separate issues (discourse report.rb, jekyll-seo-tag json_ld_drop.rb).
+/// Not investigated yet — likely alias_method or config resolution differences.
 pub struct MethodName;
 
 /// Bundles config values needed for method name checking.
@@ -149,14 +161,6 @@ fn check_def_node(
     }
 
     if matches_allowed_pattern(method_name_str, &cfg.allowed_patterns) {
-        return;
-    }
-
-    // Skip CamelCase singleton methods (def self.ClassName) — RuboCop allows these
-    // as factory/constructor methods when a matching class exists in scope.
-    // We approximate by skipping all uppercase-starting singleton method names.
-    if def_node.receiver().is_some() && method_name.first().is_some_and(|b| b.is_ascii_uppercase())
-    {
         return;
     }
 
