@@ -42,6 +42,29 @@ use crate::parse::source::SourceFile;
 /// was including all symbols with `:` opening, including quoted forms `:"..."`
 /// and `:'...'`. Fixed by excluding quoted symbols from symbol ranges — only
 /// bare symbols (`:foo`) are now classified under CheckSymbols.
+///
+/// ## Corpus investigation (2026-03-09)
+///
+/// Corpus oracle reported FP=3, FN=46.
+///
+/// **Root cause 1 (3 FPs): string literals inside string interpolation treated as code.**
+/// When a flagged term appears inside a string literal nested within `#{}` interpolation
+/// (e.g., `params['blacklist']` inside `"...#{params['blacklist']}..."`), the previous
+/// code classified the entire interpolation range as code. But RuboCop's parser gem
+/// tokenizes nested strings as `tSTRING`/`tSTRING_CONTENT` which follow `CheckStrings`
+/// (false by default). Fixed by checking `code_map.is_code()` within interpolation
+/// ranges — nested string bytes are correctly classified as non-code by CodeMap.
+/// For heredocs, CodeMap marks the entire body as non-code, so `is_heredoc()` is
+/// used to preserve correct behavior for code within heredoc interpolation.
+///
+/// **Root cause 2 (46 FNs): blanket tFID skip included method definitions.**
+/// The previous fix to skip ALL identifiers ending in `?`/`!` was too aggressive.
+/// In RuboCop's parser gem, method definition names (`def foo?`, `def self.foo!`)
+/// are tokenized as `tIDENTIFIER` (checked), while method calls (`foo?`, `obj.foo?`)
+/// are tokenized as `tFID` (not checked). Confirmed via parser gem tokenization tests.
+/// Fixed by making `is_fid_token` context-aware: it now checks for `def`/`alias`
+/// context via backward line scanning and only skips `?`/`!` identifiers in call
+/// contexts.
 pub struct InclusiveLanguage;
 
 /// Global cache of compiled flagged terms, keyed by CopConfig pointer.
@@ -395,10 +418,22 @@ fn classify_match(
     } else if in_string {
         if in_ranges(interpolation_code_ranges, byte_offset) {
             // RuboCop checks tokens inside string/heredoc interpolation (`#{...}`).
-            if in_ranges(symbol_ranges, byte_offset) {
-                check_symbols
+            // But nested string literals within interpolation (e.g., `params['blacklist']`)
+            // are tokenized as tSTRING/tSTRING_CONTENT, which follow CheckStrings.
+            //
+            // For regular interpolated strings, CodeMap marks code within `#{}` as code
+            // and nested strings as non-code. For heredocs, CodeMap marks the entire
+            // body as non-code, so we use `is_heredoc()` to detect heredoc context
+            // where interpolation code should still be treated as code.
+            if in_code || code_map.is_heredoc(byte_offset) {
+                if in_ranges(symbol_ranges, byte_offset) {
+                    check_symbols
+                } else {
+                    should_flag_code_token(line, line_pos, match_len, should_check_code)
+                }
             } else {
-                should_flag_code_token(line, line_pos, match_len, should_check_code)
+                // Nested string within interpolation — follows CheckStrings
+                check_strings
             }
         } else
         // In string_ranges: could be string, heredoc, regex, %i/%w, or symbol.
@@ -460,8 +495,9 @@ fn is_hash_label(line: &[u8], pos: usize, _len: usize) -> bool {
 /// ending in `!` or `?`). RuboCop's parser gem tokenizes these as tFID which is NOT
 /// in the cop's check_token? map, so they are silently skipped.
 ///
-/// Expands outward from the match position to find the full identifier, then checks
-/// if it ends with `!` or `?`.
+/// HOWEVER, in method definition contexts (`def foo?`, `def self.foo!`) and alias
+/// contexts (`alias foo? bar?`), the parser gem tokenizes the name as tIDENTIFIER
+/// (which IS checked). So we only skip `?`/`!` identifiers in call contexts.
 fn is_fid_token(line: &[u8], pos: usize) -> bool {
     // Expand forward to find the end of the identifier
     let mut end = pos;
@@ -469,9 +505,89 @@ fn is_fid_token(line: &[u8], pos: usize) -> bool {
         end += 1;
     }
     // Check if the identifier is followed by ! or ?
-    if end < line.len() && (line[end] == b'!' || line[end] == b'?') {
+    if end >= line.len() || (line[end] != b'!' && line[end] != b'?') {
+        return false;
+    }
+
+    // It ends with ?/! — check if it's in a definition context (tIDENTIFIER, not tFID).
+    // In definitions, the parser gem uses tIDENTIFIER which IS checked.
+    if is_in_def_or_alias_context(line, pos) {
+        return false;
+    }
+
+    true
+}
+
+/// Check if the identifier at `pos` is a method name in a `def` or `alias` statement.
+/// Looks backward from the match position to find `def `, `def self.`, or `alias `.
+fn is_in_def_or_alias_context(line: &[u8], pos: usize) -> bool {
+    // Expand backward to find the start of the full identifier
+    let mut start = pos;
+    while start > 0
+        && (line[start - 1].is_ascii_alphanumeric()
+            || line[start - 1] == b'_'
+            || line[start - 1] == b'@')
+    {
+        start -= 1;
+    }
+
+    // Now look backward from identifier start, skipping whitespace
+    let mut i = start;
+
+    // Check for `def self.` pattern: skip the `.` and `self`
+    if i > 0 && line[i - 1] == b'.' {
+        i -= 1; // skip '.'
+        // Skip `self` or other receiver
+        while i > 0
+            && (line[i - 1].is_ascii_alphanumeric() || line[i - 1] == b'_' || line[i - 1] == b'@')
+        {
+            i -= 1;
+        }
+        // Skip whitespace before receiver
+        while i > 0 && line[i - 1] == b' ' {
+            i -= 1;
+        }
+    }
+
+    // Skip whitespace before the identifier
+    while i > 0 && line[i - 1] == b' ' {
+        i -= 1;
+    }
+
+    // Check if preceded by `def` keyword
+    if i >= 3 && &line[i - 3..i] == b"def" {
+        // Make sure `def` is at line start or preceded by non-identifier char
+        if i == 3 || !line[i - 4].is_ascii_alphanumeric() {
+            return true;
+        }
+    }
+
+    // Check if preceded by `alias` keyword (reset i to before identifier)
+    let mut j = start;
+    while j > 0 && line[j - 1] == b' ' {
+        j -= 1;
+    }
+    // The previous token in an alias is another identifier (the new name).
+    // Skip it and any whitespace before it.
+    while j > 0
+        && (line[j - 1].is_ascii_alphanumeric()
+            || line[j - 1] == b'_'
+            || line[j - 1] == b'?'
+            || line[j - 1] == b'!'
+            || line[j - 1] == b'=')
+    {
+        j -= 1;
+    }
+    while j > 0 && line[j - 1] == b' ' {
+        j -= 1;
+    }
+    if j >= 5
+        && &line[j - 5..j] == b"alias"
+        && (j == 5 || !line[j - 6].is_ascii_alphanumeric())
+    {
         return true;
     }
+
     false
 }
 

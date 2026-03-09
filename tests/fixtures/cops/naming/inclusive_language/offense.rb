@@ -27,3 +27,24 @@ script = <<~SQL
   grant select on *.* to '#{env.db_slave_user}'@'%'
                                    ^^^^^ Naming/InclusiveLanguage: Use inclusive language instead of `slave`. Suggested alternatives: `replica`, `secondary`, `follower`.
 SQL
+
+# Method definitions with ?/! suffixes are tIDENTIFIER in parser gem (checked)
+def whitelisted?
+    ^^^^^^^^^ Naming/InclusiveLanguage: Use inclusive language instead of `whitelist`. Suggested alternatives: `allowlist`, `permit`.
+  true
+end
+
+def blacklisted?(value)
+    ^^^^^^^^^ Naming/InclusiveLanguage: Use inclusive language instead of `blacklist`. Suggested alternatives: `denylist`, `block`.
+  false
+end
+
+def self.is_whitelisted?(url)
+            ^^^^^^^^^ Naming/InclusiveLanguage: Use inclusive language instead of `whitelist`. Suggested alternatives: `allowlist`, `permit`.
+  true
+end
+
+def _makara_blacklist!
+            ^^^^^^^^^ Naming/InclusiveLanguage: Use inclusive language instead of `blacklist`. Suggested alternatives: `denylist`, `block`.
+  disconnect!
+end

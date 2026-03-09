@@ -35,16 +35,8 @@ NAMES = %w[
 blacklisted?
 whitelist!
 _makara_blacklist!
-# tFID tokens in method definitions are also not checked (tFID, not tIDENTIFIER)
-def self.blacklisted?(type_name); end
-def self.whitelisted?(url); end
-def self.is_blacklisted?(value); end
-def whitelisted?
-  true
-end
-def blacklisted?
-  false
-end
+# Method definitions with ?/! are tIDENTIFIER in parser gem (checked),
+# so they are moved to offense.rb. Only calls are tFID (not checked).
 # Quoted symbols are treated as string content by RuboCop's parser (tSTRING_CONTENT)
 # so they follow CheckStrings (false by default), not CheckSymbols
 x = :"errors.messages.content_type_whitelist_error"
@@ -55,3 +47,11 @@ validate_config(
   whitelist_enabled: true,
   blacklist_duration: 30
 )
+# String literals inside string interpolation follow CheckStrings (false), not code
+settings = "'#{[AppSettings['settings.extension_whitelist'].split(',')].join("', '")}'".html_safe
+options = "modprobe.blacklist=#{params['blacklist'].delete(' ')}"
+# Method calls ending in ?/! are tFID in parser gem — not checked
+whitelisted?
+blacklisted?
+_makara_blacklist!
+obj.whitelisted?
