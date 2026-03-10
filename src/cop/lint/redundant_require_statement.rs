@@ -5,15 +5,23 @@ use ruby_prism::Visit;
 
 /// Checks for unnecessary `require` statements.
 ///
-/// Detects `require` calls for features already loaded by default in the target
-/// Ruby version. For `require 'pp'` (Ruby 2.5+), the require is only redundant
-/// if the file does not use `PP` constant or any `pretty_print*` / `pretty_inspect`
-/// methods, matching RuboCop's `need_to_require_pp?` heuristic.
+/// ## Corpus investigation (2026-03-10)
 ///
-/// Root cause of 1,223 FNs (37.4% match rate): the original implementation was
-/// missing `pp` support entirely. Since `require 'pp'` is extremely common in
-/// Ruby codebases and the corpus uses TargetRubyVersion: 4.0 (well above 2.5),
-/// nearly all `require 'pp'` calls should be flagged.
+/// Corpus oracle reported FP=159, FN=1,224 on the March 10, 2026 run.
+///
+/// The prior implementation diverged from the pinned RuboCop version by treating
+/// `require 'pp'` as redundant and by omitting Ruby 4.0's redundant `pathname`.
+/// That produced most observed FPs on scripts that explicitly load `pp`, while
+/// leaving most Ruby 4.0 `require 'pathname'` offenses undetected.
+///
+/// Fix: match RuboCop's feature list exactly for the pinned vendor version:
+/// `enumerator`, `thread`, `rational`, `complex`, `ruby2_keywords`, `fiber`,
+/// `set`, and `pathname` at Ruby 4.0+.
+///
+/// Post-fix corpus rerun: actual offenses increased from 895 to 1,648 against
+/// a RuboCop expected total of 1,960, eliminating the `pp` FP bucket and
+/// recovering most `pathname` misses. Remaining divergence is mostly FN, with
+/// one likely extra repo-level offense outside jruby's file-drop-noise repo.
 pub struct RedundantRequireStatement;
 
 /// Features that are always redundant (Ruby 2.0+, well below any supported version).
@@ -34,14 +42,8 @@ const RUBY_31_REDUNDANT: &[&[u8]] = &[b"fiber"];
 /// Features redundant since Ruby 3.2+.
 const RUBY_32_REDUNDANT: &[&[u8]] = &[b"set"];
 
-/// Pretty-print method names that indicate `require 'pp'` is needed.
-const PRETTY_PRINT_METHODS: &[&[u8]] = &[
-    b"pretty_inspect",
-    b"pretty_print",
-    b"pretty_print_cycle",
-    b"pretty_print_inspect",
-    b"pretty_print_instance_variables",
-];
+/// Features redundant since Ruby 4.0+.
+const RUBY_40_REDUNDANT: &[&[u8]] = &[b"pathname"];
 
 /// Get the target Ruby version from cop config, defaulting to 2.7
 /// (matching RuboCop's default when no version is specified).
@@ -54,8 +56,6 @@ fn target_ruby_version(config: &CopConfig) -> f64 {
 }
 
 /// Check if a feature is redundant given the target Ruby version.
-/// For `pp`, returns true only based on version; the caller must separately
-/// check for PP usage in the file.
 fn is_redundant_feature(feature: &[u8], ruby_version: f64) -> bool {
     if ALWAYS_REDUNDANT.contains(&feature) {
         return true;
@@ -64,9 +64,6 @@ fn is_redundant_feature(feature: &[u8], ruby_version: f64) -> bool {
         return true;
     }
     if ruby_version >= 2.2 && RUBY_22_REDUNDANT.contains(&feature) {
-        return true;
-    }
-    if ruby_version >= 2.5 && feature == b"pp" {
         return true;
     }
     if ruby_version >= 2.7 && RUBY_27_REDUNDANT.contains(&feature) {
@@ -78,62 +75,10 @@ fn is_redundant_feature(feature: &[u8], ruby_version: f64) -> bool {
     if ruby_version >= 3.2 && RUBY_32_REDUNDANT.contains(&feature) {
         return true;
     }
-    false
-}
-
-/// Visitor that checks if the file uses PP constant or pretty_print methods.
-struct PpUsageVisitor {
-    found: bool,
-}
-
-impl<'pr> Visit<'pr> for PpUsageVisitor {
-    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
-        if self.found {
-            return;
-        }
-
-        let method_name = node.name().as_slice();
-
-        // Check for pretty_print methods
-        if PRETTY_PRINT_METHODS.contains(&method_name) {
-            self.found = true;
-            return;
-        }
-
-        // Check for PP.method_name or ::PP.method_name
-        if let Some(recv) = node.receiver() {
-            if is_pp_const(&recv) {
-                self.found = true;
-                return;
-            }
-        }
-
-        // Continue visiting children
-        ruby_prism::visit_call_node(self, node);
-    }
-}
-
-/// Check if a node is the `PP` constant (bare or with `::` prefix).
-fn is_pp_const(node: &ruby_prism::Node<'_>) -> bool {
-    if let Some(cr) = node.as_constant_read_node() {
-        return cr.name().as_slice() == b"PP";
-    }
-    if let Some(cp) = node.as_constant_path_node() {
-        // ::PP — parent is None (cbase), child is PP
-        if cp.parent().is_none() {
-            if let Some(name) = cp.name() {
-                return name.as_slice() == b"PP";
-            }
-        }
+    if ruby_version >= 4.0 && RUBY_40_REDUNDANT.contains(&feature) {
+        return true;
     }
     false
-}
-
-/// Check if the AST contains any usage of PP constant or pretty_print methods.
-fn needs_pp_require(parse_result: &ruby_prism::ParseResult<'_>) -> bool {
-    let mut visitor = PpUsageVisitor { found: false };
-    visitor.visit(&parse_result.node());
-    visitor.found
 }
 
 /// Visitor that finds redundant require statements and collects diagnostics.
@@ -141,7 +86,6 @@ struct RequireVisitor<'a, 'src, 'pr> {
     cop: &'a RedundantRequireStatement,
     source: &'src SourceFile,
     ruby_version: f64,
-    needs_pp: bool,
     diagnostics: Vec<Diagnostic>,
     _phantom: std::marker::PhantomData<&'pr ()>,
 }
@@ -156,20 +100,15 @@ impl<'a, 'src, 'pr> Visit<'pr> for RequireVisitor<'a, 'src, 'pr> {
                         if let Some(string_node) = first_arg.as_string_node() {
                             let feature = string_node.unescaped();
                             if is_redundant_feature(feature, self.ruby_version) {
-                                // For 'pp', skip if file uses PP/pretty_print
-                                if feature == b"pp" && self.needs_pp {
-                                    // Not redundant — file uses PP
-                                } else {
-                                    let loc = node.location();
-                                    let (line, column) =
-                                        self.source.offset_to_line_col(loc.start_offset());
-                                    self.diagnostics.push(self.cop.diagnostic(
-                                        self.source,
-                                        line,
-                                        column,
-                                        "Remove unnecessary `require` statement.".to_string(),
-                                    ));
-                                }
+                                let loc = node.location();
+                                let (line, column) =
+                                    self.source.offset_to_line_col(loc.start_offset());
+                                self.diagnostics.push(self.cop.diagnostic(
+                                    self.source,
+                                    line,
+                                    column,
+                                    "Remove unnecessary `require` statement.".to_string(),
+                                ));
                             }
                         }
                     }
@@ -202,18 +141,10 @@ impl Cop for RedundantRequireStatement {
     ) {
         let ruby_ver = target_ruby_version(config);
 
-        // Pre-compute whether the file needs require 'pp'
-        let needs_pp = if ruby_ver >= 2.5 {
-            needs_pp_require(parse_result)
-        } else {
-            false
-        };
-
         let mut visitor = RequireVisitor {
             cop: self,
             source,
             ruby_version: ruby_ver,
-            needs_pp,
             diagnostics: Vec::new(),
             _phantom: std::marker::PhantomData,
         };
@@ -225,8 +156,27 @@ impl Cop for RedundantRequireStatement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    use crate::cop::CopConfig;
+    use crate::testutil::assert_cop_offenses_full_with_config;
+
     crate::cop_fixture_tests!(
         RedundantRequireStatement,
         "cops/lint/redundant_require_statement"
     );
+
+    #[test]
+    fn pathname_is_redundant_on_ruby_40() {
+        let config = CopConfig {
+            options: HashMap::from([(
+                "TargetRubyVersion".into(),
+                serde_yml::Value::Number(serde_yml::value::Number::from(4.0_f64)),
+            )]),
+            ..CopConfig::default()
+        };
+
+        let fixture = b"require 'pathname'\n^^^^^^^^^^^^^^^^^ Lint/RedundantRequireStatement: Remove unnecessary `require` statement.\n";
+        assert_cop_offenses_full_with_config(&RedundantRequireStatement, fixture, config);
+    }
 }
