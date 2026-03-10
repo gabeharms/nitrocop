@@ -11,3 +11,6 @@ where('name NOT LIKE ?', '%test%')
 User.where(["name = ?", "foo"])
 User.where(["name IN (?)", [1, 2]])
 User.where(["name IS NULL"])
+# Named parameter form without hash argument should not be flagged
+builder.where("id NOT IN (:selected_tag_ids)")
+where("name != :name")

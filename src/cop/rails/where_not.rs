@@ -22,44 +22,47 @@ use crate::parse::source::SourceFile;
 ///
 /// Fix applied: Added array-unwrapping for first arg, and changed offense location
 /// to start at `call.message_loc()` (the `where` keyword) instead of `node.location()`.
+///
+/// ## Corpus investigation (2026-03-10)
+///
+/// Corpus oracle reported FP=1, FN=0.
+///
+/// FP=1: `builder.where("id NOT IN (:selected_tag_ids)")` — named parameter
+/// form without a hash second argument. RuboCop's `extract_column_and_value`
+/// requires a hash argument for named patterns (`:name`) and a positional
+/// argument for anonymous patterns (`?`). Fixed by classifying negation
+/// patterns into Anonymous/Named/IsNotNull and validating that the required
+/// value argument exists.
 pub struct WhereNot;
+
+/// Type of negation pattern found in SQL.
+enum NegationType {
+    /// `?` placeholder — requires a positional value argument
+    Anonymous,
+    /// `:name` placeholder — requires a hash value argument
+    Named,
+    /// `IS NOT NULL` — no value argument needed
+    IsNotNull,
+}
 
 /// Check if the SQL template string matches a simple negation pattern
 /// that can be replaced with `where.not(...)`.
-fn is_simple_negation(sql: &str) -> bool {
+fn negation_type(sql: &str) -> Option<NegationType> {
     let trimmed = sql.trim();
 
-    // column != ? or column <> ?
-    // Pattern: \A[\w.]+\s+(?:!=|<>)\s+\?\z
-    if is_not_eq_anonymous(trimmed) {
-        return true;
+    if is_not_eq_anonymous(trimmed) || is_not_in_anonymous(trimmed) {
+        return Some(NegationType::Anonymous);
     }
 
-    // column != :name or column <> :name
-    // Pattern: \A[\w.]+\s+(?:!=|<>)\s+:\w+\z
-    if is_not_eq_named(trimmed) {
-        return true;
+    if is_not_eq_named(trimmed) || is_not_in_named(trimmed) {
+        return Some(NegationType::Named);
     }
 
-    // column NOT IN (?)
-    // Pattern: \A[\w.]+\s+NOT\s+IN\s+\(\?\)\z  (case insensitive)
-    if is_not_in_anonymous(trimmed) {
-        return true;
-    }
-
-    // column NOT IN (:name)
-    // Pattern: \A[\w.]+\s+NOT\s+IN\s+\(:\w+\)\z  (case insensitive)
-    if is_not_in_named(trimmed) {
-        return true;
-    }
-
-    // column IS NOT NULL
-    // Pattern: \A[\w.]+\s+IS\s+NOT\s+NULL\z  (case insensitive)
     if is_not_null(trimmed) {
-        return true;
+        return Some(NegationType::IsNotNull);
     }
 
-    false
+    None
 }
 
 fn is_word_dot_char(c: u8) -> bool {
@@ -358,26 +361,60 @@ impl Cop for WhereNot {
         // 1. where('col != ?', val) — bare string first arg
         // 2. where(['col != ?', val]) — array-wrapped first arg
         let first_arg = &arg_list[0];
-        let sql_content = if let Some(str_node) = first_arg.as_string_node() {
-            // Form 1: bare string
-            String::from_utf8_lossy(str_node.unescaped()).to_string()
-        } else if let Some(array_node) = first_arg.as_array_node() {
-            // Form 2: array-wrapped — extract first element as SQL template
-            let elements: Vec<_> = array_node.elements().iter().collect();
-            if elements.is_empty() {
-                return;
-            }
-            if let Some(str_node) = elements[0].as_string_node() {
-                String::from_utf8_lossy(str_node.unescaped()).to_string()
+        let (sql_content, has_value_arg, has_hash_arg) =
+            if let Some(str_node) = first_arg.as_string_node() {
+                // Form 1: bare string — value args are remaining call arguments
+                let has_val = arg_list.len() > 1;
+                let has_hash = arg_list.len() > 1
+                    && (arg_list[1].as_hash_node().is_some()
+                        || arg_list[1].as_keyword_hash_node().is_some());
+                (
+                    String::from_utf8_lossy(str_node.unescaped()).to_string(),
+                    has_val,
+                    has_hash,
+                )
+            } else if let Some(array_node) = first_arg.as_array_node() {
+                // Form 2: array-wrapped — value args are remaining array elements
+                let elements: Vec<_> = array_node.elements().iter().collect();
+                if elements.is_empty() {
+                    return;
+                }
+                let str_node = match elements[0].as_string_node() {
+                    Some(s) => s,
+                    None => return,
+                };
+                let has_val = elements.len() > 1;
+                let has_hash = elements.len() > 1 && elements[1].as_hash_node().is_some();
+                (
+                    String::from_utf8_lossy(str_node.unescaped()).to_string(),
+                    has_val,
+                    has_hash,
+                )
             } else {
                 return;
-            }
-        } else {
-            return;
+            };
+
+        let neg_type = match negation_type(&sql_content) {
+            Some(t) => t,
+            None => return,
         };
 
-        if !is_simple_negation(&sql_content) {
-            return;
+        // RuboCop's extract_column_and_value requires matching value arguments:
+        // - Anonymous (?) patterns need a positional value argument
+        // - Named (:name) patterns need a hash value argument
+        // - IS NOT NULL needs no value argument
+        match neg_type {
+            NegationType::Anonymous => {
+                if !has_value_arg {
+                    return;
+                }
+            }
+            NegationType::Named => {
+                if !has_hash_arg {
+                    return;
+                }
+            }
+            NegationType::IsNotNull => {}
         }
 
         // Use message_loc to start offense at `where` keyword (matching RuboCop's
