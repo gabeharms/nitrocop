@@ -19,6 +19,13 @@ use crate::parse::source::SourceFile;
 /// and multi-assignment target nodes. All 16 missing node types have a
 /// `.name()` method returning the variable name, same as the write nodes.
 /// Fix: register all 16 additional node types and handle them identically.
+///
+/// ## Corpus investigation (2026-03-10)
+///
+/// Corpus oracle reported FP=0, FN=1. FN from hexapdf
+/// (`test/hexapdf/test_serializer.rb:101`), "Use normalcase for symbol numbers."
+/// Likely an edge case with empty-string symbol `""` as keyword hash key.
+/// Not fixed — FN=1 is acceptable.
 pub struct VariableNumber;
 
 const DEFAULT_ALLOWED: &[&str] = &[

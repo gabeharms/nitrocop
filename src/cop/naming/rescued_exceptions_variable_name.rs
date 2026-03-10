@@ -4,6 +4,12 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-10)
+///
+/// Corpus oracle reported FP=0, FN=2. Both FNs from jruby
+/// (`test/jruby/test_local_jump_error.rb`), `rescue LocalJumpError => lje`.
+/// Likely config resolution issue (jruby may have custom PreferredName config).
+/// Not fixed — FN=2 is acceptable.
 pub struct RescuedExceptionsVariableName;
 
 impl Cop for RescuedExceptionsVariableName {
