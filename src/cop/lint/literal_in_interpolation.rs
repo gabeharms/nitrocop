@@ -6,6 +6,18 @@ use crate::parse::source::SourceFile;
 
 /// Checks for interpolated literals in strings, symbols, regexps, and heredocs.
 ///
+/// ## Corpus investigation (2026-03-10)
+///
+/// Corpus oracle reported FP=40, FN=0 on the March 10, 2026 run.
+///
+/// The remaining FPs came from interpolated heredoc bodies such as
+/// `"#{<<~TEXT}"`. RuboCop's `basic_literal?` check does not treat these heredoc
+/// string nodes as plain printable literals for this cop, but the Prism port
+/// treated all `StringNode` values alike and flagged them.
+///
+/// Fix: detect heredoc-backed `StringNode` / `InterpolatedStringNode` values by
+/// their `<<` opening and exclude them from literal interpolation offenses.
+///
 /// RuboCop considers a node "literal" if it's a basic literal (int, float, string,
 /// symbol, nil, true, false) or a composite literal (array, hash, pair/assoc, irange,
 /// erange) where ALL children are also literals (recursively).
@@ -149,6 +161,24 @@ fn expanded_value_has_space_or_empty(node: &ruby_prism::Node<'_>) -> bool {
     false
 }
 
+fn is_heredoc_literal(source: &SourceFile, node: &ruby_prism::Node<'_>) -> bool {
+    let bytes = source.as_bytes();
+
+    if let Some(str_node) = node.as_string_node() {
+        return str_node
+            .opening_loc()
+            .is_some_and(|loc| bytes[loc.start_offset()..loc.end_offset()].starts_with(b"<<"));
+    }
+
+    if let Some(str_node) = node.as_interpolated_string_node() {
+        return str_node
+            .opening_loc()
+            .is_some_and(|loc| bytes[loc.start_offset()..loc.end_offset()].starts_with(b"<<"));
+    }
+
+    false
+}
+
 struct LiteralInterpVisitor<'a, 'src> {
     cop: &'a LiteralInInterpolation,
     source: &'src SourceFile,
@@ -171,6 +201,10 @@ impl<'a, 'src> LiteralInterpVisitor<'a, 'src> {
             Some(n) => n,
             None => return,
         };
+
+        if is_heredoc_literal(self.source, final_node) {
+            return;
+        }
 
         if !is_literal(final_node) {
             return;

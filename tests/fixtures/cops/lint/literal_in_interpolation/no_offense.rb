@@ -25,3 +25,8 @@ MSG
 
 # Arrays inside regexp are handled by Lint/ArrayLiteralInRegexp
 /#{%w[a b c]}/
+
+# Heredoc interpolation is allowed
+"#{<<~TEXT}"
+hello
+TEXT
