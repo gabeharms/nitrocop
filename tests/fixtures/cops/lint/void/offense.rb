@@ -87,3 +87,93 @@ def void_keywords
   ^^^^^^^^ Lint/Void: Void value expression detected.
   "done"
 end
+
+# Lambda/proc in void context
+def void_lambda
+  -> { bar }
+  ^^^^^^^^^^ Lint/Void: Void value expression detected.
+  top
+end
+
+def void_lambda_call
+  lambda { bar }
+  ^^^^^^^^^^^^^^ Lint/Void: Void value expression detected.
+  top
+end
+
+def void_proc
+  proc { bar }
+  ^^^^^^^^^^^^ Lint/Void: Void value expression detected.
+  top
+end
+
+# Literal.freeze in void context
+def void_frozen_literal
+  'foo'.freeze
+  ^^^^^^^^^^^^ Lint/Void: Void value expression detected.
+  baz
+end
+
+# Void context: initialize — all expressions including last are void
+def initialize
+  42
+  ^^ Lint/Void: Void value expression detected.
+  42
+  ^^ Lint/Void: Void value expression detected.
+end
+
+# Void context: setter method — all expressions including last are void
+def foo=(rhs)
+  42
+  ^^ Lint/Void: Void value expression detected.
+  42
+  ^^ Lint/Void: Void value expression detected.
+end
+
+# Void context: each block — literals are flagged (including last)
+array.each do |_item|
+  42
+  ^^ Lint/Void: Void value expression detected.
+  42
+  ^^ Lint/Void: Void value expression detected.
+end
+
+# Void context: single-expression each block
+array.each do |_item|
+  42
+  ^^ Lint/Void: Void value expression detected.
+end
+
+# Void context: tap block
+foo.tap do |x|
+  42
+  ^^ Lint/Void: Void value expression detected.
+  42
+  ^^ Lint/Void: Void value expression detected.
+end
+
+# Void context: for loop — all expressions are void
+for _item in array do
+  42
+  ^^ Lint/Void: Void value expression detected.
+  42
+  ^^ Lint/Void: Void value expression detected.
+end
+
+# Void context: ensure body — all expressions are void
+def ensured
+  bar
+ensure
+  42
+  ^^ Lint/Void: Void value expression detected.
+  42
+  ^^ Lint/Void: Void value expression detected.
+end
+
+# Void context: single-expression ensure body
+def ensured_single
+  bar
+ensure
+  [1, 2, [3]]
+  ^^^^^^^^^^^ Lint/Void: Void value expression detected.
+end

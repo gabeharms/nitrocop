@@ -82,3 +82,42 @@ def interpolated
   "#{expensive_computation}"
   "done"
 end
+
+# Void operators exempted inside each blocks (enumerator filter pattern)
+enumerator_as_filter.each do |item|
+  item == 42
+end
+
+# Multi-statement each block — operator on last line is exempt
+enumerator_as_filter.each do |item|
+  puts item
+  item == 42
+end
+
+# Lambda/proc with .call — not void (has side effects)
+def not_void_lambda_call
+  -> { bar }.call
+  top
+end
+
+def not_void_proc_call
+  lambda { bar }.call
+  top
+end
+
+# Frozen non-literal — not entirely literal
+def frozen_non_literal
+  foo.freeze
+  baz
+end
+
+# Operator with dot notation and no args — not flagged
+def dot_operator_no_args
+  a.+
+  something
+end
+
+def safe_nav_operator_no_args
+  a&.+
+  something
+end
