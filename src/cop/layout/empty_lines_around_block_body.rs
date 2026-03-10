@@ -4,6 +4,19 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-10)
+///
+/// CI baseline reported FP=1, FN=6.
+///
+/// Attempted fix: add `LAMBDA_NODE` coverage so lambda bodies like `-> do`
+/// and `-> {` reused the shared body-empty-line helper. The focused fixture
+/// passed, but the corpus rerun regressed broadly to expected=24,730,
+/// actual=24,668, CI baseline=24,725, missing=62, file-drop noise=911.
+///
+/// The negative delta was spread across many repos rather than the sampled
+/// lambda cases alone, so the lambda-node expansion was reverted. A correct
+/// fix needs to add lambda coverage without perturbing the existing
+/// block-body counts.
 pub struct EmptyLinesAroundBlockBody;
 
 impl Cop for EmptyLinesAroundBlockBody {

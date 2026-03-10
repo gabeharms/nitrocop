@@ -3,6 +3,22 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-10)
+///
+/// CI baseline reported FP=0, FN=33.
+///
+/// Attempted fix: flag `OptionalKeywordParameterNode` so RubyMotion-style
+/// parameter syntax like `name:value` matched RuboCop's `on_kwoptarg`
+/// handling. That removed the sampled FN, but the corpus rerun regressed to
+/// expected=510, actual=568, CI baseline=477, raw excess=58, file-drop
+/// noise=73, which still left 18 excess beyond the CI baseline.
+///
+/// The new false positives concentrated outside the RubyMotion repo in
+/// `cerebris__jsonapi-resources__e92afc6`, `openjournals__joss__c3cc59f`, and
+/// `browsermedia__browsercms__0a7fb92`, so the broader kwoptarg hook was
+/// reverted. A correct fix needs to distinguish the RubyMotion selector-style
+/// parameter form from ordinary Prism optional-keyword parameters that
+/// RuboCop does not count here.
 pub struct SpaceAfterColon;
 
 impl Cop for SpaceAfterColon {
