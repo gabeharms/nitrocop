@@ -73,11 +73,7 @@ impl<'pr> RWVisitor<'_, '_> {
                     let attr_name: Option<Vec<u8>> = arg_list[0]
                         .as_symbol_node()
                         .map(|sym| sym.unescaped().to_vec())
-                        .or_else(|| {
-                            arg_list[0]
-                                .as_string_node()
-                                .map(|s| s.unescaped().to_vec())
-                        });
+                        .or_else(|| arg_list[0].as_string_node().map(|s| s.unescaped().to_vec()));
                     if let Some(attr_name) = attr_name {
                         let mut expected_method = attr_name;
                         if is_write {

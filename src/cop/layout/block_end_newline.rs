@@ -77,10 +77,7 @@ impl Cop for BlockEndNewline {
 }
 
 fn begins_with_semicolon(before_close: &[u8]) -> bool {
-    before_close
-        .iter()
-        .find(|&&b| b != b' ' && b != b'\t')
-        == Some(&b';')
+    before_close.iter().find(|&&b| b != b' ' && b != b'\t') == Some(&b';')
 }
 
 #[cfg(test)]
