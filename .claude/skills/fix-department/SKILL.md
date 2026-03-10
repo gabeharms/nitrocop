@@ -76,6 +76,13 @@ to `/tmp/nitrocop-reduce/` — read them and include them in the teammate prompt
 
 Summarize: cop name, FP/FN counts, minimal repro(s), root cause hypothesis.
 
+**When no example locations are available** (investigate-cop.py shows counts but no
+file paths, and no corpus repos cloned): still dispatch teammates, but tell them
+upfront that examples are unavailable. For low-divergence cops (FP+FN ≤ 2), the
+FP/FN may be a corpus artifact — tell teammates to compare nitrocop vs vendor
+RuboCop source for edge cases, add any discovered test coverage, and document
+findings. Do NOT expect teammates to web-search for specific repo files.
+
 ### Phase 2: Dispatch (you do this)
 
 1. Create a team:
@@ -140,6 +147,17 @@ directly on main.
    - **Synthetic corpus**: `python3 bench/synthetic/run_synthetic.py --verbose` for
      synthetic-only cops.
    Never create test Ruby files outside the fixture directories.
+
+   **Bail-out rule:** If no example locations are available (investigate-cop.py shows
+   counts only, no file paths), no corpus repos are cloned locally, and the minimal
+   repro examples in the prompt are insufficient to identify a concrete bug: stop
+   investigating after analyzing the cop source + vendor RuboCop source. Compare the
+   two implementations for edge case differences. If you cannot identify a concrete
+   code bug within a reasonable effort, document your findings in the cop's doc comment
+   and report back that the FP/FN is likely a corpus artifact (stale cache, config
+   resolution, or line-number mismatch). Do NOT web-search for specific repo source
+   files or try to reconstruct corpus examples from GitHub — this rarely succeeds and
+   wastes significant time.
 
 3. **Add test cases (TDD)**:
    - For FP fixes: add the false-positive pattern to `tests/fixtures/cops/<dept>/<cop_name>/no_offense.rb`
