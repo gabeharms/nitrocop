@@ -1,8 +1,17 @@
-use crate::cop::node_type::BLOCK_NODE;
+use crate::cop::node_type::{BLOCK_NODE, LAMBDA_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-10)
+///
+/// Corpus oracle reported FP=0, FN=15.
+///
+/// FN=15: Multiline lambdas like `-> { ... }` and `-> do ... end` were missed
+/// because Prism exposes them as `LAMBDA_NODE`, while the cop only visited
+/// `BLOCK_NODE`. The fix widens the visitor set to include lambdas and keeps
+/// RuboCop's `; end` / `; }` escape so newly-covered lambda bodies do not
+/// regress into false positives.
 pub struct BlockEndNewline;
 
 impl Cop for BlockEndNewline {
@@ -11,7 +20,7 @@ impl Cop for BlockEndNewline {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[BLOCK_NODE]
+        &[BLOCK_NODE, LAMBDA_NODE]
     }
 
     fn check_node(
@@ -23,13 +32,13 @@ impl Cop for BlockEndNewline {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let block_node = match node.as_block_node() {
-            Some(b) => b,
-            None => return,
+        let (opening_loc, closing_loc) = if let Some(block_node) = node.as_block_node() {
+            (block_node.opening_loc(), block_node.closing_loc())
+        } else if let Some(lambda_node) = node.as_lambda_node() {
+            (lambda_node.opening_loc(), lambda_node.closing_loc())
+        } else {
+            return;
         };
-
-        let opening_loc = block_node.opening_loc();
-        let closing_loc = block_node.closing_loc();
 
         let (open_line, _) = source.offset_to_line_col(opening_loc.start_offset());
         let (close_line, close_col) = source.offset_to_line_col(closing_loc.start_offset());
@@ -50,19 +59,29 @@ impl Cop for BlockEndNewline {
         let before_close = &bytes[pos..closing_loc.start_offset()];
         let begins_line = before_close.iter().all(|&b| b == b' ' || b == b'\t');
 
-        if !begins_line {
-            diagnostics.push(self.diagnostic(
-                source,
-                close_line,
-                close_col,
-                format!(
-                    "Expression at {}, {} should be on its own line.",
-                    close_line,
-                    close_col + 1
-                ),
-            ));
+        if begins_line || begins_with_semicolon(before_close) {
+            return;
         }
+
+        diagnostics.push(self.diagnostic(
+            source,
+            close_line,
+            close_col,
+            format!(
+                "Expression at {}, {} should be on its own line.",
+                close_line,
+                close_col + 1
+            ),
+        ));
     }
+}
+
+fn begins_with_semicolon(before_close: &[u8]) -> bool {
+    before_close
+        .iter()
+        .skip_while(|&&b| b == b' ' || b == b'\t')
+        .next()
+        == Some(&b';')
 }
 
 #[cfg(test)]

@@ -11,3 +11,11 @@ items.each { |x| puts x }
 [1, 2].map do |x|
   x * 2
 end
+
+-> do
+  foo
+; end
+
+-> {
+  foo
+; }

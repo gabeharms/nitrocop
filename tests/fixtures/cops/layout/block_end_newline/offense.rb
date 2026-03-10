@@ -7,3 +7,14 @@ blah { |i|
 items.each do |x|
   bar(x) end
          ^^^ Layout/BlockEndNewline: Expression at 6, 10 should be on its own line.
+-> do
+  foo
+end
+
+-> {
+  foo }
+      ^ Layout/BlockEndNewline: Expression at 12, 7 should be on its own line.
+
+-> do
+  foo end
+      ^^^ Layout/BlockEndNewline: Expression at 15, 7 should be on its own line.
