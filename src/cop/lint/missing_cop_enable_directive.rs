@@ -22,6 +22,15 @@ use crate::parse::source::SourceFile;
 /// `open_disables`, leaving individually disabled cops (e.g.
 /// `Metrics/MethodLength`, `Layout`) unclosed. Fix: when the enable directive
 /// contains "all", drain all open disables (checking MaximumRangeSize for each).
+///
+/// **Round 3** — FP=2, FN=0. Root cause: `--` trailing comment marker not
+/// handled. RuboCop uses `--` as a delimiter between cop names and explanatory
+/// text (e.g., `# rubocop:disable Style/Foo -- use bar, baz instead`). Our
+/// `parse_directive` split the entire text after the action on commas without
+/// first stripping the `--` suffix, so explanations containing commas produced
+/// phantom cop names (e.g., `baz` from `bar, baz instead`). These phantom
+/// disables had no matching enable and were reported as FPs. Fix: strip text
+/// after `--` before splitting on commas.
 pub struct MissingCopEnableDirective;
 
 impl Cop for MissingCopEnableDirective {
@@ -203,10 +212,11 @@ fn parse_directive(line: &str) -> Option<(&str, Vec<String>, usize)> {
         return None;
     }
 
-    let cops: Vec<String> = after_prefix[action_end..]
-        .split(',')
-        .filter_map(parse_cop_token)
-        .collect();
+    // Strip `--` trailing comment marker (RuboCop convention) before parsing cop names.
+    // Without this, explanations like `-- use bar, baz instead` would split on the comma
+    // and incorrectly parse `baz` as a cop name.
+    let cops_str = after_prefix[action_end..].split("--").next().unwrap_or("");
+    let cops: Vec<String> = cops_str.split(',').filter_map(parse_cop_token).collect();
     if cops.is_empty() {
         return None;
     }

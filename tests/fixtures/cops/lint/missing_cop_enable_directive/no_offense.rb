@@ -44,3 +44,15 @@ y = 2
 # rubocop:disable all
 x = 1
 # rubocop:enable all
+
+# Trailing explanation with `--` marker should not create phantom cops
+# rubocop:disable Style/Foo -- use bar, baz instead
+x = 1
+# rubocop:enable Style/Foo
+
+# Trailing explanation after `--` with comma should not split into cop names
+# rubocop:disable Metrics/MethodLength -- long method, needs refactoring later
+def calculate
+  x = 1
+end
+# rubocop:enable Metrics/MethodLength
