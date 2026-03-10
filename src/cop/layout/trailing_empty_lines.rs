@@ -2,7 +2,44 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-10)
+///
+/// CI baseline reported FP=47, FN=22.
+///
+/// Fixed sampled FN: whitespace-only lines at EOF were previously excluded
+/// from the trailing-blank-line scan, so the default `final_newline` style
+/// could miss `Trailing blank line detected.` and sometimes fall through to
+/// `Final newline missing.` instead. The accepted fix treats space/tab/CR-only
+/// lines as blank and autocorrect removes the full blank tail.
+///
+/// Acceptance gate after this patch (`scripts/check-cop.py --verbose --rerun`):
+/// expected=9,691, actual=9,587, CI baseline=9,716, excess=0, missing=104,
+/// file-drop noise=308.
+///
+/// Remaining gap: 104 potential FN remain. This batch only addressed the
+/// whitespace-only trailing-line case; no broader config-resolution issue was
+/// involved.
 pub struct TrailingEmptyLines;
+
+fn is_blank_line(line: &[u8]) -> bool {
+    line.iter().all(|&b| matches!(b, b' ' | b'\t' | b'\r'))
+}
+
+fn trailing_blank_lines(lines: &[&[u8]], ends_with_newline: bool) -> Option<(usize, usize)> {
+    let mut first_non_blank_after_tail = lines.len();
+    while first_non_blank_after_tail > 0 && is_blank_line(lines[first_non_blank_after_tail - 1]) {
+        first_non_blank_after_tail -= 1;
+    }
+
+    let trailing_slices = lines.len().saturating_sub(first_non_blank_after_tail);
+    let trailing_blank_lines = if ends_with_newline {
+        trailing_slices.saturating_sub(1)
+    } else {
+        trailing_slices
+    };
+
+    (trailing_blank_lines > 0).then_some((trailing_blank_lines, first_non_blank_after_tail + 1))
+}
 
 impl Cop for TrailingEmptyLines {
     fn name(&self) -> &'static str {
@@ -25,6 +62,8 @@ impl Cop for TrailingEmptyLines {
         if bytes.is_empty() {
             return;
         }
+        let lines: Vec<&[u8]> = source.lines().collect();
+        let ends_with_newline = bytes.ends_with(b"\n");
 
         match style {
             "final_blank_line" => {
@@ -73,7 +112,32 @@ impl Cop for TrailingEmptyLines {
             }
             _ => {
                 // "final_newline" (default): require exactly one trailing newline
-                if *bytes.last().unwrap() != b'\n' {
+                if let Some((_count, first_blank_line)) =
+                    trailing_blank_lines(&lines, ends_with_newline)
+                {
+                    let mut diag = self.diagnostic(
+                        source,
+                        first_blank_line,
+                        0,
+                        "Trailing blank line detected.".to_string(),
+                    );
+                    if let Some(ref mut corr) = corrections {
+                        if let Some(start) = source.line_col_to_offset(first_blank_line, 0) {
+                            corr.push(crate::correction::Correction {
+                                start,
+                                end: bytes.len(),
+                                replacement: String::new(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+                    }
+                    diagnostics.push(diag);
+                    return;
+                }
+
+                if !ends_with_newline {
                     let line_count = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
                     let mut diag = self.diagnostic(
                         source,
@@ -86,34 +150,6 @@ impl Cop for TrailingEmptyLines {
                             start: bytes.len(),
                             end: bytes.len(),
                             replacement: "\n".to_string(),
-                            cop_name: self.name(),
-                            cop_index: 0,
-                        });
-                        diag.corrected = true;
-                    }
-                    diagnostics.push(diag);
-                }
-
-                // Check for trailing blank lines (content ends with \n\n)
-                if bytes.len() >= 2 && bytes[bytes.len() - 2] == b'\n' {
-                    let mut end = bytes.len() - 1;
-                    while end > 0 && bytes[end - 1] == b'\n' {
-                        end -= 1;
-                    }
-                    let line_num = bytes[..end].iter().filter(|&&b| b == b'\n').count() + 2;
-                    let mut diag = self.diagnostic(
-                        source,
-                        line_num,
-                        0,
-                        "Trailing blank line detected.".to_string(),
-                    );
-                    if let Some(ref mut corr) = corrections {
-                        // Delete from first extra \n to end, keeping exactly one \n
-                        // end points to the byte after the last content newline
-                        corr.push(crate::correction::Correction {
-                            start: end + 1,
-                            end: bytes.len(),
-                            replacement: String::new(),
                             cop_name: self.name(),
                             cop_index: 0,
                         });
@@ -137,6 +173,7 @@ mod tests {
         missing_newline = "missing_newline.rb",
         trailing_blank = "trailing_blank.rb",
         multiple_trailing = "multiple_trailing.rb",
+        whitespace_trailing = "whitespace_trailing.rb",
     );
 
     #[test]
