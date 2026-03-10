@@ -4,3 +4,11 @@ items.each do |x|
 end
 items.map { |item| item.to_s }
 [1, 2].each { |i| i + 1 }
+foo { | | }
+
+items.each do |
+  x,
+  y
+|
+  puts x
+end
