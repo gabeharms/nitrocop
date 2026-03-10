@@ -4,15 +4,16 @@ use crate::parse::source::SourceFile;
 
 /// ## Corpus investigation (2026-03-10)
 ///
-/// Cached corpus artifact run `22919311621` reported FP=1, FN=0 on
-/// `simplecov-ruby__simplecov__522dc7d/spec/fixtures/iso-8859.rb`.
+/// Corpus artifact run `22919311621` reported FP=1, FN=0 on
+/// `simplecov-ruby__simplecov__522dc7d/spec/fixtures/iso-8859.rb`, a file that
+/// starts with a blank line and then contains non-UTF-8 bytes without any magic
+/// encoding comment.
 ///
-/// That file is explicitly excluded by the repo root `.rubocop.yml`, so the
-/// cached demotion appears to be stale artifact data rather than a current cop
-/// behavior bug. A fresh local acceptance rerun (`scripts/check-cop.py
-/// Layout/LeadingEmptyLines --verbose --rerun`) produced FP=0 and only 2
-/// remaining FN overall (`expected=662`, `actual=660`), so no logic change was
-/// applied in this batch.
+/// A local aggregate rerun (`expected=662`, `actual=660`) did not isolate that
+/// example and therefore was not strong enough to declare the FP gone: net
+/// counts can hide offsetting FP/FN. Treat the non-UTF-8 no-encoding case as a
+/// real compatibility gap until the cop explicitly skips files RuboCop would
+/// reject for encoding reasons.
 pub struct LeadingEmptyLines;
 
 impl Cop for LeadingEmptyLines {
@@ -31,6 +32,10 @@ impl Cop for LeadingEmptyLines {
         diagnostics: &mut Vec<Diagnostic>,
         mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        if skip_for_invalid_utf8_without_magic_encoding(source) {
+            return;
+        }
+
         let bytes = source.as_bytes();
         if bytes.is_empty() {
             return;
@@ -68,6 +73,26 @@ impl Cop for LeadingEmptyLines {
         }
         diagnostics.push(diag);
     }
+}
+
+fn skip_for_invalid_utf8_without_magic_encoding(source: &SourceFile) -> bool {
+    if std::str::from_utf8(source.as_bytes()).is_ok() {
+        return false;
+    }
+    !has_magic_encoding_comment(source.as_bytes())
+}
+
+fn has_magic_encoding_comment(source: &[u8]) -> bool {
+    for line in source.split(|&b| b == b'\n').take(2) {
+        let lower = String::from_utf8_lossy(line).to_ascii_lowercase();
+        if lower.contains("coding:") || lower.contains("coding=") {
+            return true;
+        }
+        if lower.contains("encoding:") || lower.contains("encoding=") {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -163,5 +188,29 @@ mod tests {
         let cs = crate::correction::CorrectionSet::from_vec(corrections);
         let corrected = cs.apply(input);
         assert_eq!(corrected, b"x = 1\n");
+    }
+
+    #[test]
+    fn ignores_non_utf8_source_without_magic_encoding() {
+        let source =
+            SourceFile::from_bytes("test.rb", b"\n# localized to Espa\xf1ol thus:\n".to_vec());
+        let mut diags = Vec::new();
+        LeadingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert!(
+            diags.is_empty(),
+            "non-UTF8 source without magic encoding should be ignored"
+        );
+    }
+
+    #[test]
+    fn non_utf8_source_with_magic_encoding_still_registers_offense() {
+        let source = SourceFile::from_bytes(
+            "test.rb",
+            b"\n# encoding: iso-8859-1\n# localized to Espa\xf1ol thus:\n".to_vec(),
+        );
+        let mut diags = Vec::new();
+        LeadingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].location.line, 2);
     }
 }
