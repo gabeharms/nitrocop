@@ -1,6 +1,6 @@
 use crate::cop::node_type::{
-    CLASS_VARIABLE_WRITE_NODE, DEF_NODE, GLOBAL_VARIABLE_WRITE_NODE, INSTANCE_VARIABLE_WRITE_NODE,
-    LOCAL_VARIABLE_WRITE_NODE,
+    BLOCK_NODE, CLASS_VARIABLE_WRITE_NODE, DEF_NODE, GLOBAL_VARIABLE_WRITE_NODE,
+    INSTANCE_VARIABLE_WRITE_NODE, LAMBDA_NODE, LOCAL_VARIABLE_READ_NODE, LOCAL_VARIABLE_WRITE_NODE,
 };
 use crate::cop::util::is_snake_case;
 use crate::cop::{Cop, CopConfig};
@@ -16,6 +16,24 @@ use crate::parse::source::SourceFile;
 /// Fixed by adding InstanceVariableWriteNode, ClassVariableWriteNode,
 /// GlobalVariableWriteNode, and DefNode (for parameters) handling.
 /// Also fixed AllowedPatterns to use regex matching instead of substring.
+///
+/// ## Corpus investigation (2026-03-10)
+///
+/// Corpus oracle reported FP=823, FN=2301.
+///
+/// FP=823: RuboCop's `on_gvasgn` only checks forbidden names on global
+/// variables, NOT naming style. Fixed by skipping style check for globals.
+///
+/// FN=~2000: RuboCop has `alias on_lvar on_lvasgn` — it flags local
+/// variable READS as well as writes. Fixed by adding LocalVariableReadNode.
+///
+/// FN: RuboCop handles block args via `alias on_blockarg on_lvasgn`.
+/// Block params (`{ |fooBar| }`) were not checked. Fixed by adding
+/// BlockNode/LambdaNode parameter handling.
+///
+/// FN: RuboCop checks underscore-prefixed variables like `_myLocal` for
+/// style violations. Only bare `_` is skipped. Fixed by removing the
+/// underscore-prefix skip.
 pub struct VariableName;
 
 impl Cop for VariableName {
@@ -26,10 +44,13 @@ impl Cop for VariableName {
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             LOCAL_VARIABLE_WRITE_NODE,
+            LOCAL_VARIABLE_READ_NODE,
             INSTANCE_VARIABLE_WRITE_NODE,
             CLASS_VARIABLE_WRITE_NODE,
             GLOBAL_VARIABLE_WRITE_NODE,
             DEF_NODE,
+            BLOCK_NODE,
+            LAMBDA_NODE,
         ]
     }
 
@@ -48,22 +69,48 @@ impl Cop for VariableName {
             return;
         }
 
-        // Extract variable name and location based on node type
-        let (raw_name, start_offset) = if let Some(n) = node.as_local_variable_write_node() {
-            (n.name().as_slice(), n.name_loc().start_offset())
-        } else if let Some(n) = node.as_instance_variable_write_node() {
-            (n.name().as_slice(), n.name_loc().start_offset())
-        } else if let Some(n) = node.as_class_variable_write_node() {
-            (n.name().as_slice(), n.name_loc().start_offset())
-        } else if let Some(n) = node.as_global_variable_write_node() {
-            (n.name().as_slice(), n.name_loc().start_offset())
-        } else {
+        // Handle BlockNode/LambdaNode for block parameters
+        if let Some(block_node) = node.as_block_node() {
+            self.check_block_parameters(source, block_node, config, diagnostics);
             return;
-        };
+        }
+        if let Some(lambda_node) = node.as_lambda_node() {
+            if let Some(params) = lambda_node.parameters() {
+                if let Some(block_params) = params.as_block_parameters_node() {
+                    if let Some(params_node) = block_params.parameters() {
+                        self.check_params_node(source, params_node, config, diagnostics);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Handle LocalVariableReadNode
+        if let Some(n) = node.as_local_variable_read_node() {
+            let name = n.name().as_slice();
+            let name_str = std::str::from_utf8(name).unwrap_or("");
+            let (line, column) = source.offset_to_line_col(n.location().start_offset());
+            self.check_variable_name(source, name_str, line, column, config, diagnostics);
+            return;
+        }
+
+        // Extract variable name and location based on node type
+        let (raw_name, start_offset, is_global) =
+            if let Some(n) = node.as_local_variable_write_node() {
+                (n.name().as_slice(), n.name_loc().start_offset(), false)
+            } else if let Some(n) = node.as_instance_variable_write_node() {
+                (n.name().as_slice(), n.name_loc().start_offset(), false)
+            } else if let Some(n) = node.as_class_variable_write_node() {
+                (n.name().as_slice(), n.name_loc().start_offset(), false)
+            } else if let Some(n) = node.as_global_variable_write_node() {
+                (n.name().as_slice(), n.name_loc().start_offset(), true)
+            } else {
+                return;
+            };
 
         let raw_name_str = std::str::from_utf8(raw_name).unwrap_or("");
 
-        // Strip prefixes to get the bare variable name for style checking
+        // Strip prefixes to get the bare variable name
         let var_name_str = raw_name_str
             .strip_prefix("@@")
             .or_else(|| raw_name_str.strip_prefix('@'))
@@ -71,7 +118,7 @@ impl Cop for VariableName {
             .unwrap_or(raw_name_str);
 
         // Skip special globals ($_, $0, $1, $!, $@, etc.)
-        if raw_name_str.starts_with('$')
+        if is_global
             && (var_name_str.is_empty()
                 || var_name_str == "_"
                 || var_name_str.starts_with(|c: char| c.is_ascii_digit())
@@ -80,18 +127,59 @@ impl Cop for VariableName {
             return;
         }
 
-        // Skip names starting with _ (convention for unused vars)
-        if var_name_str.starts_with('_') {
-            return;
-        }
-
         let (line, column) = source.offset_to_line_col(start_offset);
 
-        self.check_variable_name(source, var_name_str, line, column, config, diagnostics);
+        if is_global {
+            // RuboCop only checks forbidden names on global variables, not style
+            self.check_forbidden_only(source, var_name_str, line, column, config, diagnostics);
+        } else {
+            self.check_variable_name(source, var_name_str, line, column, config, diagnostics);
+        }
     }
 }
 
 impl VariableName {
+    fn check_forbidden_only(
+        &self,
+        source: &SourceFile,
+        var_name_str: &str,
+        line: usize,
+        column: usize,
+        config: &CopConfig,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let forbidden_identifiers = config.get_string_array("ForbiddenIdentifiers");
+        let forbidden_patterns = config.get_string_array("ForbiddenPatterns");
+
+        if let Some(forbidden) = &forbidden_identifiers {
+            if forbidden.iter().any(|f| f == var_name_str) {
+                diagnostics.push(self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    format!("`{var_name_str}` is forbidden, use another variable name instead."),
+                ));
+            }
+        }
+
+        if let Some(patterns) = &forbidden_patterns {
+            for pattern in patterns {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    if re.is_match(var_name_str) {
+                        diagnostics.push(self.diagnostic(
+                            source,
+                            line,
+                            column,
+                            format!(
+                                "`{var_name_str}` is forbidden, use another variable name instead."
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     fn check_variable_name(
         &self,
         source: &SourceFile,
@@ -179,116 +267,79 @@ impl VariableName {
         ));
     }
 
-    fn check_parameters(
+    fn check_block_parameters(
         &self,
         source: &SourceFile,
-        def_node: ruby_prism::DefNode<'_>,
+        block_node: ruby_prism::BlockNode<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        let params = match def_node.parameters() {
+        let params = match block_node.parameters() {
             Some(p) => p,
             None => return,
         };
 
-        // Check required parameters
+        let block_params = match params.as_block_parameters_node() {
+            Some(bp) => bp,
+            None => return,
+        };
+
+        let params_node = match block_params.parameters() {
+            Some(p) => p,
+            None => return,
+        };
+
+        self.check_params_node(source, params_node, config, diagnostics);
+    }
+
+    fn check_params_node(
+        &self,
+        source: &SourceFile,
+        params: ruby_prism::ParametersNode<'_>,
+        config: &CopConfig,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
         for param in params.requireds().iter() {
             if let Some(req) = param.as_required_parameter_node() {
                 let name = req.name().as_slice();
                 let name_str = std::str::from_utf8(name).unwrap_or("");
                 let (line, column) = source.offset_to_line_col(req.location().start_offset());
-                if !name_str.starts_with('_') {
-                    self.check_variable_name(source, name_str, line, column, config, diagnostics);
-                }
+                self.check_variable_name(source, name_str, line, column, config, diagnostics);
             }
         }
 
-        // Check optional parameters
         for param in params.optionals().iter() {
             if let Some(opt) = param.as_optional_parameter_node() {
                 let name = opt.name().as_slice();
                 let name_str = std::str::from_utf8(name).unwrap_or("");
                 let (line, column) = source.offset_to_line_col(opt.name_loc().start_offset());
-                if !name_str.starts_with('_') {
-                    self.check_variable_name(source, name_str, line, column, config, diagnostics);
-                }
+                self.check_variable_name(source, name_str, line, column, config, diagnostics);
             }
         }
 
-        // Check keyword parameters
         for param in params.keywords().iter() {
             if let Some(kw) = param.as_required_keyword_parameter_node() {
                 let name = kw.name().as_slice();
                 let name_str = std::str::from_utf8(name).unwrap_or("");
-                // Strip trailing : from keyword name
                 let clean_name = name_str.strip_suffix(':').unwrap_or(name_str);
                 let (line, column) = source.offset_to_line_col(kw.name_loc().start_offset());
-                if !clean_name.starts_with('_') {
-                    self.check_variable_name(source, clean_name, line, column, config, diagnostics);
-                }
+                self.check_variable_name(source, clean_name, line, column, config, diagnostics);
             }
             if let Some(kw) = param.as_optional_keyword_parameter_node() {
                 let name = kw.name().as_slice();
                 let name_str = std::str::from_utf8(name).unwrap_or("");
                 let clean_name = name_str.strip_suffix(':').unwrap_or(name_str);
                 let (line, column) = source.offset_to_line_col(kw.name_loc().start_offset());
-                if !clean_name.starts_with('_') {
-                    self.check_variable_name(source, clean_name, line, column, config, diagnostics);
-                }
+                self.check_variable_name(source, clean_name, line, column, config, diagnostics);
             }
         }
 
-        // Check rest parameter (*args)
         if let Some(rest) = params.rest() {
             if let Some(rest_param) = rest.as_rest_parameter_node() {
                 if let Some(name) = rest_param.name() {
                     let name_str = std::str::from_utf8(name.as_slice()).unwrap_or("");
                     if let Some(name_loc) = rest_param.name_loc() {
                         let (line, column) = source.offset_to_line_col(name_loc.start_offset());
-                        if !name_str.starts_with('_') {
-                            self.check_variable_name(
-                                source,
-                                name_str,
-                                line,
-                                column,
-                                config,
-                                diagnostics,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check keyword rest parameter (**kwargs)
-        if let Some(kw_rest) = params.keyword_rest() {
-            if let Some(kw_rest_param) = kw_rest.as_keyword_rest_parameter_node() {
-                if let Some(name) = kw_rest_param.name() {
-                    let name_str = std::str::from_utf8(name.as_slice()).unwrap_or("");
-                    if let Some(name_loc) = kw_rest_param.name_loc() {
-                        let (line, column) = source.offset_to_line_col(name_loc.start_offset());
-                        if !name_str.starts_with('_') {
-                            self.check_variable_name(
-                                source,
-                                name_str,
-                                line,
-                                column,
-                                config,
-                                diagnostics,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check block parameter (&block)
-        if let Some(block) = params.block() {
-            if let Some(name) = block.name() {
-                let name_str = std::str::from_utf8(name.as_slice()).unwrap_or("");
-                if let Some(name_loc) = block.name_loc() {
-                    let (line, column) = source.offset_to_line_col(name_loc.start_offset());
-                    if !name_str.starts_with('_') {
                         self.check_variable_name(
                             source,
                             name_str,
@@ -301,6 +352,50 @@ impl VariableName {
                 }
             }
         }
+
+        if let Some(kw_rest) = params.keyword_rest() {
+            if let Some(kw_rest_param) = kw_rest.as_keyword_rest_parameter_node() {
+                if let Some(name) = kw_rest_param.name() {
+                    let name_str = std::str::from_utf8(name.as_slice()).unwrap_or("");
+                    if let Some(name_loc) = kw_rest_param.name_loc() {
+                        let (line, column) = source.offset_to_line_col(name_loc.start_offset());
+                        self.check_variable_name(
+                            source,
+                            name_str,
+                            line,
+                            column,
+                            config,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Some(block) = params.block() {
+            if let Some(name) = block.name() {
+                let name_str = std::str::from_utf8(name.as_slice()).unwrap_or("");
+                if let Some(name_loc) = block.name_loc() {
+                    let (line, column) = source.offset_to_line_col(name_loc.start_offset());
+                    self.check_variable_name(source, name_str, line, column, config, diagnostics);
+                }
+            }
+        }
+    }
+
+    fn check_parameters(
+        &self,
+        source: &SourceFile,
+        def_node: ruby_prism::DefNode<'_>,
+        config: &CopConfig,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let params = match def_node.parameters() {
+            Some(p) => p,
+            None => return,
+        };
+
+        self.check_params_node(source, params, config, diagnostics);
     }
 }
 

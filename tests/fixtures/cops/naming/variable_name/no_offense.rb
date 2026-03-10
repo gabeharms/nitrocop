@@ -13,3 +13,11 @@ $!
 @_unused = nil
 def foo(good_param, name:, _unused:)
 end
+$MY_GLOBAL = 0
+$globalVar = "test"
+$CamelCaseGlobal = true
+$HI = 0
+$LO = 0
+good_var = 1
+do_something(good_var)
+items.each { |item| item }
