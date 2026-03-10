@@ -10,3 +10,11 @@ arr [0]
            ^ Layout/SpaceBeforeBrackets: Remove the space before the opening brackets.
 collection.call(arg) [index]
                     ^ Layout/SpaceBeforeBrackets: Remove the space before the opening brackets.
+value = nil
+value [0] += 1
+     ^ Layout/SpaceBeforeBrackets: Remove the space before the opening brackets.
+value = nil
+value [
+     ^ Layout/SpaceBeforeBrackets: Remove the space before the opening brackets.
+  0
+] += 1
