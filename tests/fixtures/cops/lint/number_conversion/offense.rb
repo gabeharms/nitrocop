@@ -4,3 +4,21 @@
 ^^^^^^^^^^^ Lint/NumberConversion: Replace unsafe number conversion with number class parsing, instead of using `'10.2'.to_f`, use stricter `Float('10.2')`.
 '1/3'.to_r
 ^^^^^^^^^^ Lint/NumberConversion: Replace unsafe number conversion with number class parsing, instead of using `'1/3'.to_r`, use stricter `Rational('1/3')`.
+# Safe navigation should still be flagged
+"10"&.to_i
+^^^^^^^^^^ Lint/NumberConversion: Replace unsafe number conversion with number class parsing, instead of using `"10".to_i`, use stricter `Integer("10", 10)`.
+# Symbol form: map(&:to_i)
+"1,2,3".split(',').map(&:to_i)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/NumberConversion: Replace unsafe number conversion with number class parsing, instead of using `&:to_i`, use stricter `{ |i| Integer(i, 10) }`.
+# Symbol form: try(:to_f)
+"foo".try(:to_f)
+^^^^^^^^^^^^^^^^ Lint/NumberConversion: Replace unsafe number conversion with number class parsing, instead of using `:to_f`, use stricter `{ |i| Float(i) }`.
+# Symbol form: send(:to_c)
+"foo".send(:to_c)
+^^^^^^^^^^^^^^^^^ Lint/NumberConversion: Replace unsafe number conversion with number class parsing, instead of using `:to_c`, use stricter `{ |i| Complex(i) }`.
+# Symbol form without parentheses
+"1,2,3".split(',').map &:to_i
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/NumberConversion: Replace unsafe number conversion with number class parsing, instead of using `&:to_i`, use stricter `{ |i| Integer(i, 10) }`.
+# Symbol form with safe navigation
+"1,2,3".split(',')&.map(&:to_i)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/NumberConversion: Replace unsafe number conversion with number class parsing, instead of using `&:to_i`, use stricter `{ |i| Integer(i, 10) }`.

@@ -6,6 +6,22 @@ use crate::parse::source::SourceFile;
 
 /// Warns about unsafe number conversion using `to_i`, `to_f`, `to_c`, `to_r`.
 /// Prefers strict `Integer()`, `Float()`, etc. Disabled by default.
+///
+/// ## Corpus investigation findings (2026-03-10)
+///
+/// Root causes of 54 FP + 1,567 FN:
+/// - FP: Safe navigation `&.to_i` was incorrectly skipped; RuboCop flags it.
+/// - FN (bulk): Symbol form patterns not handled — `map(&:to_i)`, `try(:to_f)`,
+///   `send(:to_c)` were entirely missing.
+/// - FN: Kernel conversion methods (`Integer`, `Float`, `Complex`, `Rational`)
+///   were not included in the receiver-skip list, potentially causing missed
+///   skips (though this was a minor contributor).
+///
+/// Fixes applied:
+/// 1. Removed the `&.` early return — safe navigation is still an offense.
+/// 2. Added symbol form detection: block-pass `&:to_i` and symbol arg `:to_f`
+///    patterns (for `try`/`send`/etc.) with single-argument guard.
+/// 3. Added Kernel conversion methods to the receiver-call skip list.
 pub struct NumberConversion;
 
 const CONVERSION_METHODS: &[(&[u8], &str)] = &[
@@ -14,6 +30,9 @@ const CONVERSION_METHODS: &[(&[u8], &str)] = &[
     (b"to_c", "Complex(%s)"),
     (b"to_r", "Rational(%s)"),
 ];
+
+/// Kernel conversion method names that should be treated as already-safe receivers.
+const KERNEL_CONVERSION_METHODS: &[&[u8]] = &[b"Integer", b"Float", b"Complex", b"Rational"];
 
 impl Cop for NumberConversion {
     fn name(&self) -> &'static str {
@@ -53,11 +72,29 @@ impl Cop for NumberConversion {
         };
 
         let method_name = call.name().as_slice();
-        let conversion = match CONVERSION_METHODS.iter().find(|(m, _)| *m == method_name) {
-            Some(c) => c,
-            None => return,
-        };
 
+        // Try direct conversion method first (e.g., `x.to_i`)
+        if let Some(conversion) = CONVERSION_METHODS.iter().find(|(m, _)| *m == method_name) {
+            self.handle_direct_conversion(source, node, &call, conversion, config, diagnostics);
+            return;
+        }
+
+        // Try symbol form (e.g., `map(&:to_i)`, `try(:to_f)`, `send(:to_c)`)
+        self.handle_symbol_form(source, node, &call, config, diagnostics);
+    }
+}
+
+impl NumberConversion {
+    /// Handle direct conversion: `receiver.to_i`, `receiver.to_f`, etc.
+    fn handle_direct_conversion(
+        &self,
+        source: &SourceFile,
+        node: &ruby_prism::Node<'_>,
+        call: &ruby_prism::CallNode<'_>,
+        conversion: &(&[u8], &str),
+        config: &CopConfig,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
         // Must have a receiver
         let receiver = match call.receiver() {
             Some(r) => r,
@@ -78,31 +115,18 @@ impl Cop for NumberConversion {
             return;
         }
 
-        // Skip if receiver itself is a conversion method
+        // Skip if receiver itself is a conversion method or Kernel conversion
         if let Some(recv_call) = receiver.as_call_node() {
             let recv_method = recv_call.name().as_slice();
             if CONVERSION_METHODS.iter().any(|(m, _)| *m == recv_method) {
                 return;
             }
+            if KERNEL_CONVERSION_METHODS.contains(&recv_method) {
+                return;
+            }
             // Skip allowed methods from config
-            let allowed = config
-                .get_string_array("AllowedMethods")
-                .unwrap_or_default();
-            let allowed_patterns = config
-                .get_string_array("AllowedPatterns")
-                .unwrap_or_default();
-            if let Ok(name) = std::str::from_utf8(recv_method) {
-                if allowed.iter().any(|a| a == name) {
-                    return;
-                }
-                // Skip if receiver method matches any AllowedPatterns (regex)
-                for pattern in &allowed_patterns {
-                    if let Ok(re) = regex::Regex::new(pattern) {
-                        if re.is_match(name) {
-                            return;
-                        }
-                    }
-                }
+            if self.is_allowed_method(recv_method, config) {
+                return;
             }
         }
 
@@ -114,28 +138,115 @@ impl Cop for NumberConversion {
             return;
         }
 
-        // Safe navigation check: &.to_i is fine
-        if let Some(op) = call.call_operator_loc() {
-            if op.as_slice() == b"&." {
-                return;
-            }
-        }
-
         let recv_src = node_source(source, &receiver);
-        let method_str = std::str::from_utf8(method_name).unwrap_or("to_i");
+        let method_str = std::str::from_utf8(conversion.0).unwrap_or("to_i");
         let corrected = conversion.1.replace("%s", recv_src);
 
-        let loc = call.location();
+        let loc = node.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
         diagnostics.push(self.diagnostic(
             source,
             line,
             column,
             format!(
-                "Replace unsafe number conversion with number class parsing, instead of using `{}.{}`, use stricter `{}`.",
-                recv_src, method_str, corrected
+                "Replace unsafe number conversion with number class parsing, instead of using `{recv_src}.{method_str}`, use stricter `{corrected}`.",
             ),
         ));
+    }
+
+    /// Handle symbol form: `map(&:to_i)`, `try(:to_f)`, `send(:to_c)`, etc.
+    fn handle_symbol_form(
+        &self,
+        source: &SourceFile,
+        node: &ruby_prism::Node<'_>,
+        call: &ruby_prism::CallNode<'_>,
+        _config: &CopConfig,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Must have a receiver
+        if call.receiver().is_none() {
+            return;
+        }
+
+        // Check block-pass form: map(&:to_i)
+        if let Some(block) = call.block() {
+            if let Some(block_arg) = block.as_block_argument_node() {
+                if let Some(expr) = block_arg.expression() {
+                    if let Some(sym) = expr.as_symbol_node() {
+                        let sym_value = sym.unescaped();
+                        if let Some(conversion) =
+                            CONVERSION_METHODS.iter().find(|(m, _)| *m == sym_value)
+                        {
+                            let sym_src = node_source(source, &block);
+                            let corrected =
+                                format!("{{ |i| {} }}", conversion.1.replace("%s", "i"));
+                            let loc = node.location();
+                            let (line, column) = source.offset_to_line_col(loc.start_offset());
+                            diagnostics.push(self.diagnostic(
+                                source,
+                                line,
+                                column,
+                                format!(
+                                    "Replace unsafe number conversion with number class parsing, instead of using `{sym_src}`, use stricter `{corrected}`.",
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // Check symbol argument form: try(:to_f), send(:to_c)
+        // Must have exactly one argument
+        let args = match call.arguments() {
+            Some(a) => a,
+            None => return,
+        };
+        let arg_list: Vec<_> = args.arguments().iter().collect();
+        if arg_list.len() != 1 {
+            return;
+        }
+        let arg = &arg_list[0];
+        if let Some(sym) = arg.as_symbol_node() {
+            let sym_value = sym.unescaped();
+            if let Some(conversion) = CONVERSION_METHODS.iter().find(|(m, _)| *m == sym_value) {
+                let sym_src = node_source(source, arg);
+                let corrected = format!("{{ |i| {} }}", conversion.1.replace("%s", "i"));
+                let loc = node.location();
+                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                diagnostics.push(self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    format!(
+                        "Replace unsafe number conversion with number class parsing, instead of using `{sym_src}`, use stricter `{corrected}`.",
+                    ),
+                ));
+            }
+        }
+    }
+
+    fn is_allowed_method(&self, method_name: &[u8], config: &CopConfig) -> bool {
+        let allowed = config
+            .get_string_array("AllowedMethods")
+            .unwrap_or_default();
+        let allowed_patterns = config
+            .get_string_array("AllowedPatterns")
+            .unwrap_or_default();
+        if let Ok(name) = std::str::from_utf8(method_name) {
+            if allowed.iter().any(|a| a == name) {
+                return true;
+            }
+            for pattern in &allowed_patterns {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    if re.is_match(name) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 }
 

@@ -3,3 +3,17 @@ Float('10.2')
 Complex('10')
 Rational('1/3')
 42.to_i
+42.0.to_f
+# Kernel conversion methods as receivers should be skipped
+Integer(var, 10).to_f
+Float(var).to_i
+Complex(var).to_f
+# Already-converted values: .to_f on result of Integer() is fine
+Integer(var, 10).to_f
+# Symbol form with multiple arguments should not be flagged
+delegate :to_f, to: :description, allow_nil: true
+# IgnoredClasses (defaults: Time, DateTime)
+Time.now.to_i
+Time.now.to_f
+DateTime.new(2012, 8, 29, 22, 35, 0).to_i
+Time.now.to_datetime.to_i
