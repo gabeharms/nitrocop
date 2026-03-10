@@ -72,3 +72,13 @@ def param_encode_language(value = nil)
   value ? @encode_language = value : @encode_language ||= 'en'
                                      ^^^^^^^^^^^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@encode_language` does not match method name `param_encode_language`.
 end
+def set_items exp = nil
+  if exp
+    @items ||= []
+    ^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@items` does not match method name `set_items`.
+    @items.concat [exp]
+  else
+    @items ||= []
+    ^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@items` does not match method name `set_items`.
+  end
+end

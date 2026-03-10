@@ -1,3 +1,5 @@
+use ruby_prism::Visit;
+
 use crate::cop::node_type::{
     CALL_NODE, DEF_NODE, IF_NODE, INSTANCE_VARIABLE_OR_WRITE_NODE, INSTANCE_VARIABLE_WRITE_NODE,
     STATEMENTS_NODE,
@@ -55,9 +57,12 @@ use crate::parse::source::SourceFile;
 /// (b) `get_last_child_or_write` skips `define_method`/`define_singleton_method` blocks
 /// since those create their own method context handled by `check_dynamic_method`.
 ///
-/// FN=1: (brakeman) `@attr_accessible ||= []` — investigated and likely a corpus
-/// run artifact (stale file cache or config resolution). The cop correctly detects
-/// mismatched ||= patterns in all tested configurations.
+/// FN=1: (brakeman) `@attr_accessible ||= []` in if-branch of `set_attr_accessible`.
+/// Root cause: Parser AST uses structural equality for `body.children.last == node`.
+/// When if/else branches contain identical `||=` expressions (same ivar, same RHS),
+/// Parser considers them equal, so RuboCop flags both. Nitrocop only found the else
+/// branch via `get_last_child_or_write`. Fix: after finding a mismatch, scan the
+/// method body for sibling `||=` nodes with the same ivar name and RHS source text.
 pub struct MemoizedInstanceVariableName;
 
 impl MemoizedInstanceVariableName {
@@ -560,6 +565,36 @@ fn extract_defined_memoized_ivar(body_nodes: &[ruby_prism::Node<'_>]) -> Option<
     Some(defined_ivar_base)
 }
 
+/// Visitor that collects all `@ivar ||= value` nodes matching a target ivar name
+/// and value source text. Used to replicate Parser's structural equality: when
+/// `body.children.last` finds an `or_asgn`, Parser's `==` treats any other `or_asgn`
+/// with identical structure as matching, even if at a different position (e.g., the
+/// same `||=` in both if and else branches).
+struct OrWriteCollector<'a> {
+    target_ivar_name: &'a [u8],
+    target_value_src: &'a [u8],
+    /// Offset of the reference node (already flagged — skip it)
+    exclude_offset: usize,
+    /// Offsets of matching sibling nodes
+    sibling_offsets: Vec<usize>,
+}
+
+impl<'pr> Visit<'pr> for OrWriteCollector<'_> {
+    fn visit_instance_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableOrWriteNode<'pr>,
+    ) {
+        if node.location().start_offset() == self.exclude_offset {
+            return;
+        }
+        if node.name().as_slice() == self.target_ivar_name
+            && node.value().location().as_slice() == self.target_value_src
+        {
+            self.sibling_offsets.push(node.name_loc().start_offset());
+        }
+    }
+}
+
 impl Cop for MemoizedInstanceVariableName {
     fn name(&self) -> &'static str {
         "Naming/MemoizedInstanceVariableName"
@@ -687,13 +722,47 @@ impl Cop for MemoizedInstanceVariableName {
         // "children.last" traversal for single-statement bodies.
         if body_nodes.len() == 1 {
             if let Some(or_write) = get_last_child_or_write(last) {
-                diagnostics.extend(self.check_or_write(
+                // Extract values before or_write is moved into check_or_write
+                let ivar_name_bytes = or_write.name().as_slice().to_vec();
+                let value_src = or_write.value().location().as_slice().to_vec();
+                let ref_offset = or_write.location().start_offset();
+                let result = self.check_or_write(
                     source,
                     or_write,
                     base_name,
                     method_name_str,
                     enforced_style,
-                ));
+                );
+                if !result.is_empty() {
+                    diagnostics.extend(result);
+                    // Parser structural equality: scan body for sibling ||= nodes
+                    // with the same ivar name and value source. RuboCop's
+                    // `body.children.last == node` uses Parser's s-expression
+                    // equality, so identical ||= in different branches (e.g.,
+                    // if/else) both match.
+                    let ivar_base = std::str::from_utf8(&ivar_name_bytes)
+                        .unwrap_or("")
+                        .strip_prefix('@')
+                        .unwrap_or("");
+                    let mut collector = OrWriteCollector {
+                        target_ivar_name: &ivar_name_bytes,
+                        target_value_src: &value_src,
+                        exclude_offset: ref_offset,
+                        sibling_offsets: Vec::new(),
+                    };
+                    collector.visit(last);
+                    for offset in collector.sibling_offsets {
+                        let (line, column) = source.offset_to_line_col(offset);
+                        diagnostics.push(self.diagnostic(
+                            source,
+                            line,
+                            column,
+                            format!(
+                                "Memoized variable `@{ivar_base}` does not match method name `{method_name_str}`.",
+                            ),
+                        ));
+                    }
+                }
                 return;
             }
         }
@@ -766,6 +835,21 @@ mod tests {
         );
         let source2 = b"def js_modules\n  @js_modules ||= compute_modules\nend\n";
         assert_cop_no_offenses_full_with_config(&MemoizedInstanceVariableName, source2, config);
+    }
+
+    #[test]
+    fn brakeman_set_attr_accessible_pattern() {
+        // Corpus FN=1: method `set_attr_accessible` with `@attr_accessible ||= []`
+        // in both if and else branches. RuboCop flags BOTH due to Parser structural
+        // equality: the else-branch ||= is body.children.last, and the if-branch ||=
+        // is structurally identical so `body.children.last == node` is true for both.
+        let source = b"def set_attr_accessible exp = nil\n  if exp\n    args = []\n\n    exp.each_arg do |e|\n      if node_type? e, :lit\n        args << e.value\n      elsif hash? e\n        @role_accessible.concat args\n      end\n    end\n\n    @attr_accessible ||= []\n    @attr_accessible.concat args\n  else\n    @attr_accessible ||= []\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&MemoizedInstanceVariableName, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "Should flag both @attr_accessible ||= [] instances (structural equality)"
+        );
     }
 
     #[test]
