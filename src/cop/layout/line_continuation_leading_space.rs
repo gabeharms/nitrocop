@@ -4,25 +4,33 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// FP/FN investigation (2026-03-10): FP=2, FN=1.
+/// ## Corpus investigation (2026-03-10)
 ///
-/// Root causes:
-/// - The old implementation scanned raw source lines globally, so it treated any
-///   `"...\"` + `" ..."` pair as a candidate even when the continued line was
-///   outside the relevant backslash-concatenated string node. This produced FPs
-///   on expressions like `"  " + values.join(...)`.
-/// - Trailing style only treated literal spaces as leading whitespace, but
-///   RuboCop matches generic horizontal whitespace and flags tab-prefixed
-///   continued string fragments too.
+/// Corpus oracle reported FP=0, FN=5.
 ///
-/// Fix:
-/// - Scope checks to `InterpolatedStringNode` traversal like RuboCop's `on_dstr`.
-/// - Mirror RuboCop's continuation guard by skipping backslashes that are inside
-///   multiline child tokens.
-/// - Treat tabs the same as spaces for leading/trailing whitespace detection.
-/// - Skip wrappers used as the receiver of `+` concatenation and mixed-fragment
-///   cases where the previous fragment already ends with in-string whitespace.
-///   Those patterns accounted for the remaining corpus-backed FPs.
+/// Verified FN shapes:
+/// - Interpolated head + one plain continued tail with a leading space on the
+///   second line, e.g. the `fpm`/`elasticsearch-rails` message builders.
+/// - Receiver-of-`+` continuations like `"...\n\n" \ "  " + rows.join(...)`
+///   and the `rails` `" HTTP_FORWARDED=" + ...` chain.
+///
+/// Attempted fix 1 removed the `+`-receiver skip and the mixed-fragment
+/// trailing-style skip. That satisfied the new fixture cases but regressed the
+/// corpus gate: expected 1,174, actual 1,202, raw delta +33, file-drop noise
+/// 21, adjusted excess 12. The new excess concentrated in long interpolated
+/// warning/message chains such as `jsonapi-resources`, `chefspec`, and
+/// `overcommit`, which RuboCop leaves alone.
+///
+/// Attempted fix 2 narrowed the skip using source-line heuristics for those
+/// warning/message chains. That removed the FP regression but over-skipped badly
+/// on the corpus: expected 1,174, actual 844, missing 330. The heuristic
+/// suppressed many legitimate offenses beyond the targeted warning patterns.
+///
+/// Current status: reverted to the pre-investigation logic. A correct fix needs
+/// pair-level node-shape detection that distinguishes the long interpolated
+/// warning/message-chain false-positive family from the genuine receiver-of-`+`
+/// and one-tail false negatives without suppressing unrelated `dstr`
+/// continuations.
 pub struct LineContinuationLeadingSpace;
 
 impl Cop for LineContinuationLeadingSpace {
@@ -85,15 +93,8 @@ impl LineContinuationVisitor<'_> {
             return;
         }
         let parts: Vec<_> = node.parts().iter().collect();
-        let interpolated_head_plain_tail = node.opening_loc().is_none()
-            && parts.len() >= 2
-            && parts[0].as_interpolated_string_node().is_some()
-            && parts[1..]
-                .iter()
-                .all(|part| part.as_string_node().is_some());
         let skip_trailing_style = self.enforced_style != "leading"
-            && interpolated_head_plain_tail
-            && has_trailing_whitespace_before_closing_quote(trim_cr(self.lines[start_line - 1]));
+            && should_skip_trailing_style(node, &parts, trim_cr(self.lines[start_line - 1]));
 
         for idx in 0..end_line.saturating_sub(start_line) {
             let line_num = start_line + idx;
@@ -227,6 +228,20 @@ fn trim_cr(line: &[u8]) -> &[u8] {
 
 fn is_horizontal_whitespace(b: u8) -> bool {
     matches!(b, b' ' | b'\t')
+}
+
+fn should_skip_trailing_style(
+    node: &ruby_prism::InterpolatedStringNode<'_>,
+    parts: &[ruby_prism::Node<'_>],
+    first_line: &[u8],
+) -> bool {
+    node.opening_loc().is_none()
+        && parts.len() >= 2
+        && parts[0].as_interpolated_string_node().is_some()
+        && parts[1..]
+            .iter()
+            .all(|part| part.as_string_node().is_some())
+        && has_trailing_whitespace_before_closing_quote(first_line)
 }
 
 fn has_trailing_whitespace_before_closing_quote(line: &[u8]) -> bool {
