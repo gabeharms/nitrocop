@@ -1,13 +1,22 @@
-use crate::cop::node_type::{
-    CALL_NODE, CONSTANT_PATH_NODE, CONSTANT_READ_NODE, DEF_NODE, OPTIONAL_KEYWORD_PARAMETER_NODE,
-    OPTIONAL_PARAMETER_NODE, REQUIRED_KEYWORD_PARAMETER_NODE, REQUIRED_PARAMETER_NODE,
-    STATEMENTS_NODE,
-};
+use crate::cop::node_type::DEF_NODE;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// Checks for unused method arguments.
+///
+/// ## Root causes of historical FP/FN (corpus 87.3% match rate):
+/// - **FN: block params (`&block`)** were not collected — now handled via `params.block()`
+/// - **FN: keyword rest (`**opts`)** were not collected — now handled via `params.keyword_rest()`
+/// - **FN: post params** (after rest, e.g. `def foo(*a, b)`) were not collected — now handled via `params.posts()`
+/// - **FN: `LocalVariableTargetNode` treated as use** — multi-assignment LHS (`a, b = 1, 2`)
+///   incorrectly prevented flagging parameters that were only assigned to, never read.
+///   Removed from VarReadFinder; only actual reads count.
+/// - **FN: `NotImplementedExceptions` config ignored** — hardcoded `NotImplementedError` instead
+///   of reading from config. Now uses the configured exception list.
+/// - **FN: `LocalVariableOperatorWriteNode`/`AndWriteNode`/`OrWriteNode`** (`a += 1`, `a ||= x`)
+///   implicitly read the variable but weren't detected. Now handled.
 pub struct UnusedMethodArgument;
 
 impl Cop for UnusedMethodArgument {
@@ -20,17 +29,7 @@ impl Cop for UnusedMethodArgument {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[
-            CALL_NODE,
-            CONSTANT_PATH_NODE,
-            CONSTANT_READ_NODE,
-            DEF_NODE,
-            OPTIONAL_KEYWORD_PARAMETER_NODE,
-            OPTIONAL_PARAMETER_NODE,
-            REQUIRED_KEYWORD_PARAMETER_NODE,
-            REQUIRED_PARAMETER_NODE,
-            STATEMENTS_NODE,
-        ]
+        &[DEF_NODE]
     }
 
     fn check_node(
@@ -50,7 +49,7 @@ impl Cop for UnusedMethodArgument {
         let ignore_empty = config.get_bool("IgnoreEmptyMethods", true);
         let ignore_not_implemented = config.get_bool("IgnoreNotImplementedMethods", true);
         let allow_unused_keyword = config.get_bool("AllowUnusedKeywordArguments", false);
-        let _not_implemented_exceptions = config.get_string_array("NotImplementedExceptions");
+        let not_implemented_exceptions = config.get_string_array("NotImplementedExceptions");
 
         let body = match def_node.body() {
             Some(b) => b,
@@ -65,7 +64,9 @@ impl Cop for UnusedMethodArgument {
         };
 
         // Check for not-implemented methods
-        if ignore_not_implemented && is_not_implemented(&body) {
+        if ignore_not_implemented
+            && is_not_implemented(&body, not_implemented_exceptions.as_deref())
+        {
             return;
         }
 
@@ -110,6 +111,17 @@ impl Cop for UnusedMethodArgument {
             }
         }
 
+        // Post parameters (required params after rest, e.g. `def foo(*args, last)`)
+        for post in params.posts().iter() {
+            if let Some(rp) = post.as_required_parameter_node() {
+                param_info.push((
+                    rp.name().as_slice().to_vec(),
+                    rp.location().start_offset(),
+                    false,
+                ));
+            }
+        }
+
         if !allow_unused_keyword {
             for kw in params.keywords().iter() {
                 if let Some(kp) = kw.as_required_keyword_parameter_node() {
@@ -125,6 +137,34 @@ impl Cop for UnusedMethodArgument {
                         true,
                     ));
                 }
+            }
+        }
+
+        // Keyword rest parameter (**opts)
+        if let Some(kwrest) = params.keyword_rest() {
+            if let Some(kp) = kwrest.as_keyword_rest_parameter_node() {
+                if let Some(name_loc) = kp.name_loc() {
+                    let is_keyword = false; // **opts is not a keyword arg for display purposes
+                    param_info.push((
+                        kp.name().map(|n| n.as_slice().to_vec()).unwrap_or_default(),
+                        name_loc.start_offset(),
+                        is_keyword,
+                    ));
+                }
+            }
+        }
+
+        // Block parameter (&block)
+        if let Some(block) = params.block() {
+            if let Some(name_loc) = block.name_loc() {
+                param_info.push((
+                    block
+                        .name()
+                        .map(|n| n.as_slice().to_vec())
+                        .unwrap_or_default(),
+                    name_loc.start_offset(),
+                    false,
+                ));
             }
         }
 
@@ -166,7 +206,7 @@ impl Cop for UnusedMethodArgument {
             return;
         }
 
-        for (name, offset, _is_keyword) in &param_info {
+        for (name, offset, is_keyword) in &param_info {
             // Skip arguments prefixed with _
             if name.starts_with(b"_") {
                 continue;
@@ -176,7 +216,7 @@ impl Cop for UnusedMethodArgument {
             if !finder.names.iter().any(|n| n == name) {
                 let (line, column) = source.offset_to_line_col(*offset);
                 // For keyword args, strip trailing ':'
-                let display_name = if *_is_keyword {
+                let display_name = if *is_keyword {
                     let s = String::from_utf8_lossy(name);
                     s.trim_end_matches(':').to_string()
                 } else {
@@ -193,13 +233,13 @@ impl Cop for UnusedMethodArgument {
     }
 }
 
-fn is_not_implemented(body: &ruby_prism::Node<'_>) -> bool {
+fn is_not_implemented(body: &ruby_prism::Node<'_>, exceptions: Option<&[String]>) -> bool {
     // Check if body is a single `raise NotImplementedError` or `fail "..."` statement
     let stmts = match body.as_statements_node() {
         Some(s) => s,
         None => {
             // Could be a direct call node
-            return check_not_implemented_call(body);
+            return check_not_implemented_call(body, exceptions);
         }
     };
 
@@ -208,40 +248,93 @@ fn is_not_implemented(body: &ruby_prism::Node<'_>) -> bool {
         return false;
     }
 
-    check_not_implemented_call(&body_nodes[0])
+    check_not_implemented_call(&body_nodes[0], exceptions)
 }
 
-fn check_not_implemented_call(node: &ruby_prism::Node<'_>) -> bool {
+fn check_not_implemented_call(node: &ruby_prism::Node<'_>, exceptions: Option<&[String]>) -> bool {
     let call = match node.as_call_node() {
         Some(c) => c,
         None => return false,
     };
 
-    let name = call.name().as_slice();
+    let method_name = call.name().as_slice();
     if call.receiver().is_some() {
         return false;
     }
 
-    if name == b"raise" {
-        // Check if argument is NotImplementedError
+    if method_name == b"raise" {
         if let Some(args) = call.arguments() {
             let arg_list: Vec<_> = args.arguments().iter().collect();
             if !arg_list.is_empty() {
-                if let Some(c) = arg_list[0].as_constant_read_node() {
-                    return c.name().as_slice() == b"NotImplementedError";
-                }
-                // Also handle qualified constant like ::NotImplementedError
-                if let Some(cp) = arg_list[0].as_constant_path_node() {
-                    if let Some(name) = cp.name() {
-                        return name.as_slice() == b"NotImplementedError";
-                    }
-                }
+                return is_allowed_exception(&arg_list[0], exceptions);
             }
         }
+        // `raise` with no arguments is also a "not implemented" pattern
         false
     } else {
-        name == b"fail"
+        method_name == b"fail"
     }
+}
+
+/// Check if a node is an allowed exception class for NotImplementedExceptions config.
+/// Default allowed classes: ["NotImplementedError"].
+fn is_allowed_exception(node: &ruby_prism::Node<'_>, exceptions: Option<&[String]>) -> bool {
+    let const_name = if let Some(c) = node.as_constant_read_node() {
+        String::from_utf8_lossy(c.name().as_slice()).to_string()
+    } else if let Some(cp) = node.as_constant_path_node() {
+        // Handle qualified constants like ::NotImplementedError or Library::AbstractMethodError
+        // Reconstruct the full constant path name
+        extract_constant_path_name(&cp)
+    } else {
+        return false;
+    };
+
+    match exceptions {
+        Some(allowed) => {
+            if allowed.is_empty() {
+                // Empty config: only default NotImplementedError
+                const_name == "NotImplementedError" || const_name == "::NotImplementedError"
+            } else {
+                // Check against configured exceptions, allowing :: prefix
+                allowed.iter().any(|exc| {
+                    const_name == *exc
+                        || const_name == format!("::{exc}")
+                        || format!("::{const_name}") == *exc
+                })
+            }
+        }
+        None => {
+            // No config: default to NotImplementedError
+            const_name == "NotImplementedError" || const_name == "::NotImplementedError"
+        }
+    }
+}
+
+/// Extract the full constant path name, e.g., "Foo::Bar" or "::Foo::Bar"
+fn extract_constant_path_name(cp: &ruby_prism::ConstantPathNode<'_>) -> String {
+    let mut parts = Vec::new();
+    let mut has_root = false;
+
+    // Get the child name
+    if let Some(name) = cp.name() {
+        parts.push(String::from_utf8_lossy(name.as_slice()).to_string());
+    }
+
+    // Walk up the parent chain
+    if let Some(parent) = cp.parent() {
+        if let Some(parent_cp) = parent.as_constant_path_node() {
+            let parent_name = extract_constant_path_name(&parent_cp);
+            return format!("{parent_name}::{}", parts.first().unwrap_or(&String::new()));
+        } else if let Some(cr) = parent.as_constant_read_node() {
+            parts.insert(0, String::from_utf8_lossy(cr.name().as_slice()).to_string());
+        }
+    } else {
+        // No parent means root-level (::Foo)
+        has_root = true;
+    }
+
+    let path = parts.join("::");
+    if has_root { format!("::{path}") } else { path }
 }
 
 struct VarReadFinder {
@@ -255,12 +348,31 @@ impl<'pr> Visit<'pr> for VarReadFinder {
         self.names.push(node.name().as_slice().to_vec());
     }
 
-    // Also check for local variable usage as call receiver or in other contexts
-    fn visit_local_variable_target_node(
+    // Compound assignment operators (+=, -=, etc.) implicitly read the variable
+    fn visit_local_variable_operator_write_node(
         &mut self,
-        node: &ruby_prism::LocalVariableTargetNode<'pr>,
+        node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
     ) {
         self.names.push(node.name().as_slice().to_vec());
+        ruby_prism::visit_local_variable_operator_write_node(self, node);
+    }
+
+    // `a &&= b` implicitly reads `a`
+    fn visit_local_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
+    ) {
+        self.names.push(node.name().as_slice().to_vec());
+        ruby_prism::visit_local_variable_and_write_node(self, node);
+    }
+
+    // `a ||= b` implicitly reads `a`
+    fn visit_local_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableOrWriteNode<'pr>,
+    ) {
+        self.names.push(node.name().as_slice().to_vec());
+        ruby_prism::visit_local_variable_or_write_node(self, node);
     }
 
     // Bare `super` (no args, no parens) implicitly forwards all method arguments
@@ -279,14 +391,75 @@ impl<'pr> Visit<'pr> for VarReadFinder {
         ruby_prism::visit_call_node(self, node);
     }
 
-    // Don't recurse into nested def/class/module (they have their own scope)
+    // Don't recurse into nested def/class/module/sclass (they have their own scope)
     fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
     fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
     fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+    fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(UnusedMethodArgument, "cops/lint/unused_method_argument");
+
+    #[test]
+    fn test_block_param_unused() {
+        // &block parameter that is unused should be flagged
+        let diags = crate::testutil::run_cop_full(
+            &UnusedMethodArgument,
+            b"def foo(a, &block)\n  puts a\nend\n",
+        );
+        let names: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            names.iter().any(|m| m.contains("block")),
+            "Expected offense for unused &block, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_kwrest_param_unused() {
+        // **opts parameter that is unused should be flagged
+        let diags = crate::testutil::run_cop_full(
+            &UnusedMethodArgument,
+            b"def foo(a, **opts)\n  puts a\nend\n",
+        );
+        let names: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            names.iter().any(|m| m.contains("opts")),
+            "Expected offense for unused **opts, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_post_param_unused() {
+        // post parameter (after rest) that is unused should be flagged
+        let diags = crate::testutil::run_cop_full(
+            &UnusedMethodArgument,
+            b"def foo(*args, last)\n  args.first\nend\n",
+        );
+        let names: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            names.iter().any(|m| m.contains("last")),
+            "Expected offense for unused post param 'last', got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_multi_assign_target_not_used() {
+        // Multi-assignment target should NOT count as a use of the parameter
+        let diags = crate::testutil::run_cop_full(
+            &UnusedMethodArgument,
+            b"def foo(a, b)\n  a, b = 1, 2\nend\n",
+        );
+        assert!(
+            diags.len() >= 2,
+            "Expected 2 offenses for multi-assign only, got: {} ({:?})",
+            diags.len(),
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 }

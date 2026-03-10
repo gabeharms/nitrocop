@@ -45,3 +45,61 @@ end
 def render_icon(name, class: nil, **options)
   binding.local_variable_get(:class)
 end
+
+# block parameter used
+def with_block(a, &block)
+  block.call(a)
+end
+
+# keyword rest parameter used
+def with_kwrest(a, **opts)
+  do_something(a, opts)
+end
+
+# post parameter used
+def with_post(*args, last)
+  args.push(last)
+end
+
+# swap-assigned (both variables read)
+def swap(a, b)
+  a, b = b, a
+end
+
+# compound assignment reads the variable (a += 1 reads a)
+def compound_assign(count)
+  count += 1
+  count
+end
+
+# or-assign reads the variable
+def or_assign(value)
+  value ||= "default"
+  value
+end
+
+# and-assign reads the variable
+def and_assign(flag)
+  flag &&= validate(flag)
+  flag
+end
+
+# underscore-prefixed block param is fine
+def with_underscore_block(_a, &_block)
+  42
+end
+
+# anonymous rest/block (no name) should not flag
+def anonymous_rest(*)
+  42
+end
+
+# raise NotImplementedError with message (still not-implemented)
+def not_impl_with_msg(arg)
+  raise NotImplementedError, "not yet"
+end
+
+# fail without message (still not-implemented)
+def fail_bare(arg)
+  fail
+end
