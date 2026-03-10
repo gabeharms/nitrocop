@@ -3,6 +3,10 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Corpus: 5 FPs from bare `raise RuntimeError.new` (no args to `.new`).
+/// RuboCop only flags Pattern 2 when `.new(...)` has arguments — the "replacement"
+/// for bare `.new` would be `raise ""` or `raise` which have different semantics.
+/// Fix: check `new_call.arguments().is_some()` before flagging Pattern 2.
 pub struct RedundantException;
 
 impl RedundantException {
@@ -75,9 +79,10 @@ impl Cop for RedundantException {
         }
 
         // Pattern 2: raise RuntimeError.new("message") (1 arg that's a call to .new on RuntimeError)
+        // Only flag when .new has arguments — bare `RuntimeError.new` (no args) is not redundant.
         if arg_list.len() == 1 {
             if let Some(new_call) = arg_list[0].as_call_node() {
-                if new_call.name().as_slice() == b"new" {
+                if new_call.name().as_slice() == b"new" && new_call.arguments().is_some() {
                     if let Some(receiver) = new_call.receiver() {
                         if Self::is_runtime_error(&receiver) {
                             let loc = call_node.location();

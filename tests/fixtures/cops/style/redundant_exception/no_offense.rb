@@ -7,3 +7,7 @@ raise OtherError, "message"
 raise RuntimeError, "message", caller
 
 raise ArgumentError.new("oops")
+
+raise RuntimeError.new
+
+fail RuntimeError.new
