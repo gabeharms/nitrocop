@@ -18,6 +18,14 @@ use crate::parse::source::SourceFile;
 /// `primary_key` method call. Nitrocop only handled bare `primary_key` as a symbol-like
 /// argument, not as a hash key. Fix: when processing single-pair hashes, also check if
 /// the key is a CallNode with method `primary_key`.
+///
+/// ## Corpus investigation (2026-03-10)
+///
+/// Corpus oracle reported FP=2, FN=0.
+///
+/// FP=2: Both from safe navigation chains (`&.order(:id)` and `&.order(id: :asc)`).
+/// RuboCop's pattern uses `(send _ :order ...)` which excludes `csend` (safe navigation).
+/// Fixed by checking `call_operator_loc()` for `&.` and skipping.
 pub struct OrderById;
 
 impl Cop for OrderById {
@@ -52,6 +60,15 @@ impl Cop for OrderById {
         };
 
         if call.name().as_slice() != b"order" {
+            return;
+        }
+
+        // RuboCop uses (send _ :order ...) which excludes csend (safe navigation).
+        // Skip &.order(:id) chains.
+        if call
+            .call_operator_loc()
+            .is_some_and(|op| op.as_slice() == b"&.")
+        {
             return;
         }
 
