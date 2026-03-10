@@ -147,3 +147,25 @@ def unlock
     end
   end
 end
+
+# Parenthesized comparison in || chain — RuboCop's Parser gem wraps
+# parens as :begin nodes that are NOT recognized by boolean_return?
+def success_from(r)
+  (r[:a] == '0') || (r[:b] == '1')
+end
+
+# Parenthesized expression on one side of ||
+def check_status(a, b)
+  (a == 1) || b == 2
+end
+
+# Parenthesized and-chain inside or-chain
+def compare_values(existing, latest)
+  existing.value != latest[:value] ||
+    (!latest[:locked].nil? && existing.locked != latest[:locked])
+end
+
+# Parenthesized or-chain inside and-chain
+def email_oauth_enabled
+  @inbox.inbox_type == 'Email' && (@channel.microsoft? || @channel.google?)
+end

@@ -140,15 +140,3 @@ def check_not
   (!disabled?)
 end
 
-# Parenthesized boolean in larger and-chain
-def compare_values(existing, latest)
-    ^^^^^^^^^^^^^^ Naming/PredicateMethod: Predicate method names should end with `?`.
-  existing.value != latest[:value] ||
-    (!latest[:locked].nil? && existing.locked != latest[:locked])
-end
-
-# Parenthesized or in and chain
-def email_oauth_enabled
-    ^^^^^^^^^^^^^^^^^^^^ Naming/PredicateMethod: Predicate method names should end with `?`.
-  @inbox.inbox_type == 'Email' && (@channel.microsoft? || @channel.google?)
-end

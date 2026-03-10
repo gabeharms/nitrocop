@@ -48,6 +48,19 @@ use crate::parse::source::SourceFile;
 /// Remaining FP=1, FN=~15 may be due to other edge cases (e.g., ForNode
 /// not handled as conditional, or config resolution differences). Further
 /// investigation would need corpus example locations.
+///
+/// ## Parenthesized and/or FP fix (2026-03-10, FP=62→0)
+///
+/// Root cause: In RuboCop's Parser gem, parenthesized expressions in ||/&&
+/// chains create :begin wrapper nodes. `extract_and_or_clauses` returns these
+/// :begin nodes as-is (NOT unwrapped), and `boolean_return?` / `call_type?`
+/// do not recognize :begin nodes. So `(a == 1) || (b == 2)` is NOT flagged.
+///
+/// In Prism, `collect_implicit_return` was unwrapping ParenthesesNode and
+/// recursing, exposing the inner boolean comparisons. Fix: added
+/// `collect_and_or_leaves()` which decomposes nested and/or chains but treats
+/// ParenthesesNode leaves as Opaque instead of unwrapping them. Top-level
+/// ParenthesesNode (not inside and/or) is still unwrapped normally.
 pub struct PredicateMethod;
 
 const MSG_PREDICATE: &str = "Predicate method names should end with `?`.";
@@ -548,15 +561,11 @@ fn collect_implicit_return(
         return;
     }
 
-    // AndNode / OrNode -- recurse into both sides
-    if let Some(and_node) = node.as_and_node() {
-        collect_implicit_return(&and_node.left(), returns, wayward);
-        collect_implicit_return(&and_node.right(), returns, wayward);
-        return;
-    }
-    if let Some(or_node) = node.as_or_node() {
-        collect_implicit_return(&or_node.left(), returns, wayward);
-        collect_implicit_return(&or_node.right(), returns, wayward);
+    // AndNode / OrNode -- decompose via collect_and_or_leaves, which treats
+    // ParenthesesNode leaves as Opaque (matching RuboCop's Parser gem behavior
+    // where :begin wrappers from parens are not unwrapped by extract_and_or_clauses).
+    if node.as_and_node().is_some() || node.as_or_node().is_some() {
+        collect_and_or_leaves(node, returns, wayward);
         return;
     }
 
@@ -606,6 +615,28 @@ fn collect_implicit_return(
 
     // Leaf node: classify directly.
     returns.push(classify_node(node, wayward));
+}
+
+/// Decompose nested and/or chains into leaf return types.
+/// ParenthesesNode leaves are treated as Opaque (matching RuboCop's Parser gem
+/// where :begin wrappers from parentheses are not unwrapped by
+/// extract_and_or_clauses, and are not recognized by boolean_return? or call_type?).
+fn collect_and_or_leaves(
+    node: &ruby_prism::Node<'_>,
+    returns: &mut Vec<ReturnType>,
+    wayward: &[String],
+) {
+    if let Some(or_node) = node.as_or_node() {
+        collect_and_or_leaves(&or_node.left(), returns, wayward);
+        collect_and_or_leaves(&or_node.right(), returns, wayward);
+    } else if let Some(and_node) = node.as_and_node() {
+        collect_and_or_leaves(&and_node.left(), returns, wayward);
+        collect_and_or_leaves(&and_node.right(), returns, wayward);
+    } else if node.as_parentheses_node().is_some() {
+        returns.push(ReturnType::Opaque);
+    } else {
+        returns.push(classify_node(node, wayward));
+    }
 }
 
 /// Classify a single node as a ReturnType.
