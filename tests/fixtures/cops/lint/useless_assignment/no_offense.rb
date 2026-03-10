@@ -209,3 +209,126 @@ describe "deep nesting" do
     end
   end
 end
+
+# Reassigned in single-branch if, referenced after branching
+def reassign_in_branch(flag)
+  foo = 1
+  if flag
+    foo = 2
+  end
+  foo
+end
+
+# Assigned in each branch and referenced after
+def assign_both_branches(flag)
+  if flag
+    foo = 2
+  else
+    foo = 3
+  end
+  foo
+end
+
+# Variable reassigned at end of loop body, referenced in next iteration
+def loop_reassign
+  total = 0
+  foo = 0
+  while total < 100
+    total += foo
+    foo += 1
+  end
+  total
+end
+
+# Variable referenced in loop condition
+def loop_condition_ref
+  foo = 0
+  while foo < 100
+    foo += 1
+  end
+end
+
+# Assignment in if branch referenced in another if branch
+def cross_branch_ref(flag_a, flag_b)
+  if flag_a
+    foo = 1
+  end
+  if flag_b
+    puts foo
+  end
+end
+
+# Reassigned in a block (block may not execute)
+def reassign_in_block
+  foo = 1
+  puts foo
+  1.times do
+    foo = 2
+  end
+end
+
+# Variable assigned in branch and referenced after
+def branch_then_read(flag)
+  foo = 1
+  if flag
+    foo = 2
+  end
+  foo
+end
+
+# For loop variable that IS referenced
+for item in items
+  do_something(item)
+end
+
+# Variable assigned in modifier condition and read
+def modifier_condition
+  a = nil
+  puts a if (a = 123)
+end
+
+# Variable used in loop condition (while)
+def while_condition
+  line = gets
+  while line
+    process(line)
+    line = gets
+  end
+end
+
+# Unreferenced variable reassigned in block (block may run multiple times)
+def const_name(node)
+  const_names = []
+  const_node = node
+  loop do
+    namespace_node, name = *const_node
+    const_names << name
+    break unless namespace_node
+    break if namespace_node.type == :cbase
+    const_node = namespace_node
+  end
+  const_names.reverse.join('::')
+end
+
+# Variable reassigned in a loop body, used in next iteration
+def reassign_in_while
+  ret = 1
+  param = 0
+  while param < 40
+    param += 2
+    ret = param + 1
+  end
+  ret
+end
+
+# Assigning in branch with block
+def assign_in_branch_with_block
+  changed = false
+  if Random.rand > 1
+    changed = true
+  end
+  [].each do
+    changed = true
+  end
+  puts changed
+end

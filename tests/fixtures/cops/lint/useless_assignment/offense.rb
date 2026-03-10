@@ -79,3 +79,87 @@ describe "outer" do
     end
   end
 end
+
+# Reassigned after read — the last assignment is useless
+def reassigned_after_read
+  foo = 1
+  puts foo
+  foo = 3
+  ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+end
+
+# First assignment overwritten before read
+def overwritten_before_read
+  foo = 1
+  ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+  foo = 3
+  puts foo
+end
+
+# Multiple reassignments, all but last read are useless
+def multiple_reassign
+  foo = 1
+  ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+  bar = 2
+  foo = 3
+  ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+  puts bar
+end
+
+# Top-level useless assignment
+foo = 1
+^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+bar = 2
+puts bar
+
+# Assignment in single-branch if, unreferenced
+def single_branch_if(flag)
+  if flag
+    foo = 1
+    ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+  end
+end
+
+# Assignment in if branch unreferenced, else branch also unreferenced
+def both_branches_unused(flag)
+  if flag
+    foo = 2
+    ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+  else
+    foo = 3
+    ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+  end
+end
+
+# Useless assignment in loop body
+def useless_in_loop
+  while true
+    foo = 1
+    ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+  end
+end
+
+# Reassigned in same branch — first is useless
+def reassigned_same_branch(flag)
+  if flag
+    foo = 1
+    ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+    foo = 2
+  end
+  foo
+end
+
+# Unreferenced assignment before reassignment in if branch
+def useless_before_branch_reassign(flag)
+  foo = 1
+  ^^^ Lint/UselessAssignment: Useless assignment to variable - `foo`.
+  if flag
+    foo = 2
+    puts foo
+  end
+end
+
+# For loop variable unreferenced
+for item in items
+    ^^^^ Lint/UselessAssignment: Useless assignment to variable - `item`.
+end
