@@ -168,3 +168,64 @@ Payload = Data.define(:id, :name) do
   a29 = 29
   a30 = 30
 end
+
+# Block with rescue: 22 body lines + rescue + 2 handler lines = 25 total.
+# Prism's BeginNode location starts at the opening keyword (do), not the
+# first body statement. Must use statements().start_offset() to avoid
+# overcounting the opening line.
+items.each do |x|
+  x1 = 1
+  x2 = 2
+  x3 = 3
+  x4 = 4
+  x5 = 5
+  x6 = 6
+  x7 = 7
+  x8 = 8
+  x9 = 9
+  x10 = 10
+  x11 = 11
+  x12 = 12
+  x13 = 13
+  x14 = 14
+  x15 = 15
+  x16 = 16
+  x17 = 17
+  x18 = 18
+  x19 = 19
+  x20 = 20
+  x21 = 21
+  x22 = 22
+rescue StandardError => e
+  log(e)
+  raise
+end
+
+# Block with ensure: 23 body lines + ensure + cleanup = 25 total.
+items.each do |x|
+  x1 = 1
+  x2 = 2
+  x3 = 3
+  x4 = 4
+  x5 = 5
+  x6 = 6
+  x7 = 7
+  x8 = 8
+  x9 = 9
+  x10 = 10
+  x11 = 11
+  x12 = 12
+  x13 = 13
+  x14 = 14
+  x15 = 15
+  x16 = 16
+  x17 = 17
+  x18 = 18
+  x19 = 19
+  x20 = 20
+  x21 = 21
+  x22 = 22
+  x23 = 23
+ensure
+  cleanup
+end

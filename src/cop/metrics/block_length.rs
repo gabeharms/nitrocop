@@ -110,7 +110,7 @@ use crate::parse::source::SourceFile;
 /// `check-cop.py --rerun` to identify the systematic pattern.
 ///
 /// Other investigated areas that do NOT explain the FN:
-/// - Blocks with rescue/ensure: BeginNode bodies count correctly
+/// - Blocks with rescue/ensure: BeginNode bodies had +1 overcount (fixed 2026-03-10)
 /// - heredoc_descendant_max_line: matches RuboCop's source_from_node_with_heredoc
 ///   for all tested patterns (single heredoc, multiple heredocs, heredoc+code)
 /// - method_receiver_excluded?: not implemented but would cause FP, not FN
@@ -119,20 +119,30 @@ use crate::parse::source::SourceFile;
 ///
 /// ## Corpus investigation (2026-03-10)
 ///
-/// Investigated the 128 FN in depth. Root cause: `--corpus-check` mode's
-/// `AllCops.Exclude` handling. The `strip_prefix(repo_path)` makes file paths
-/// repo-relative (e.g., `bin/foo.rb`), which matches baseline `Exclude`
-/// patterns like `bin/**/*`. On CI, paths are `repos/<repo_id>/bin/foo.rb`
-/// which do NOT match `bin/**/*`, so CI includes those files.
+/// Previous investigation claimed FP=0, FN=0 on CI, but corpus oracle at
+/// 7de25cc2 reported FP=36, FN=0.
 ///
-/// Removing the global exclude check to match CI behavior causes 510 excess
-/// offenses due to file-set differences (local corpus clones have files CI
-/// shallow clones don't). The current behavior (repo-relative exclude) is
-/// slightly more aggressive than CI but compensates for these file-set
-/// differences, keeping the net result close to CI's 0 FP, 0 FN.
+/// Root cause: blocks with `rescue`/`ensure` were overcounted by 1 line.
+/// Prism's `BeginNode` (used for blocks with rescue/ensure) has its
+/// `location().start_offset()` set to the opening keyword (`do`/`def`),
+/// not the first body statement. This caused `body_start_line` to equal
+/// the opening line, making `count_body_lines_ex` include the `do` line
+/// as a body line.
 ///
-/// On the CI corpus oracle: FP=0, FN=0. The 128 local FN are purely a
-/// `--corpus-check` mode artifact, not a cop logic issue.
+/// Additionally, BeginNode's `location().end_offset()` includes the `end`
+/// keyword, which triggered the brace-block closing-line adjustment
+/// (`body_end_line == closing_line`), adding another +1.
+///
+/// Fixes:
+/// - Use `begin_node.statements().start_offset()` for body_start_line
+///   instead of the BeginNode's own start_offset.
+/// - Skip the brace-block closing-line adjustment for BeginNode bodies.
+///
+/// This fixes the systematic +1 overcount (19 of 36 FPs had [26/25]).
+/// Remaining FPs are config resolution issues on CI (Enabled: false,
+/// DisabledByDefault, higher Max) — not cop logic bugs.
+///
+/// Local `check-cop.py --rerun --quick`: excess=0, missing=146.
 pub struct BlockLength;
 
 impl Cop for BlockLength {
@@ -329,7 +339,17 @@ fn count_block_lines(
 
     // Use body start offset to skip heredoc content that appears before body.
     // Same approach as method_length.rs.
-    let (body_start_line, _) = source.offset_to_line_col(body.location().start_offset());
+    //
+    // When the body is a BeginNode (block with rescue/ensure), Prism sets
+    // its location.start_offset to the opening keyword (do/def), not the
+    // first body statement. Use statements().start_offset() instead to
+    // match Parser's kwbegin.body behavior.
+    let body_start_offset = body
+        .as_begin_node()
+        .and_then(|b| b.statements())
+        .map(|s| s.location().start_offset())
+        .unwrap_or_else(|| body.location().start_offset());
+    let (body_start_line, _) = source.offset_to_line_col(body_start_offset);
     let effective_start_offset = if body_start_line > 1 {
         source
             .line_col_to_offset(body_start_line - 1, 0)
@@ -356,14 +376,21 @@ fn count_block_lines(
         // body token can share the same line as the closing `}`. RuboCop counts that
         // final line. `count_body_lines_ex` excludes the end line, so move end to
         // next line start.
-        let (body_end_line, _) =
-            source.offset_to_line_col(body.location().end_offset().saturating_sub(1));
-        let (closing_line, _) = source.offset_to_line_col(end_offset);
-        if body_end_line == closing_line {
-            if let Some(next_line_start) = source.line_col_to_offset(closing_line + 1, 0) {
-                effective_end_offset = next_line_start;
-            } else {
-                effective_end_offset = closing_end_offset;
+        //
+        // Skip this adjustment for BeginNode bodies (blocks with rescue/ensure):
+        // Prism's BeginNode location extends to include the closing `end` keyword,
+        // so body_end_line == closing_line is a false match. The `end` keyword is
+        // already correctly excluded by count_body_lines_ex's exclusive upper bound.
+        if body.as_begin_node().is_none() {
+            let (body_end_line, _) =
+                source.offset_to_line_col(body.location().end_offset().saturating_sub(1));
+            let (closing_line, _) = source.offset_to_line_col(end_offset);
+            if body_end_line == closing_line {
+                if let Some(next_line_start) = source.line_col_to_offset(closing_line + 1, 0) {
+                    effective_end_offset = next_line_start;
+                } else {
+                    effective_end_offset = closing_end_offset;
+                }
             }
         }
     }
@@ -714,6 +741,121 @@ mod tests {
         assert!(
             diags[0].message.contains("[4/3]"),
             "Expected [4/3] but got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn block_with_blank_lines_at_threshold() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(25.into()))]),
+            ..CopConfig::default()
+        };
+        // 25 non-blank body lines + 3 blank lines = should NOT fire (25 <= 25)
+        let mut source = String::from("items.each do |x|\n");
+        for i in 1..=10 {
+            source.push_str(&format!("  x{} = {}\n", i, i));
+        }
+        source.push('\n'); // blank line
+        for i in 11..=20 {
+            source.push_str(&format!("  x{} = {}\n", i, i));
+        }
+        source.push('\n'); // blank line
+        for i in 21..=25 {
+            source.push_str(&format!("  x{} = {}\n", i, i));
+        }
+        source.push('\n'); // blank line
+        source.push_str("end\n");
+        let diags = run_cop_full_with_config(&BlockLength, source.as_bytes(), config);
+        assert!(
+            diags.is_empty(),
+            "Should NOT fire on 25 non-blank body lines (blank lines don't count). Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn block_with_rescue_at_threshold() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(25.into()))]),
+            ..CopConfig::default()
+        };
+        // Block with rescue: 22 body lines + rescue + 2 handler lines = 25 non-blank
+        // Prefix with a line so block doesn't start on line 1
+        let mut source = String::from("x = 1\nitems.each do |x|\n");
+        for i in 1..=22 {
+            source.push_str(&format!("  x{} = {}\n", i, i));
+        }
+        source.push_str("rescue StandardError => e\n");
+        source.push_str("  log(e)\n");
+        source.push_str("  raise\n");
+        source.push_str("end\n");
+
+        let diags = run_cop_full_with_config(&BlockLength, source.as_bytes(), config);
+        assert!(
+            diags.is_empty(),
+            "Should NOT fire on block with rescue totaling 25 body lines. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn block_with_ensure_at_threshold() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(25.into()))]),
+            ..CopConfig::default()
+        };
+        // Block with ensure: 23 body lines + ensure + 1 cleanup = 25 non-blank
+        let mut source = String::from("x = 1\nitems.each do |x|\n");
+        for i in 1..=23 {
+            source.push_str(&format!("  x{} = {}\n", i, i));
+        }
+        source.push_str("ensure\n");
+        source.push_str("  cleanup\n");
+        source.push_str("end\n");
+        let diags = run_cop_full_with_config(&BlockLength, source.as_bytes(), config);
+        assert!(
+            diags.is_empty(),
+            "Should NOT fire on block with ensure totaling 25 body lines. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn block_with_rescue_over_threshold() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(25.into()))]),
+            ..CopConfig::default()
+        };
+        // Block with rescue: 23 body lines + rescue + 2 handler lines = 26 non-blank -> fires
+        let mut source = String::from("x = 1\nitems.each do |x|\n");
+        for i in 1..=23 {
+            source.push_str(&format!("  x{} = {}\n", i, i));
+        }
+        source.push_str("rescue StandardError => e\n");
+        source.push_str("  log(e)\n");
+        source.push_str("  raise\n");
+        source.push_str("end\n");
+        let diags = run_cop_full_with_config(&BlockLength, source.as_bytes(), config);
+        assert!(
+            !diags.is_empty(),
+            "Should fire on block with rescue totaling 26 body lines."
+        );
+        assert!(
+            diags[0].message.contains("[26/25]"),
+            "Expected [26/25] but got: {}",
             diags[0].message
         );
     }
