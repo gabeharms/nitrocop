@@ -35,6 +35,10 @@ use crate::parse::source::SourceFile;
 /// to find the last statement inside, but RuboCop's `last_expression` only unwraps
 /// bare `begin` nodes (statement sequences), NOT rescue/ensure bodies. The fix:
 /// only unwrap `BeginNode` when it has no rescue/ensure/else clauses.
+///
+/// **Root cause of the last FP:** `===` was still treated as a setter because the
+/// helper only excluded `==`, `!=`, `<=`, and `>=`. RuboCop's `setter_method?`
+/// predicate does not match case equality, so `===` must be excluded too.
 pub struct UselessSetterCall;
 
 impl Cop for UselessSetterCall {
@@ -194,14 +198,14 @@ impl Cop for UselessSetterCall {
     }
 }
 
-/// Check if a method name is a setter (ends with `=` but not `==`, `!=`, `<=`, `>=`).
+/// Check if a method name is a setter (ends with `=` but not comparison operators).
 /// Includes `[]=` which RuboCop also flags.
 fn is_setter_method(name: &[u8]) -> bool {
     if !name.ends_with(b"=") {
         return false;
     }
     // Exclude comparison operators
-    if name == b"==" || name == b"!=" || name == b"<=" || name == b">=" {
+    if matches!(name, b"==" | b"===" | b"!=" | b"<=" | b">=") {
         return false;
     }
     true

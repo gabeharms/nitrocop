@@ -81,6 +81,12 @@ def not_a_setter
   top.attr == 5
 end
 
+# Triple-equals is a comparison operator, not a setter
+def case_equality(value)
+  value = 1.0
+  value === Object.new
+end
+
 # Exception assignment in begin/rescue (vendor spec)
 def with_rescue(bar)
   begin
