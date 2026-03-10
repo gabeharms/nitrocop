@@ -55,7 +55,9 @@ use crate::parse::source::SourceFile;
 /// (b) `get_last_child_or_write` skips `define_method`/`define_singleton_method` blocks
 /// since those create their own method context handled by `check_dynamic_method`.
 ///
-/// FN=1: (brakeman) `@attr_accessible ||= []` — may be config or line-number mismatch.
+/// FN=1: (brakeman) `@attr_accessible ||= []` — investigated and likely a corpus
+/// run artifact (stale file cache or config resolution). The cop correctly detects
+/// mismatched ||= patterns in all tested configurations.
 pub struct MemoizedInstanceVariableName;
 
 impl MemoizedInstanceVariableName {
