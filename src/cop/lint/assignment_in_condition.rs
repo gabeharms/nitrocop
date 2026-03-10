@@ -1,11 +1,28 @@
-use crate::cop::node_type::{
-    CLASS_VARIABLE_WRITE_NODE, CONSTANT_WRITE_NODE, GLOBAL_VARIABLE_WRITE_NODE, IF_NODE,
-    INSTANCE_VARIABLE_WRITE_NODE, LOCAL_VARIABLE_WRITE_NODE, UNLESS_NODE, UNTIL_NODE, WHILE_NODE,
-};
+use crate::cop::node_type::{IF_NODE, UNLESS_NODE, UNTIL_NODE, WHILE_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Checks for assignments in the conditions of if/while/until/unless.
+///
+/// ## Root causes of FNs (577):
+/// - Only checked direct predicate, not nested assignments in `||`/`&&` conditions
+/// - Missing assignment method support (`obj.method = 10`, `a[3] = 10`, `obj&.method = 10`)
+/// - Missing safe navigation assignment methods
+/// - Not traversing into compound conditions
+///
+/// ## Root causes of FPs (4):
+/// - Message format differed from RuboCop
+/// - Offense location was on entire assignment instead of just the `=` operator
+///
+/// ## Fix:
+/// Rewrote to use recursive condition traversal matching RuboCop's `traverse_node`:
+/// - Recursively walks condition tree finding assignments at any depth
+/// - Handles CallNode assignment methods (`is_attribute_write()`)
+/// - Skips block nodes (assignments inside blocks are irrelevant)
+/// - Skips conditional assignments (`||=`, `&&=`)
+/// - Handles `AllowSafeAssignment` via parenthesized assignment detection
+/// - Reports offense on the `=` operator location specifically
 pub struct AssignmentInCondition;
 
 impl Cop for AssignmentInCondition {
@@ -18,17 +35,7 @@ impl Cop for AssignmentInCondition {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[
-            CLASS_VARIABLE_WRITE_NODE,
-            CONSTANT_WRITE_NODE,
-            GLOBAL_VARIABLE_WRITE_NODE,
-            IF_NODE,
-            INSTANCE_VARIABLE_WRITE_NODE,
-            LOCAL_VARIABLE_WRITE_NODE,
-            UNLESS_NODE,
-            UNTIL_NODE,
-            WHILE_NODE,
-        ]
+        &[IF_NODE, UNLESS_NODE, UNTIL_NODE, WHILE_NODE]
     }
 
     fn check_node(
@@ -58,49 +65,222 @@ impl Cop for AssignmentInCondition {
             None => return,
         };
 
-        // Check if the predicate is an assignment
-        let is_assignment = predicate.as_local_variable_write_node().is_some()
-            || predicate.as_instance_variable_write_node().is_some()
-            || predicate.as_class_variable_write_node().is_some()
-            || predicate.as_global_variable_write_node().is_some()
-            || predicate.as_constant_write_node().is_some();
+        let msg = if allow_safe {
+            MSG_WITH_SAFE_ASSIGNMENT
+        } else {
+            MSG_WITHOUT_SAFE_ASSIGNMENT
+        };
 
-        if !is_assignment {
-            return;
-        }
+        traverse_condition(source, &predicate, allow_safe, msg, self, diagnostics);
+    }
+}
 
-        // AllowSafeAssignment: if the assignment is wrapped in parens, allow it
-        if allow_safe {
-            // If the predicate is a parenthesized expression, it's "safe"
-            // In Prism, the if_node.predicate() already unwraps parens,
-            // so we need to check the raw source for parens around the assignment.
-            // Actually, Prism keeps ParenthesesNode wrapping. But the predicate
-            // is already the inner node. Let's check by looking at the source text.
-            // A simpler approach: check if there's a `(` immediately before the assignment.
-            let pred_loc = predicate.location();
-            let start = pred_loc.start_offset();
-            if start > 0 {
-                let bytes = source.as_bytes();
-                // Walk backwards skipping whitespace to find a `(`
-                let mut pos = start - 1;
-                while pos > 0 && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
-                    pos -= 1;
-                }
-                if bytes[pos] == b'(' {
-                    return; // Safe assignment: if (x = 1)
+const MSG_WITH_SAFE_ASSIGNMENT: &str = "Use `==` if you meant to do a comparison or wrap the expression in parentheses to indicate you meant to assign in a condition.";
+const MSG_WITHOUT_SAFE_ASSIGNMENT: &str =
+    "Use `==` if you meant to do a comparison or move the assignment up out of the condition.";
+
+/// Recursively traverses a condition node tree looking for assignments.
+/// Mirrors RuboCop's `traverse_node` logic.
+fn traverse_condition(
+    source: &SourceFile,
+    node: &ruby_prism::Node<'_>,
+    allow_safe: bool,
+    msg: &str,
+    cop: &AssignmentInCondition,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Block nodes halt traversal — assignments inside blocks are irrelevant
+    if node.as_block_node().is_some() || node.as_lambda_node().is_some() {
+        return;
+    }
+
+    // Check if this is a parenthesized expression (RuboCop's :begin type)
+    if let Some(parens) = node.as_parentheses_node() {
+        if let Some(body) = parens.body() {
+            // Check for safe assignment: (assignment)
+            if allow_safe && is_assignment_node(&body) {
+                // Safe assignment — skip children
+                return;
+            }
+            // If body is a StatementsNode, check its single child
+            if allow_safe {
+                if let Some(stmts) = body.as_statements_node() {
+                    let body_nodes: Vec<_> = stmts.body().iter().collect();
+                    if body_nodes.len() == 1 && is_assignment_node(&body_nodes[0]) {
+                        // Safe assignment — skip children
+                        return;
+                    }
                 }
             }
+            // Not a safe assignment, recurse into the body
+            traverse_condition(source, &body, allow_safe, msg, cop, diagnostics);
         }
-
-        let loc = predicate.location();
-        let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            column,
-            "Assignment in condition detected. Did you mean `==`?".to_string(),
-        ));
+        // Empty parens — nothing to do
+        return;
     }
+
+    // Check for equals assignments (lvar, ivar, cvar, gvar, constant write)
+    if let Some(op_loc) = get_equals_assignment_operator_loc(node) {
+        let (line, column) = source.offset_to_line_col(op_loc);
+        diagnostics.push(cop.diagnostic(source, line, column, msg.to_string()));
+        return;
+    }
+
+    // Check for call assignment methods (obj.method = 10, a[3] = 10, obj&.method = 10)
+    if let Some(call) = node.as_call_node() {
+        if call.is_attribute_write() {
+            // This is an assignment method — report on the `=` operator
+            if let Some(eq_offset) = find_call_assignment_equals(source, &call) {
+                let (line, column) = source.offset_to_line_col(eq_offset);
+                diagnostics.push(cop.diagnostic(source, line, column, msg.to_string()));
+            }
+            return;
+        }
+        // Non-assignment call — skip children (don't look inside method arguments)
+        return;
+    }
+
+    // Conditional assignments (||=, &&=) — allowed, skip (RuboCop's conditional_assignment?)
+    if is_conditional_or_operator_assignment(node) {
+        return;
+    }
+
+    // For other node types, recurse into children
+    recurse_children(source, node, allow_safe, msg, cop, diagnostics);
+}
+
+/// Check if a node is an equals assignment (lvar=, ivar=, cvar=, gvar=, const=)
+fn is_assignment_node(node: &ruby_prism::Node<'_>) -> bool {
+    node.as_local_variable_write_node().is_some()
+        || node.as_instance_variable_write_node().is_some()
+        || node.as_class_variable_write_node().is_some()
+        || node.as_global_variable_write_node().is_some()
+        || node.as_constant_write_node().is_some()
+        || node.as_multi_write_node().is_some()
+        || node.as_call_node().is_some_and(|c| c.is_attribute_write())
+}
+
+/// Get the operator location (byte offset of `=`) for equals assignment nodes
+fn get_equals_assignment_operator_loc(node: &ruby_prism::Node<'_>) -> Option<usize> {
+    if let Some(n) = node.as_local_variable_write_node() {
+        return Some(n.operator_loc().start_offset());
+    }
+    if let Some(n) = node.as_instance_variable_write_node() {
+        return Some(n.operator_loc().start_offset());
+    }
+    if let Some(n) = node.as_class_variable_write_node() {
+        return Some(n.operator_loc().start_offset());
+    }
+    if let Some(n) = node.as_global_variable_write_node() {
+        return Some(n.operator_loc().start_offset());
+    }
+    if let Some(n) = node.as_constant_write_node() {
+        return Some(n.operator_loc().start_offset());
+    }
+    None
+}
+
+/// Check if node is a conditional assignment (||=, &&=) or operator assignment (+=, etc.)
+fn is_conditional_or_operator_assignment(node: &ruby_prism::Node<'_>) -> bool {
+    node.as_local_variable_or_write_node().is_some()
+        || node.as_local_variable_and_write_node().is_some()
+        || node.as_instance_variable_or_write_node().is_some()
+        || node.as_instance_variable_and_write_node().is_some()
+        || node.as_class_variable_or_write_node().is_some()
+        || node.as_class_variable_and_write_node().is_some()
+        || node.as_global_variable_or_write_node().is_some()
+        || node.as_global_variable_and_write_node().is_some()
+        || node.as_constant_or_write_node().is_some()
+        || node.as_constant_and_write_node().is_some()
+        || node.as_constant_path_or_write_node().is_some()
+        || node.as_constant_path_and_write_node().is_some()
+        || node.as_local_variable_operator_write_node().is_some()
+        || node.as_instance_variable_operator_write_node().is_some()
+        || node.as_class_variable_operator_write_node().is_some()
+        || node.as_global_variable_operator_write_node().is_some()
+        || node.as_constant_operator_write_node().is_some()
+        || node.as_constant_path_operator_write_node().is_some()
+}
+
+/// Find the byte offset of the `=` sign in a call assignment method.
+/// For `obj.method = 10`, the `=` is after message_loc.
+/// For `a[3] = 10`, the `=` is after closing_loc (`]`).
+fn find_call_assignment_equals(
+    source: &SourceFile,
+    call: &ruby_prism::CallNode<'_>,
+) -> Option<usize> {
+    let bytes = source.as_bytes();
+
+    // Determine the search start position: after closing_loc for []=, after message_loc otherwise
+    let search_start = if let Some(closing) = call.closing_loc() {
+        // []=  method: search after the `]`
+        closing.end_offset()
+    } else if let Some(msg) = call.message_loc() {
+        // setter method: search after the method name
+        msg.end_offset()
+    } else {
+        return None;
+    };
+
+    // Scan forward from search_start to find `=`
+    let mut pos = search_start;
+    while pos < bytes.len() {
+        if bytes[pos] == b'=' {
+            return Some(pos);
+        }
+        if bytes[pos] != b' ' && bytes[pos] != b'\t' {
+            break;
+        }
+        pos += 1;
+    }
+    None
+}
+
+/// Recurse into child nodes of common condition expression types.
+fn recurse_children(
+    source: &SourceFile,
+    node: &ruby_prism::Node<'_>,
+    allow_safe: bool,
+    msg: &str,
+    cop: &AssignmentInCondition,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // OrNode (||)
+    if let Some(or_node) = node.as_or_node() {
+        traverse_condition(source, &or_node.left(), allow_safe, msg, cop, diagnostics);
+        traverse_condition(source, &or_node.right(), allow_safe, msg, cop, diagnostics);
+        return;
+    }
+    // AndNode (&&)
+    if let Some(and_node) = node.as_and_node() {
+        traverse_condition(source, &and_node.left(), allow_safe, msg, cop, diagnostics);
+        traverse_condition(source, &and_node.right(), allow_safe, msg, cop, diagnostics);
+        return;
+    }
+    // StatementsNode — multiple statements in a begin block
+    if let Some(stmts) = node.as_statements_node() {
+        for stmt in stmts.body().iter() {
+            traverse_condition(source, &stmt, allow_safe, msg, cop, diagnostics);
+        }
+        return;
+    }
+    // RangeNode (flip-flop conditions)
+    if let Some(range) = node.as_range_node() {
+        if let Some(left) = range.left() {
+            traverse_condition(source, &left, allow_safe, msg, cop, diagnostics);
+        }
+        if let Some(right) = range.right() {
+            traverse_condition(source, &right, allow_safe, msg, cop, diagnostics);
+        }
+        return;
+    }
+    // DefinedNode
+    if let Some(defined) = node.as_defined_node() {
+        traverse_condition(source, &defined.value(), allow_safe, msg, cop, diagnostics);
+    }
+    // If it's a not (!) operator implemented as a call
+    // For other node types we don't recurse — they're either leaf nodes
+    // or complex expressions where assignments wouldn't be relevant
 }
 
 #[cfg(test)]

@@ -14,3 +14,44 @@ x = 1
 if x
   foo
 end
+
+# ||= is conditional assignment, not flagged
+raise StandardError unless foo ||= bar
+
+# &&= is conditional assignment, not flagged
+x &&= y if condition
+
+# assignment inside a block in condition is not flagged
+return 1 if any_errors? { o = inspect(file) }
+
+# assignment inside a block followed by method call
+return 1 if any_errors? { o = file }.present?
+
+# assignment in a block after ||
+if x?(bar) || y? { z = baz }
+  foo
+end
+
+# empty condition
+if ()
+end
+
+unless ()
+end
+
+# safe assignment: parenthesized
+if (test = 10)
+end
+
+if (test[0] = 10)
+end
+
+# safe compound assignment inside parentheses
+if (test = foo && bar == baz)
+end
+
+if (test = foo || bar == baz)
+end
+
+# assignment inside method call arguments is not flagged
+return unless %i[asc desc].include?(order = params[:order])
