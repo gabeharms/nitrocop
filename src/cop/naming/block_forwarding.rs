@@ -50,10 +50,15 @@ use crate::parse::source::SourceFile;
 /// block_pass_node.children.first&.sym_type?` which skips `&:method_name`
 /// symbol block passes — our visitor may be matching those as forwarding.
 ///
-/// A correct fix needs to: (1) only compare source text when
-/// `has_space_in_param` is true (keeping the old behavior for normal cases),
-/// and (2) verify that `forwarding_locations` correctly excludes symbol
-/// block passes (`&:foo`).
+/// Fix applied: when `has_space_in_param` is true, compare each forwarding
+/// location's source text against the param's source text. If they match
+/// (e.g., both are `& block`), emit the body offense. If they don't match
+/// (e.g., param is `& block` but body is `&block`), skip it. This keeps
+/// the default no-space path unchanged (all body offenses emitted) while
+/// correctly handling the space-in-both case. The previous blanket skip
+/// was too aggressive, suppressing body offenses even when sources matched.
+/// Symbol block passes (`&:foo`) are already excluded by the visitor since
+/// they don't match as `LocalVariableReadNode`.
 pub struct BlockForwarding;
 
 impl Cop for BlockForwarding {
@@ -173,17 +178,30 @@ impl Cop for BlockForwarding {
             let param_loc_len = loc.end_offset() - loc.start_offset();
             let has_space_in_param = param_loc_len > param_name_bytes.len() + 1;
 
-            if !has_space_in_param {
-                // Offense on each &block forwarding usage in the body
-                for (start, _end) in &checker.forwarding_locations {
-                    let (line, column) = source.offset_to_line_col(*start);
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        line,
-                        column,
-                        "Use anonymous block forwarding.".to_string(),
-                    ));
+            // Offense on each &block forwarding usage in the body.
+            // RuboCop compares source text of param vs forwarding usage
+            // (`last_argument.source == block_pass_node.source`). When the
+            // param has extra whitespace (e.g., "& block"), only body usages
+            // whose source text matches the param source are flagged.
+            let param_source = if has_space_in_param {
+                Some(&source.as_bytes()[loc.start_offset()..loc.end_offset()])
+            } else {
+                None
+            };
+            for (start, end) in &checker.forwarding_locations {
+                if let Some(ps) = param_source {
+                    let fwd_source = &source.as_bytes()[*start..*end];
+                    if fwd_source != ps {
+                        continue;
+                    }
                 }
+                let (line, column) = source.offset_to_line_col(*start);
+                diagnostics.push(self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    "Use anonymous block forwarding.".to_string(),
+                ));
             }
         }
     }

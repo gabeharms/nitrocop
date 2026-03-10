@@ -61,7 +61,22 @@ def other_procs(bar, &block)
                            ^^^^^^ Naming/BlockForwarding: Use anonymous block forwarding.
 end
 # space between & and param name — only param is flagged, not body forwarding
+# (body uses "&block" without space, so source texts don't match)
 def transmit uri, req, payload, & block
                                 ^^^^^^^ Naming/BlockForwarding: Use anonymous block forwarding.
   process_result(res, start_time, tempfile, &block)
+end
+# space between & and param name AND matching space in body forwarding —
+# both param and body are flagged because source texts match
+def forward_with_spaces(& block)
+                        ^^^^^^^ Naming/BlockForwarding: Use anonymous block forwarding.
+  call_something(& block)
+                 ^^^^^^^ Naming/BlockForwarding: Use anonymous block forwarding.
+end
+def multi_forward_spaces(& block)
+                         ^^^^^^^ Naming/BlockForwarding: Use anonymous block forwarding.
+  foo(& block)
+      ^^^^^^^ Naming/BlockForwarding: Use anonymous block forwarding.
+  bar(& block)
+      ^^^^^^^ Naming/BlockForwarding: Use anonymous block forwarding.
 end
