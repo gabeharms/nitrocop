@@ -159,7 +159,9 @@ fn count_multiline_reductions(
             if self.count_as_one.iter().any(|s| s == "array") && node.as_array_node().is_some() {
                 return true;
             }
-            if self.count_as_one.iter().any(|s| s == "hash") && node.as_hash_node().is_some() {
+            if self.count_as_one.iter().any(|s| s == "hash")
+                && (node.as_hash_node().is_some() || node.as_keyword_hash_node().is_some())
+            {
                 return true;
             }
             if self.count_as_one.iter().any(|s| s == "heredoc")
