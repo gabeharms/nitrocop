@@ -60,3 +60,39 @@ describe SomeClass do
     nil
   end
 end
+
+# ConstantOrWriteNode (CONST ||= val)
+describe SomeClass do
+  FALLBACK ||= "default"
+  ^^^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyConstantDeclaration: Stub constant instead of declaring explicitly.
+end
+
+# ConstantAndWriteNode (CONST &&= val)
+describe SomeClass do
+  FLAG &&= false
+  ^^^^^^^^^^^^^^ RSpec/LeakyConstantDeclaration: Stub constant instead of declaring explicitly.
+end
+
+# ConstantOperatorWriteNode (CONST += val)
+describe SomeClass do
+  COUNTER += 1
+  ^^^^^^^^^^^^ RSpec/LeakyConstantDeclaration: Stub constant instead of declaring explicitly.
+end
+
+# Constants inside class bodies within example groups
+describe SomeClass do
+  class DummyClass
+  ^^^^^^^^^^^^^^^^ RSpec/LeakyConstantDeclaration: Stub class constant instead of declaring explicitly.
+    INNER_CONST = "leaky"
+    ^^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyConstantDeclaration: Stub constant instead of declaring explicitly.
+  end
+end
+
+# Constants inside module bodies within example groups
+describe SomeClass do
+  module DummyModule
+  ^^^^^^^^^^^^^^^^^^ RSpec/LeakyConstantDeclaration: Stub module constant instead of declaring explicitly.
+    MODULE_CONST = "leaky"
+    ^^^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyConstantDeclaration: Stub constant instead of declaring explicitly.
+  end
+end
