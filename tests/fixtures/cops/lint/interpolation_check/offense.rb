@@ -18,3 +18,8 @@ a = 'foo "#{bar}"'
 "x" \
   'foo #{bar}'
   ^ Lint/InterpolationCheck: Interpolation in single quoted string detected. Use double quoted strings if you need interpolation.
+
+# %q string with inner double quotes — RuboCop flags this
+# (RuboCop's valid_syntax? always passes for %q since gsub doesn't change it)
+b = %q{text "#{name}"}
+    ^ Lint/InterpolationCheck: Interpolation in single quoted string detected. Use double quoted strings if you need interpolation.

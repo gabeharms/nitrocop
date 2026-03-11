@@ -35,3 +35,10 @@ escaped = '\#{not_interpolation}'
 
 # %w array — strings inside are not flagged
 %w(#{a}-foo)
+
+# Multiline single-quoted string where #{ and } are on different lines.
+# RuboCop's regex /(?<!\\)#\{.*\}/ uses .* which doesn't cross newlines,
+# so this is NOT flagged.
+x = 'text #{
+  some_value
+}'
