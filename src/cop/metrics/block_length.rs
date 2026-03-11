@@ -143,6 +143,23 @@ use crate::parse::source::SourceFile;
 /// DisabledByDefault, higher Max) — not cop logic bugs.
 ///
 /// Local `check-cop.py --rerun --quick`: excess=0, missing=146.
+///
+/// ## Corpus investigation (2026-03-10, third pass)
+///
+/// Corpus oracle reported FP=22, FN=0. 8 ruboto FPs are already fixed
+/// on main (brace-block-with-heredoc-after pattern). 1 forem FP is
+/// already fixed (parenthesized directive annotation parsing).
+///
+/// Remaining ~13 FPs are [26/25] off-by-one: blocks with single-child
+/// bodies containing heredocs. Root cause: `heredoc_descendant_max_line`
+/// tracked BlockNode end_offset at depth == exclude_depth, which includes
+/// the inner block's `end` keyword. In Parser AST, the body IS the block
+/// node (not a separate descendant), so `each_descendant` excludes it
+/// and its `end` keyword is NOT counted.
+///
+/// Fix: in `DescendantMaxLineFinder.track_node_end`, skip BlockNode at
+/// depth == exclude_depth when single_child_body is true. This prevents
+/// counting the inner block's `end` keyword, matching Parser semantics.
 pub struct BlockLength;
 
 impl Cop for BlockLength {
@@ -466,11 +483,24 @@ fn heredoc_descendant_max_line(source: &SourceFile, body: &ruby_prism::Node<'_>)
         has_heredoc: bool,
         depth: usize,
         exclude_depth: usize,
+        single_child_body: bool,
     }
 
     impl DescendantMaxLineFinder<'_> {
         fn track_node_end(&mut self, node: ruby_prism::Node<'_>) {
             if self.depth < self.exclude_depth {
+                return;
+            }
+            // For single-child bodies: in Parser, the body is the single
+            // expression (e.g., a block node). `each_descendant` excludes
+            // the body itself, so its `end` keyword is NOT counted.
+            // In Prism, a call+block is split into CallNode + BlockNode.
+            // The BlockNode is a child of CallNode at exclude_depth.
+            // Its end_offset includes the `end` keyword — skip tracking it.
+            if self.single_child_body
+                && self.depth == self.exclude_depth
+                && node.as_block_node().is_some()
+            {
                 return;
             }
             let (line, _) = self
@@ -537,6 +567,7 @@ fn heredoc_descendant_max_line(source: &SourceFile, body: &ruby_prism::Node<'_>)
         has_heredoc: false,
         depth: 0,
         exclude_depth,
+        single_child_body,
     };
     finder.visit(body);
 
@@ -887,6 +918,29 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Brace block {{ |f| f << <<EOF }} should be 1-line body, not count heredoc content. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn single_child_block_with_heredoc_no_overcount() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        // Outer block with single-child body: inner call+block with heredocs.
+        // In Parser, body = the inner block. `each_descendant` excludes it,
+        // so the inner `end` is NOT counted. In Prism, the BlockNode is a
+        // separate child of CallNode — must not track its end line.
+        // Without fix: counts 8 (lines 3-10 non-blank). With fix: 7 (3-9).
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(7.into()))]),
+            ..CopConfig::default()
+        };
+        let source = b"x = 0\ncontext 'section' do\n  test 'should format' do\n    input = <<~EOS\n    content1\n    content2\n    EOS\n    output = process(input)\n    assert output\n  end\nend\n";
+        let diags = run_cop_full_with_config(&BlockLength, source, config);
+        assert!(
+            diags.is_empty(),
+            "Single-child block with heredoc: inner `end` should NOT be counted. Expected 7 body lines. Got: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }

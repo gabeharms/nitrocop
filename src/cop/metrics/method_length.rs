@@ -139,6 +139,20 @@ use crate::parse::source::SourceFile;
 /// else branch is just a child node whose `last_line` is the last statement,
 /// not the `end` keyword. Fix: skip `ElseNode` in the visitor (let its children
 /// be visited instead).
+///
+/// ## Corpus investigation (2026-03-10, third pass)
+///
+/// Corpus oracle reported FP=1, FN=2.
+///
+/// FP=1: rubyonjets/jets `git_dirty_message` [11/10]. Method body is
+/// `if/elsif` containing heredocs. Prism's elsif IfNode location extends
+/// to the parent's `end` keyword (same structural issue as ElseNode).
+/// Fix: skip elsif IfNode in MaxEndLineVisitor by checking if
+/// `if_keyword_loc` starts with `elsif`.
+///
+/// FN=2: chef (single-heredoc body) and jruby (=begin/=end block comment
+/// file). Both are file-drop noise — nitrocop cannot process these files
+/// due to missing project structure (no Gemfile/lockfile). Not cop logic bugs.
 pub struct MethodLength;
 
 /// Parsed config values for MethodLength.
@@ -724,6 +738,18 @@ fn descendants_max_end_line(source: &SourceFile, node: &ruby_prism::Node<'_>) ->
             if node.as_else_node().is_some() {
                 return;
             }
+            // elsif clauses are IfNode with `if_keyword_loc` = `elsif`.
+            // In Prism, their location extends to the parent's `end` keyword.
+            // In Parser, elsif's source range ends at its last body statement,
+            // not at `end`. Skip tracking to avoid inflating the count.
+            if let Some(if_node) = node.as_if_node() {
+                if let Some(kw) = if_node.if_keyword_loc() {
+                    let bytes = &self.source.as_bytes()[kw.start_offset()..kw.end_offset()];
+                    if bytes.starts_with(b"elsif") {
+                        return;
+                    }
+                }
+            }
             let off = node
                 .location()
                 .end_offset()
@@ -1118,6 +1144,67 @@ mod tests {
         assert!(
             diags.is_empty(),
             "10 body lines with ensure inside class should NOT fire (Max:10)"
+        );
+    }
+
+    #[test]
+    fn if_elsif_with_heredoc_no_overcount() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        // Method with if/elsif containing heredocs. In Parser, the elsif
+        // clause's source range ends at its last body statement, not at
+        // the `end` keyword. In Prism, the elsif IfNode's location extends
+        // to `end`. MaxEndLineVisitor must skip elsif IfNodes to avoid
+        // inflating the count by 1.
+        //
+        // Lines:
+        // 1: def git_dirty_message
+        // 2:   if git_dirty?
+        // 3:     <<~EOL.strip
+        // 4:       Warning: Git is dirty.
+        // 5:       Commit first.
+        // 6:     EOL
+        // 7:   elsif !git_changes_pushed?
+        // 8:     <<~EOL.strip
+        // 9:       Warning: Changes not pushed.
+        // 10:      Push first.
+        // 11:    EOL
+        // 12:  end
+        // 13: end
+        //
+        // RuboCop counts body lines 2-11 via source_from_node_with_heredoc.
+        // Max descendant last_line = 11 (EOL terminator). The `end` at line 12
+        // is part of the if node (excluded because it's the root body in Parser).
+        // Non-blank lines 2-11 = 10 → exactly at threshold, no offense.
+        let source = b"def git_dirty_message\n  if git_dirty?\n    <<~EOL.strip\n      Warning: Git is dirty.\n      Commit first.\n    EOL\n  elsif !git_changes_pushed?\n    <<~EOL.strip\n      Warning: Changes not pushed.\n      Push first.\n    EOL\n  end\nend\n";
+
+        // With Max:10 should NOT fire (RuboCop counts exactly 10)
+        let config10 = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(10.into()))]),
+            ..CopConfig::default()
+        };
+        let diags = run_cop_full_with_config(&MethodLength, source, config10);
+        assert!(
+            diags.is_empty(),
+            "Method with if/elsif+heredoc should count 10 body lines (elsif `end` excluded). Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // With Max:9 SHOULD fire [10/9]
+        let config9 = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(9.into()))]),
+            ..CopConfig::default()
+        };
+        let diags = run_cop_full_with_config(&MethodLength, source, config9);
+        assert!(
+            !diags.is_empty(),
+            "Method with if/elsif+heredoc should fire at Max:9 (10 body lines)"
+        );
+        assert!(
+            diags[0].message.contains("[10/9]"),
+            "Expected [10/9] but got: {}",
+            diags[0].message
         );
     }
 }

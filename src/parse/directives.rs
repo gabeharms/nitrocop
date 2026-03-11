@@ -508,8 +508,7 @@ mod tests {
     #[test]
     fn parenthesized_annotation_stripped() {
         // RuboCop accepts `# rubocop:disable Cop(annotation)` syntax
-        let src =
-            "# rubocop:disable Metrics/BlockLength(RuboCop)\nx = 1\n# rubocop:enable Metrics/BlockLength\ny = 2\n";
+        let src = "# rubocop:disable Metrics/BlockLength(RuboCop)\nx = 1\n# rubocop:enable Metrics/BlockLength\ny = 2\n";
         let dr = disabled_ranges(src);
         assert!(dr.is_disabled("Metrics/BlockLength", 1));
         assert!(dr.is_disabled("Metrics/BlockLength", 2));
