@@ -2574,7 +2574,6 @@ fn ruby_version_gates() {
         "Style/HashTransformKeys",
         "Style/HashTransformValues",
         "Style/InPatternThen",
-        "Style/MapToHash",
         "Style/MultilineInPatternThen",
         "Style/NumberedParameters",
         "Style/NumberedParametersLimit",
