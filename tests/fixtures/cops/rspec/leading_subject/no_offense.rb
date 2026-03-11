@@ -38,3 +38,35 @@ class Configuration
     subject { described_class.new }
   end
 end
+
+shared_examples 'sortable' do
+  subject { described_class.new }
+  let(:records) { create_list(:record, 3) }
+end
+
+shared_context 'with authentication' do
+  subject { described_class.new }
+  before { sign_in(user) }
+end
+
+RSpec.describe User do
+  describe '#valid?' do
+    subject { described_class.new }
+    let(:params) { foo }
+  end
+end
+
+RSpec.describe User do
+  let(:foo) { 'bar' }
+
+  it_behaves_like 'a good citizen' do
+    subject { described_class.new }
+  end
+end
+
+RSpec.describe User do
+  it "doesn't mind me calling a method called subject in the test" do
+    let(foo)
+    subject { bar }
+  end
+end
