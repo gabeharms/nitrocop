@@ -21,30 +21,32 @@ use crate::parse::source::SourceFile;
 ///
 /// Remaining gap: `EnforcedStyle: consistent` is still not implemented in this
 /// port; the corpus regressions fixed here are all strict-style behavior.
-/// Post-fix corpus rerun: actual offenses moved from 8,232 down to 8,192
-/// against a RuboCop expected total of 8,180, and `check-cop.py --rerun`
-/// cleared its FP-regression gate. Remaining localized divergence appears in a
-/// small number of repos, dominated by jruby's file-drop-noise repo.
 ///
 /// ## Corpus investigation (2026-03-11)
 ///
-/// Corpus oracle reported FP=37, FN=100.
+/// Corpus oracle reported FP=37, FN=100. Root causes:
 ///
-/// FP=37: Likely from quoting rules differences — nitrocop's
-/// `can_be_unquoted_symbol()` may accept symbols that actually need quoting
-/// in edge cases, or operator symbols in hash keys that RuboCop skips.
+/// FPs: Rocket-style hash keys with non-identifier-start values (e.g.,
+/// `{ :'@ivar' => val }`) were flagged as standalone symbols. RuboCop's
+/// `correct_hash_key` skips keys whose value doesn't match `/\A[a-z0-9_]/i`.
+/// Fix: detect rocket-style hash keys by looking for `=>` after the symbol
+/// location and skip non-identifier-start values.
 ///
-/// FN=100: Likely from missing `EnforcedStyle: consistent` mode (RuboCop
-/// flags unquoted keys when any key in the same hash needs quoting) and
-/// possibly missing `.to_sym`/`.intern` detection on interpolated strings.
+/// FNs: (1) Missing `!=` from `BARE_OPERATOR_SYMBOLS` — symbols like `:"!="`
+/// were not flagged. (2) Special global variables (`$1`, `$?`, `$!`, `$~`,
+/// `$0`, etc.) were not recognized as valid bare symbols because
+/// `is_global_variable_symbol` only handled named globals starting with
+/// identifier chars. Fix: expanded to handle numeric globals, single-char
+/// special globals, and `$-x` flags.
 ///
-/// Deferred: requires implementing the `consistent` EnforcedStyle and careful
-/// comparison of quoting rules with RuboCop's `properly_quoted?` logic.
+/// Also fixed `normalize_single_quoted_source` which over-escaped backslashes
+/// when converting `:'...'` to `:"..."` form (used `escape_double_quoted_symbol`
+/// on raw source chars instead of just escaping `"`).
 pub struct SymbolConversion;
 
 const BARE_OPERATOR_SYMBOLS: &[&[u8]] = &[
     b"+", b"-", b"*", b"/", b"%", b"&", b"|", b"^", b"<<", b">>", b"<", b">", b"<=", b">=", b"==",
-    b"===", b"<=>", b"=~", b"!~", b"!", b"~", b"+@", b"-@", b"**", b"[]", b"[]=", b"`",
+    b"!=", b"===", b"<=>", b"=~", b"!~", b"!", b"~", b"+@", b"-@", b"**", b"[]", b"[]=", b"`",
 ];
 
 fn is_identifier_start(b: u8) -> bool {
@@ -100,11 +102,37 @@ fn is_class_variable_symbol(value: &[u8]) -> bool {
         && value[3..].iter().copied().all(is_identifier_continue)
 }
 
+/// Characters recognized by Ruby as single-char special global variables
+/// (e.g., `$?`, `$!`, `$~`, `$@`, `$;`, `$,`, `$/`, `$\`, `$=`, `$<`, `$>`,
+/// `$.`, `$*`, `$:`, `$+`, `$&`, `` $` ``, `$'`, `$"`, `$0`).
+const SPECIAL_GLOBAL_CHARS: &[u8] = b"?!~@;,/\\=<>.*:+&`'\"0";
+
 fn is_global_variable_symbol(value: &[u8]) -> bool {
-    value.len() > 1
-        && value[0] == b'$'
-        && is_identifier_start(value[1])
-        && value[2..].iter().copied().all(is_identifier_continue)
+    if value.len() < 2 || value[0] != b'$' {
+        return false;
+    }
+
+    // Named globals: $foo, $LOAD_PATH, $_
+    if is_identifier_start(value[1]) {
+        return value[2..].iter().copied().all(is_identifier_continue);
+    }
+
+    // Numeric globals: $1, $2, ..., $9 (and possibly multi-digit like $10)
+    if value[1].is_ascii_digit() {
+        return value[2..].iter().copied().all(|b| b.is_ascii_digit());
+    }
+
+    // Single-char special globals: $?, $!, $~, etc.
+    if value.len() == 2 && SPECIAL_GLOBAL_CHARS.contains(&value[1]) {
+        return true;
+    }
+
+    // $-x flags (e.g., $-w, $-v, $-a)
+    if value.len() == 3 && value[1] == b'-' && value[2].is_ascii_alphabetic() {
+        return true;
+    }
+
+    false
 }
 
 fn is_operator_symbol(value: &[u8]) -> bool {
@@ -154,18 +182,61 @@ fn hash_key_correction(value: &[u8]) -> Option<String> {
     Some(std::str::from_utf8(value).ok()?.to_string())
 }
 
+/// Escape only double-quote characters in raw source content when converting
+/// from single-quoted to double-quoted form. Unlike `escape_double_quoted_symbol`
+/// (which escapes unescaped values), this works on raw source text where
+/// backslashes are already in their source-level escaped form.
+/// Matches RuboCop's `source.gsub('"', '\"').tr("'", '"')` behavior.
+fn escape_quotes_for_normalization(inner: &str) -> String {
+    let mut result = String::with_capacity(inner.len());
+    for ch in inner.chars() {
+        if ch == '"' {
+            result.push('\\');
+            result.push('"');
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 fn normalize_single_quoted_source(source: &str) -> Option<String> {
     if source.starts_with(":'") && source.ends_with('\'') {
         let inner = source.strip_prefix(":'")?.strip_suffix('\'')?;
-        return Some(format!(":\"{}\"", escape_double_quoted_symbol(inner)));
+        return Some(format!(":\"{}\"", escape_quotes_for_normalization(inner)));
     }
 
     if source.starts_with('\'') && source.ends_with('\'') {
         let inner = source.strip_prefix('\'')?.strip_suffix('\'')?;
-        return Some(format!("\"{}\"", escape_double_quoted_symbol(inner)));
+        return Some(format!("\"{}\"", escape_quotes_for_normalization(inner)));
     }
 
     None
+}
+
+/// Check if the value starts with an alphanumeric or underscore character.
+/// Matches RuboCop's `/\A[a-z0-9_]/i` check in `correct_hash_key`.
+fn value_starts_with_identifier(value: &[u8]) -> bool {
+    value
+        .first()
+        .is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// Check if a symbol node is used as a rocket-style hash key (e.g., `:'foo' => val`).
+/// Looks at the source bytes after the symbol to see if `=>` follows (after whitespace).
+fn is_rocket_hash_key(source: &SourceFile, sym: &ruby_prism::SymbolNode<'_>) -> bool {
+    let end_offset = sym.location().end_offset();
+    let src = source.as_bytes();
+    if end_offset >= src.len() {
+        return false;
+    }
+    let rest = &src[end_offset..];
+    // Skip whitespace, then check for =>
+    let trimmed = rest.iter().position(|&b| b != b' ' && b != b'\t');
+    match trimmed {
+        Some(pos) => rest[pos..].starts_with(b"=>"),
+        None => false,
+    }
 }
 
 fn source_matches_correction(source: &[u8], correction: &str) -> bool {
@@ -263,6 +334,13 @@ impl SymbolConversion {
         match opening {
             Some(b":\"" | b":'") => {}
             _ => return,
+        }
+
+        // Check if this is a rocket-style hash key (:'foo' => val).
+        // RuboCop's correct_hash_key skips keys whose value doesn't start with
+        // /\A[a-z0-9_]/i, so we must do the same to avoid false positives.
+        if is_rocket_hash_key(source, sym) && !value_starts_with_identifier(value) {
+            return;
         }
 
         let correction = match symbol_correction(value) {
@@ -381,4 +459,80 @@ impl SymbolConversion {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(SymbolConversion, "cops/lint/symbol_conversion");
+
+    #[test]
+    fn rocket_style_hash_keys_with_non_identifier_start() {
+        let cop = SymbolConversion;
+        // RuboCop skips rocket-style hash keys where value doesn't start
+        // with /[a-z0-9_]/i — these should NOT be flagged.
+        let no_offense_cases = [
+            r#"{ :'@ivar' => 1 }"#,
+            r#"{ :"@ivar" => 1 }"#,
+            r#"{ :'$global' => 1 }"#,
+            r#"{ :'+' => 1 }"#,
+            r#"{ :'==' => 1 }"#,
+            r#"{ :'@@cvar' => 1 }"#,
+        ];
+        for source in &no_offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                diags.is_empty(),
+                "Expected no offense for {:?} but got: {:?}",
+                source,
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+
+        // But standalone versions of these symbols SHOULD be flagged
+        let offense_cases = [r#":'@ivar'"#, r#":"@ivar""#, r#":'$global'"#, r#":'+'"#];
+        for source in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+        }
+
+        // Rocket-style with identifier-start values SHOULD still be flagged
+        let flagged_rocket_cases = [r#"{ :'foo' => 1 }"#, r#"{ :"foo" => 1 }"#];
+        for source in &flagged_rocket_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn special_global_variable_symbols() {
+        let cop = SymbolConversion;
+        // These should be flagged — they can be unquoted
+        let offense_cases = [
+            (r#":"$1""#, ":$1"),
+            (r#":"$?""#, ":$?"),
+            (r#":"$!""#, ":$!"),
+            (r#":"$0""#, ":$0"),
+            (r#":"$~""#, ":$~"),
+        ];
+        for (source, expected_correction) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+            assert!(
+                diags[0]
+                    .message
+                    .contains(&format!("`{expected_correction}`")),
+                "Expected correction {} in message for {:?}, got: {}",
+                expected_correction,
+                source,
+                diags[0].message
+            );
+        }
+    }
 }

@@ -21,3 +21,26 @@ to_sym == other
 %i(foo bar)
 alias foo bar
 { foo: :bar }
+# Symbol with escape sequences that need quotes
+:"\n"
+:"\t"
+:"foo\nbar"
+# Empty symbol
+:""
+# to_sym on variable
+name.to_sym
+# method call that looks like to_sym but has args
+"foo".to_sym(1)
+# Chained method call
+"foo".upcase.to_sym
+# Rocket-style hash keys with non-identifier-start values
+# RuboCop skips these in correct_hash_key (/\A[a-z0-9_]/i fails)
+{ :'@ivar' => 1 }
+{ :"@ivar" => 1 }
+{ :'$global' => 1 }
+{ :'+' => 1 }
+{ :'==' => 1 }
+{ :'@@cvar' => 1 }
+# Setter-like operator symbols (ends with =) are left alone
+:"!="
+:"=="

@@ -82,3 +82,35 @@ instance_variable_get :"@ivar"
 # Quoted hash key ending with ?
 { 'foo?': 'bar' }
   ^^^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `foo?:` instead.
+
+# Interpolated string to_sym
+"foo-#{bar}".to_sym
+^^^^^^^^^^^^^^^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `:"foo-#{bar}"` instead.
+
+# Interpolated string intern
+"foo-#{bar}".intern
+^^^^^^^^^^^^^^^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `:"foo-#{bar}"` instead.
+
+# Uppercase quoted hash key
+{ 'Foo': 1 }
+  ^^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `Foo:` instead.
+
+# Double-quoted uppercase hash key
+{ "Bar": 1 }
+  ^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `Bar:` instead.
+
+# Quoted hash key with underscore prefix
+{ '_private': 1 }
+  ^^^^^^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `_private:` instead.
+
+# Unnecessarily quoted numeric global variable symbol
+:"$1"
+^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `:$1` instead.
+
+# Unnecessarily quoted special global variable symbol
+:"$?"
+^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `:$?` instead.
+
+# Unnecessarily quoted special global symbol ($!)
+:"$!"
+^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `:$!` instead.
