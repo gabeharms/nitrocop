@@ -1,8 +1,38 @@
-use crate::cop::util::RSPEC_DEFAULT_INCLUDE;
+use ruby_prism::Visit;
+
+use crate::cop::util::{RSPEC_DEFAULT_INCLUDE, is_rspec_let};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// RSpec/AlignRightLetBrace
+///
+/// ## Corpus investigation (2026-03-10)
+///
+/// Corpus oracle reported FP=28, FN=148.
+///
+/// **Root cause:** The original text-based implementation used `check_lines` with
+/// regex-like pattern matching (`trimmed.starts_with("let(")`) and `rfind('}')`
+/// to locate the closing brace column. This caused:
+///
+/// - **FPs (28):** Text matching `let(` inside comments on consecutive lines
+///   with actual let calls, causing false grouping and misalignment reports.
+///   Also, `rfind('}')` could match a hash literal brace rather than the block
+///   closing brace in edge cases.
+///
+/// - **FNs (148):** Text matching was too strict — required `let(` or `let!(`
+///   immediately at start of trimmed line, missing cases where intervening
+///   non-let lines (comments, blank lines, other statements) separated let
+///   groups differently than the AST-based approach. The text scanner also
+///   couldn't distinguish block `{}` from hash `{}` reliably, potentially
+///   computing wrong columns and missing alignment violations.
+///
+/// **Fix:** Rewrote to use AST-based detection via `check_source` with a
+/// `Visit` traversal. Finds all `CallNode`s where the method is `let`/`let!`
+/// with no receiver and a single-line `BlockNode` (curly braces). Uses
+/// `block.closing_loc()` for precise closing brace column. Groups by
+/// consecutive source lines using the same `adjacent_let_chunks` algorithm
+/// that mirrors RuboCop's `Enumerable#chunk` pattern.
 pub struct AlignRightLetBrace;
 
 impl Cop for AlignRightLetBrace {
@@ -22,21 +52,26 @@ impl Cop for AlignRightLetBrace {
         RSPEC_DEFAULT_INCLUDE
     }
 
-    fn check_lines(
+    fn check_source(
         &self,
         source: &SourceFile,
+        parse_result: &ruby_prism::ParseResult<'_>,
+        _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let lines: Vec<&[u8]> = source.lines().collect();
+        // Step 1: Collect all single-line let blocks with their closing brace positions
+        let mut collector = LetCollector {
+            source,
+            lets: Vec::new(),
+        };
+        collector.visit(&parse_result.node());
+        let lets = collector.lets;
 
-        // Step 1: Collect all single-line let positions (1-indexed line, close_brace_col)
-        let lets: Vec<(usize, usize)> = lines
-            .iter()
-            .enumerate()
-            .filter_map(|(i, line)| single_line_let_close_brace_col(line).map(|col| (i + 1, col)))
-            .collect();
+        if lets.is_empty() {
+            return;
+        }
 
         // Step 2: Group by strictly consecutive line numbers, replicating RuboCop's
         // chunking behavior where after a gap the first let is isolated.
@@ -58,6 +93,39 @@ impl Cop for AlignRightLetBrace {
                 }
             }
         }
+    }
+}
+
+/// Visitor that collects (line, closing_brace_column) for single-line let/let! blocks.
+struct LetCollector<'a> {
+    source: &'a SourceFile,
+    lets: Vec<(usize, usize)>,
+}
+
+impl<'a, 'pr> Visit<'pr> for LetCollector<'a> {
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        // Check if this is a bare let/let! call
+        if node.receiver().is_none() && is_rspec_let(node.name().as_slice()) {
+            // Check if it has a block (curly braces)
+            if let Some(block) = node.block() {
+                if let Some(block_node) = block.as_block_node() {
+                    let open_loc = block_node.opening_loc();
+                    let close_loc = block_node.closing_loc();
+
+                    let (open_line, _) = self.source.offset_to_line_col(open_loc.start_offset());
+                    let (close_line, close_col) =
+                        self.source.offset_to_line_col(close_loc.start_offset());
+
+                    // Single-line check: opening and closing brace on same line
+                    if open_line == close_line {
+                        self.lets.push((open_line, close_col));
+                    }
+                }
+            }
+        }
+
+        // Continue traversal into child nodes
+        ruby_prism::visit_call_node(self, node);
     }
 }
 
@@ -96,24 +164,6 @@ fn chunk_adjacent_lets(lets: &[(usize, usize)]) -> Vec<Vec<(usize, usize)>> {
     }
 
     groups
-}
-
-fn single_line_let_close_brace_col(line: &[u8]) -> Option<usize> {
-    let s = std::str::from_utf8(line).ok()?;
-    let trimmed = s.trim_start();
-    if !trimmed.starts_with("let(") && !trimmed.starts_with("let!(") {
-        return None;
-    }
-
-    // Must have opening and closing brace on same line
-    let open_brace = s.find('{')?;
-    let close_brace = s.rfind('}')?;
-
-    if close_brace <= open_brace {
-        return None;
-    }
-
-    Some(close_brace)
 }
 
 #[cfg(test)]
