@@ -1129,6 +1129,21 @@ mod tests {
     }
 
     #[test]
+    fn method_with_begin_end_comment() {
+        use crate::testutil::run_cop_full;
+        // Method with =begin/=end multi-line comment block.
+        // RuboCop counts =begin/=end content as body lines (not excluded by
+        // CountComments: false, which only skips # comments).
+        // Body has 13 code lines + 4 =begin/=end lines = 17 (above Max:10).
+        let source = b"class Foo\n  def test_method\n    begin\n      break 1\n    rescue => e\n      handle(e)\n      log(e)\n      report(e)\n    end\n\n    begin\n      yield 1\n    rescue => e\n      handle(e)\n      log(e)\n    end\n\n=begin\n    This is a multi-line comment.\n    Should not count as code.\n=end\n  end\nend\n";
+        let diags = run_cop_full(&MethodLength, source);
+        assert!(
+            !diags.is_empty(),
+            "Method with =begin/=end comment should fire (17 body lines > Max:10)"
+        );
+    }
+
+    #[test]
     fn method_with_ensure_inside_class() {
         use crate::testutil::run_cop_full;
         // When a method with ensure is inside a class, the BeginNode's location

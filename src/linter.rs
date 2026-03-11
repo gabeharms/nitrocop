@@ -667,6 +667,24 @@ pub(crate) fn lint_source_inner(
     (all_diags, corrected_bytes, total_corrected)
 }
 
+/// Check if a Prism parse error is "semantic" — meaning the AST structure is still
+/// valid despite the error. Prism reports certain construct-context violations
+/// (break/next/redo outside loops, retry outside rescue, yield outside methods)
+/// as parse errors, but the Parser gem (used by RuboCop) accepts them as valid
+/// syntax. Skipping files with only these errors causes false negatives.
+fn is_semantic_parse_error(message: &str) -> bool {
+    // PM_ERR_INVALID_BLOCK_EXIT: "Invalid break", "Invalid next", "Invalid redo"
+    // PM_ERR_INVALID_RETRY_*: "Invalid retry ..."
+    // PM_ERR_INVALID_YIELD: "Invalid yield"
+    // PM_ERR_RETURN_INVALID: "Invalid return in class/module body"
+    message.starts_with("Invalid break")
+        || message.starts_with("Invalid next")
+        || message.starts_with("Invalid redo")
+        || message.starts_with("Invalid retry")
+        || message == "Invalid yield"
+        || message.starts_with("Invalid return in class/module body")
+}
+
 /// Run all enabled cops once on a source file. Returns (diagnostics, corrections).
 #[allow(clippy::too_many_arguments)] // internal lint pipeline threading shared state
 fn lint_source_once(
@@ -689,11 +707,18 @@ fn lint_source_once(
             .fetch_add(parse_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Skip cops on files with parse errors — the AST from error recovery is
-    // unreliable and produces false positives (e.g., Procfile.spec parsed as Ruby).
-    // This matches RuboCop's behavior of only reporting Lint/Syntax on such files.
-    let has_parse_errors = parse_result.errors().count() > 0;
-    if has_parse_errors {
+    // Skip cops on files with structural parse errors — the AST from error
+    // recovery is unreliable and produces false positives (e.g., Procfile.spec
+    // parsed as Ruby).
+    //
+    // However, Prism reports some "semantic" errors (like `break` outside a
+    // loop, `retry` outside rescue, `yield` outside a method) that don't affect
+    // AST structure. RuboCop (using the Parser gem) doesn't skip files with
+    // these errors, so we must also process them to avoid false negatives.
+    let has_structural_errors = parse_result
+        .errors()
+        .any(|err| !is_semantic_parse_error(err.message()));
+    if has_structural_errors {
         if let Some(t) = timers {
             t.codemap_ns.fetch_add(0, Ordering::Relaxed);
         }

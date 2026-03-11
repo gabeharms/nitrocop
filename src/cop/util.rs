@@ -98,7 +98,6 @@ fn count_body_lines_impl(
     // Count lines between (exclusive of def/end lines)
     let lines: Vec<&[u8]> = source.lines().collect();
     let mut count = 0;
-    let mut in_multiline_comment = false;
 
     // Lines between start_line and end_line (exclusive)
     // start_line and end_line are 1-indexed
@@ -126,31 +125,10 @@ fn count_body_lines_impl(
         }
         let line = lines[line_index];
 
-        // Handle =begin/=end multi-line comments (must start at column 0)
-        if !in_multiline_comment && line.starts_with(b"=begin") {
-            let after = line.get(6);
-            if after.is_none()
-                || after == Some(&b' ')
-                || after == Some(&b'\n')
-                || after == Some(&b'\r')
-            {
-                in_multiline_comment = true;
-                continue;
-            }
-        }
-        if in_multiline_comment {
-            if line.starts_with(b"=end") {
-                let after = line.get(4);
-                if after.is_none()
-                    || after == Some(&b' ')
-                    || after == Some(&b'\n')
-                    || after == Some(&b'\r')
-                {
-                    in_multiline_comment = false;
-                }
-            }
-            continue;
-        }
+        // NOTE: =begin/=end multi-line comments are NOT excluded here.
+        // RuboCop's `comment_line?` only matches `#`-style comments (regex /^\s*#/),
+        // so =begin/=end content is always counted as body lines regardless of
+        // the `CountComments` setting. This matches RuboCop behavior.
 
         let trimmed = trim_bytes(line);
 

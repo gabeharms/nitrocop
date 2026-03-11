@@ -230,7 +230,10 @@ ensure
   cleanup
 end
 
-# Block with =begin/=end multi-line comment should not count those lines
+# =begin/=end content IS counted as body lines by RuboCop.
+# RuboCop's comment_line? only matches # comments, so =begin/=end
+# is always included regardless of CountComments.
+# This block has 6 code + 5 =begin/=end lines = 11 total (under Max=25).
 items.each do |x|
   a = 1
   b = 2
@@ -239,26 +242,8 @@ items.each do |x|
   e = 5
 =begin
   This is a multi-line comment.
-  It should not be counted.
-  Line 3.
-  Line 4.
-  Line 5.
-  Line 6.
-  Line 7.
-  Line 8.
-  Line 9.
-  Line 10.
-  Line 11.
-  Line 12.
-  Line 13.
-  Line 14.
-  Line 15.
-  Line 16.
-  Line 17.
-  Line 18.
-  Line 19.
-  Line 20.
-  Line 21.
+  It IS counted as body lines.
+  Unlike # comments, =begin/=end is not excluded.
 =end
   f = 6
 end
