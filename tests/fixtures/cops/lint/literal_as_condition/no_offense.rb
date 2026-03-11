@@ -55,3 +55,16 @@ end while true
 begin
   break if condition
 end until false
+
+# Backtick commands (xstrings) are not literals — they execute at runtime
+if `uname`
+  top
+end
+
+while `#{counter} < 10`
+  break
+end
+
+unless `check_ready`
+  retry
+end

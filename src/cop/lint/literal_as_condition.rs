@@ -39,15 +39,26 @@ use crate::parse::source::SourceFile;
 ///
 /// Corpus oracle reported FP=20, FN=17.
 ///
-/// FP:
-/// - Remaining false positives are concentrated in corpus test/spec files and pattern-matching
-///   guards. The exact RuboCop suppression path is still unclear, so no FP-side change was made
-///   in this pass.
+/// FP (initial):
+/// - Remaining false positives were concentrated in corpus test/spec files and pattern-matching
+///   guards. The exact RuboCop suppression path was still unclear.
 ///
-/// FN:
+/// FN (fixed):
 /// - Opal-style backtick JavaScript with interpolation parses as `InterpolatedXStringNode`, not
 ///   `XStringNode`. Treating only plain xstrings as literals missed conditions like
 ///   ``if `#{value}``` and ``while `#{counter} < 10``.
+///
+/// ## Corpus investigation (2026-03-11)
+///
+/// Corpus oracle reported FP=20, FN=0.
+///
+/// FP fix: Removed `XStringNode` and `InterpolatedXStringNode` from `is_literal()`.
+/// RuboCop's `literal?` (from rubocop-ast) does NOT include `xstr` in its LITERAL_TYPES.
+/// Backtick commands execute at runtime and are not literals. The RuboCop spec only tests
+/// these literal types in conditions: `1`, `2.0`, `[1]`, `{}`, `:sym`, `:"#{a}"`.
+/// Neither plain xstrings (`` `cmd` ``) nor interpolated xstrings (`` `#{expr}` ``) appear.
+/// The previous FN fix that added InterpolatedXStringNode was overcorrecting — those FNs
+/// were actually correct RuboCop behavior (not flagging xstrings).
 pub struct LiteralAsCondition;
 
 /// Check if a node is a literal value (matches RuboCop's `literal?`).
@@ -72,8 +83,6 @@ fn is_literal(node: &ruby_prism::Node<'_>) -> bool {
             | ruby_prism::Node::InterpolatedStringNode { .. }
             | ruby_prism::Node::InterpolatedSymbolNode { .. }
             | ruby_prism::Node::InterpolatedRegularExpressionNode { .. }
-            | ruby_prism::Node::InterpolatedXStringNode { .. }
-            | ruby_prism::Node::XStringNode { .. }
     )
 }
 
