@@ -36,6 +36,22 @@ use ruby_prism::Visit;
 /// 3. **String argument support**: RuboCop's `variable_definition?` extracts names from
 ///    `{any_sym str dstr}` (symbols, strings, dynamic strings). nitrocop only handled
 ///    symbols. Fix: added `extract_name_from_arg()` that handles all three forms.
+///
+/// ## Root cause of FNs (fixed, round 3)
+///
+/// **Missing `RSpec.` receiver support for non-describe methods**: RuboCop's `spec_group?`
+/// matches `(any_block (send #rspec? {#SharedGroups.all #ExampleGroups.all} ...) ...)` where
+/// `#rspec?` accepts both `nil?` (no receiver) and `(const cbase :RSpec)`. nitrocop's
+/// `is_example_group_call` only matched `describe` when the receiver was `RSpec`, missing
+/// `RSpec.shared_context`, `RSpec.shared_examples`, `RSpec.context`, etc. This pattern is
+/// very common in `spec/support/` and `spec/shared/` files (e.g., `RSpec.shared_context
+/// 'movie class' do ... end`). Fix: `is_example_group_call` now checks all example group
+/// and shared group methods when receiver is `RSpec`.
+///
+/// The same bug existed in `HelperCollector`'s scope boundary check — `RSpec.shared_context`
+/// blocks were not treated as scope boundaries, causing helpers inside them to leak to the
+/// parent group (producing FPs). Fix: scope boundary check now also accepts all group methods
+/// with `RSpec` receiver.
 pub struct MultipleMemoizedHelpers;
 
 impl Cop for MultipleMemoizedHelpers {
@@ -174,7 +190,7 @@ impl<'pr> Visit<'pr> for HelperCollector {
         if has_block {
             let is_scope_boundary = if let Some(recv) = node.receiver() {
                 util::constant_name(&recv).is_some_and(|n| n == b"RSpec")
-                    && method_name == b"describe"
+                    && (is_rspec_example_group(method_name) || is_rspec_shared_group(method_name))
             } else {
                 is_rspec_example_group(method_name)
                     || is_rspec_shared_group(method_name)
@@ -208,11 +224,15 @@ impl<'pr> Visit<'pr> for HelperCollector {
 }
 
 impl<'a> MemoizedHelperVisitor<'a> {
-    /// Check if a call node is an example group (describe, context, etc.)
+    /// Check if a call node is a spec group (example group or shared group).
+    /// Matches RuboCop's `spec_group?`:
+    ///   (any_block (send #rspec? {#SharedGroups.all #ExampleGroups.all} ...) ...)
+    /// where `#rspec?` matches both `nil?` (no receiver) and `(const cbase :RSpec)`.
     fn is_example_group_call(&self, call: &ruby_prism::CallNode<'_>) -> bool {
         let method_name = call.name().as_slice();
         if let Some(recv) = call.receiver() {
-            util::constant_name(&recv).is_some_and(|n| n == b"RSpec") && method_name == b"describe"
+            util::constant_name(&recv).is_some_and(|n| n == b"RSpec")
+                && (is_rspec_example_group(method_name) || is_rspec_shared_group(method_name))
         } else {
             is_rspec_example_group(method_name)
         }
@@ -384,6 +404,93 @@ mod tests {
             diags
         );
         assert!(diags[0].message.contains("[6/5]"));
+    }
+
+    #[test]
+    fn shared_examples_are_detected() {
+        let source = b"shared_examples 'too many helpers' do\n  let(:a) { 1 }\n  let(:b) { 2 }\n  let(:c) { 3 }\n  let(:d) { 4 }\n  let(:e) { 5 }\n  let(:f) { 6 }\n  it { expect(a).to eq(1) }\nend\n";
+        let diags = crate::testutil::run_cop_full(&MultipleMemoizedHelpers, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should fire on shared_examples with 6 helpers: {:?}",
+            diags
+        );
+        assert!(diags[0].message.contains("[6/5]"));
+    }
+
+    #[test]
+    fn block_pass_form_is_counted() {
+        let source = b"describe Foo do\n  let(:a, &method(:something_a))\n  let(:b, &method(:something_b))\n  let(:c, &method(:something_c))\n  let(:d, &method(:something_d))\n  let(:e, &method(:something_e))\n  let(:f, &method(:something_f))\n  it { expect(a).to eq(1) }\nend\n";
+        let diags = crate::testutil::run_cop_full(&MultipleMemoizedHelpers, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should fire on block-pass lets with 6 helpers: {:?}",
+            diags
+        );
+        assert!(diags[0].message.contains("[6/5]"));
+    }
+
+    #[test]
+    fn rspec_shared_context_is_detected() {
+        // RSpec.shared_context (with receiver) should be treated as a spec group
+        let source = b"RSpec.shared_context 'movie class' do\n  let(:a) { 1 }\n  let(:b) { 2 }\n  let(:c) { 3 }\n  let(:d) { 4 }\n  let(:e) { 5 }\n  let(:f) { 6 }\nend\n";
+        let diags = crate::testutil::run_cop_full(&MultipleMemoizedHelpers, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should fire on RSpec.shared_context with 6 helpers: {:?}",
+            diags
+        );
+        assert!(diags[0].message.contains("[6/5]"));
+    }
+
+    #[test]
+    fn rspec_shared_examples_is_detected() {
+        // RSpec.shared_examples (with receiver) should be treated as a spec group
+        let source = b"RSpec.shared_examples 'helpers' do\n  let(:a) { 1 }\n  let(:b) { 2 }\n  let(:c) { 3 }\n  let(:d) { 4 }\n  let(:e) { 5 }\n  let(:f) { 6 }\nend\n";
+        let diags = crate::testutil::run_cop_full(&MultipleMemoizedHelpers, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should fire on RSpec.shared_examples with 6 helpers: {:?}",
+            diags
+        );
+        assert!(diags[0].message.contains("[6/5]"));
+    }
+
+    #[test]
+    fn rspec_context_is_detected() {
+        // RSpec.context (with receiver) should be treated as a spec group
+        let source = b"RSpec.context 'something' do\n  let(:a) { 1 }\n  let(:b) { 2 }\n  let(:c) { 3 }\n  let(:d) { 4 }\n  let(:e) { 5 }\n  let(:f) { 6 }\nend\n";
+        let diags = crate::testutil::run_cop_full(&MultipleMemoizedHelpers, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should fire on RSpec.context with 6 helpers: {:?}",
+            diags
+        );
+        assert!(diags[0].message.contains("[6/5]"));
+    }
+
+    #[test]
+    fn rspec_shared_context_is_scope_boundary() {
+        // RSpec.shared_context is a scope boundary: its helpers don't count toward the parent.
+        // Parent has 5 lets at the limit. Inner shared_context has 2 helpers, but they
+        // don't leak to the parent. However, the inner shared_context inherits from parent
+        // (5 + 2 = 7 > 5), so it fires on the shared_context itself.
+        let source = b"describe Foo do\n  let(:a) { 1 }\n  let(:b) { 2 }\n  let(:c) { 3 }\n  let(:d) { 4 }\n  let(:e) { 5 }\n\n  RSpec.shared_context 'inner' do\n    let(:f) { 6 }\n    let(:g) { 7 }\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&MultipleMemoizedHelpers, source);
+        // Parent has 5 lets (at limit, no offense on parent)
+        // Inner RSpec.shared_context inherits 5 + 2 own = 7 > 5, offense on inner
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should fire on inner RSpec.shared_context, not on parent: {:?}",
+            diags
+        );
+        assert!(diags[0].message.contains("[7/5]"));
     }
 
     #[test]

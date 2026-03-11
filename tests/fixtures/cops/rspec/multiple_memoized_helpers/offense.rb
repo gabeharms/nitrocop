@@ -92,3 +92,62 @@ describe NestedInBeginRescue do
     # ignore
   end
 end
+
+# Shared examples are spec groups too (RuboCop's spec_group? matches SharedGroups.all)
+shared_examples 'too many helpers' do
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/MultipleMemoizedHelpers: Example group has too many memoized helpers [6/5]
+  let(:a) { 1 }
+  let(:b) { 2 }
+  let(:c) { 3 }
+  let(:d) { 4 }
+  let(:e) { 5 }
+  let(:f) { 6 }
+
+  it { expect(a).to eq(1) }
+end
+
+# shared_context is also a spec group
+shared_context 'too many helpers context' do
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/MultipleMemoizedHelpers: Example group has too many memoized helpers [6/5]
+  let(:a) { 1 }
+  let(:b) { 2 }
+  let(:c) { 3 }
+  let(:d) { 4 }
+  let(:e) { 5 }
+  let(:f) { 6 }
+end
+
+# Block-pass form: let(:foo, &bar) should be counted as a helper
+describe BlockPassForm do
+^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/MultipleMemoizedHelpers: Example group has too many memoized helpers [6/5]
+  let(:a, &method(:something_a))
+  let(:b, &method(:something_b))
+  let(:c, &method(:something_c))
+  let(:d, &method(:something_d))
+  let(:e, &method(:something_e))
+  let(:f, &method(:something_f))
+
+  it { expect(a).to eq(1) }
+end
+
+# RSpec.shared_context with receiver (common in spec/support/ and spec/shared/ files)
+RSpec.shared_context 'too many with receiver' do
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/MultipleMemoizedHelpers: Example group has too many memoized helpers [6/5]
+  let(:a) { 1 }
+  let(:b) { 2 }
+  let(:c) { 3 }
+  let(:d) { 4 }
+  let(:e) { 5 }
+  let(:f) { 6 }
+end
+
+# RSpec.shared_examples with receiver
+RSpec.shared_examples 'too many with receiver' do
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/MultipleMemoizedHelpers: Example group has too many memoized helpers [6/5]
+  let(:a) { 1 }
+  let(:b) { 2 }
+  let(:c) { 3 }
+  let(:d) { 4 }
+  let(:e) { 5 }
+  let(:f) { 6 }
+end
