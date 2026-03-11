@@ -3,6 +3,13 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-11)
+///
+/// Corpus oracle reported FP=0, FN=1.
+///
+/// FN=1: Kamal calls `super &block` in a module override. Prism stores the
+/// block pass on `SuperNode#block()` rather than in `arguments()`, so the cop
+/// previously treated that form as zero-arity `super` and missed the offense.
 pub struct SuperWithArgsParentheses;
 
 impl Cop for SuperWithArgsParentheses {
@@ -28,8 +35,9 @@ impl Cop for SuperWithArgsParentheses {
             None => return,
         };
 
-        // Must have arguments
-        if super_node.arguments().is_none() {
+        // RuboCop also requires parentheses for block-pass-only forms like
+        // `super &block`.
+        if super_node.arguments().is_none() && super_node.block().is_none() {
             return;
         }
 
