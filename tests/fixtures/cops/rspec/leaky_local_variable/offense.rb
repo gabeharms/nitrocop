@@ -114,3 +114,32 @@ describe SomeClass do
     puts skip_message
   end
 end
+
+# Variable used as include_context non-first argument
+describe SomeClass do
+  config = { key: 'value' }
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyLocalVariable: Do not use local variables defined outside of examples inside of them.
+
+  include_context 'shared setup', config
+end
+
+# Variable used inside include_context block
+describe SomeClass do
+  payload = build(:payload)
+  ^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyLocalVariable: Do not use local variables defined outside of examples inside of them.
+
+  include_context 'authenticated' do
+    let(:data) { payload }
+  end
+end
+
+# Variable used in it block AND reassigned after use
+describe SomeClass do
+  user = create(:user)
+  ^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyLocalVariable: Do not use local variables defined outside of examples inside of them.
+
+  it 'updates the user' do
+    expect { user.update(admin: true) }.to change(user, :updated_at)
+    user = create(:user)
+  end
+end

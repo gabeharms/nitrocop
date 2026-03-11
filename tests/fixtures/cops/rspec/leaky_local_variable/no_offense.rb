@@ -123,3 +123,25 @@ describe SomeClass do
     expect(1 + 2).to eq(3)
   end
 end
+
+# Variable reassigned before use inside example (VariableForce scoping)
+describe SomeClass do
+  user = create(:user)
+
+  it 'updates the user' do
+    user = create(:user)
+    expect { user.update(admin: true) }.to change(user, :updated_at)
+  end
+end
+
+# Variable used only as first include_context argument (context name)
+describe SomeClass do
+  ctx = condition ? 'admin context' : 'user context'
+  include_context ctx
+end
+
+# Variable used in interpolated string for include_context argument
+describe SomeClass do
+  role = 'admin'
+  include_context 'shared setup', "#{role} context"
+end

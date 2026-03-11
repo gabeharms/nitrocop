@@ -28,6 +28,28 @@ use crate::parse::source::SourceFile;
 ///    metadata keyword args, `it_behaves_like` first arg, or interpolated
 ///    string/symbol args to includes methods.
 /// 4. Respect block parameter shadowing throughout.
+///
+/// ## Investigation (FP=41, FN=409, 2026-03-10)
+///
+/// **FP fix: reassignment-before-use (41 FPs)**
+/// RuboCop's VariableForce performs flow-sensitive analysis, tracking that a
+/// variable reassigned inside an example block before any read creates a new
+/// binding that doesn't reference the outer scope. Our implementation now checks
+/// `var_written_before_read_in_stmts` to suppress offenses when the first mention
+/// of the variable in the block is an unconditional write.
+///
+/// **FN fix: missing `include_context` (contributes to 409 FNs)**
+/// `is_includes_method` was missing `include_context`. RuboCop's `Includes.all`
+/// includes both `Examples` (`it_behaves_like`, `it_should_behave_like`,
+/// `include_examples`) and `Context` (`include_context`). Variables passed as
+/// non-first args to `include_context` should be flagged.
+///
+/// **Remaining FN gap:** The bulk of the 409 FNs likely comes from cases where
+/// RuboCop's VariableForce tracks variable references across Ruby scope
+/// boundaries that our AST-walking approach doesn't replicate (e.g., variables
+/// assigned before the top-level `describe` block, complex flow-sensitive
+/// reassignment patterns). A full VariableForce implementation would close this
+/// gap but is a significant engineering effort.
 pub struct LeakyLocalVariable;
 
 impl Cop for LeakyLocalVariable {
@@ -640,7 +662,9 @@ fn is_interpolated_string_or_symbol(node: &ruby_prism::Node<'_>) -> bool {
 }
 
 /// Check if the body of a block references a variable. Does a deep recursive
-/// search through all node types. Respects block parameter shadowing.
+/// search through all node types. Respects block parameter shadowing and
+/// reassignment-before-use (if the variable is unconditionally written before
+/// any read in the block, the outer variable is not actually referenced).
 fn block_body_references_var(block: ruby_prism::BlockNode<'_>, var_name: &[u8]) -> bool {
     // If the block has a parameter with the same name, it shadows the outer var
     if block_has_param(&block, var_name) {
@@ -656,12 +680,78 @@ fn block_body_references_var(block: ruby_prism::BlockNode<'_>, var_name: &[u8]) 
         None => return false,
     };
 
+    // Check if the variable is reassigned before any read in the block.
+    // If the first mention of the variable is an unconditional write (not a read),
+    // then the outer variable is never actually referenced.
+    if var_written_before_read_in_stmts(&stmts, var_name) {
+        return false;
+    }
+
     for stmt in stmts.body().iter() {
         if node_references_var(&stmt, var_name) {
             return true;
         }
     }
     false
+}
+
+/// Check if a variable is unconditionally written before being read in a
+/// sequence of statements. Returns true if the variable is guaranteed to be
+/// assigned before any read occurs, meaning the outer scope's value is never
+/// used. This matches RuboCop's VariableForce flow-sensitive analysis for the
+/// common case of reassignment at the beginning of a block.
+fn var_written_before_read_in_stmts(
+    stmts: &ruby_prism::StatementsNode<'_>,
+    var_name: &[u8],
+) -> bool {
+    for stmt in stmts.body().iter() {
+        // Check if this statement is an unconditional write to the variable
+        if is_unconditional_var_write(&stmt, var_name) {
+            return true;
+        }
+        // Check if this statement reads the variable (in any position)
+        if node_reads_var(&stmt, var_name) {
+            return false;
+        }
+    }
+    false
+}
+
+/// Check if a node is an unconditional write to the given variable.
+/// Only matches direct `var = expr` assignments, not `var ||= expr`
+/// or conditional assignments (those might not execute).
+fn is_unconditional_var_write(node: &ruby_prism::Node<'_>, var_name: &[u8]) -> bool {
+    if let Some(lw) = node.as_local_variable_write_node() {
+        return lw.name().as_slice() == var_name;
+    }
+    if let Some(mw) = node.as_multi_write_node() {
+        for target in mw.lefts().iter() {
+            if let Some(lt) = target.as_local_variable_target_node() {
+                if lt.name().as_slice() == var_name {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a node reads (but doesn't write) the given variable.
+/// Returns true if the variable name appears as a read anywhere in the node.
+fn node_reads_var(node: &ruby_prism::Node<'_>, var_name: &[u8]) -> bool {
+    if let Some(lv) = node.as_local_variable_read_node() {
+        return lv.name().as_slice() == var_name;
+    }
+    // For writes, check if the RHS reads the variable
+    if let Some(lw) = node.as_local_variable_write_node() {
+        if lw.name().as_slice() == var_name {
+            // The write itself doesn't read, but the RHS might
+            return node_reads_var(&lw.value(), var_name);
+        }
+    }
+    // For all other node types, delegate to the full reference checker
+    // (this is a conservative check - any reference counts as a read)
+    node_references_var(node, var_name)
 }
 
 /// Check if a block has a parameter with the given name (for shadowing).
@@ -1166,7 +1256,7 @@ fn is_example_scope(name: &[u8]) -> bool {
 fn is_includes_method(name: &[u8]) -> bool {
     matches!(
         name,
-        b"it_behaves_like" | b"it_should_behave_like" | b"include_examples"
+        b"it_behaves_like" | b"it_should_behave_like" | b"include_examples" | b"include_context"
     )
 }
 
