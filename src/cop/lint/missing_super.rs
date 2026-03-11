@@ -18,6 +18,23 @@ use ruby_prism::Visit;
 /// RuboCop's `callback_method_def?` uses `each_ancestor(:class, :sclass, :module)`
 /// — callbacks inside modules should also be flagged. Fixed by including
 /// `Module` in the accepted contexts for callback methods.
+///
+/// ## Corpus investigation round 2 (2026-03-11)
+///
+/// Corpus oracle reported FP=64, FN=21.
+///
+/// FP fixes (three root causes):
+/// 1. `def self.initialize` was flagged as constructor — RuboCop's `on_defs`
+///    only checks callbacks, not `initialize`. Fixed by checking
+///    `node.receiver().is_none()` before the constructor check.
+/// 2. `LambdaNode` was not tracked as a block context — RuboCop's
+///    `:any_block` includes lambdas (`-> {}` and `lambda {}`). Added
+///    `visit_lambda_node` that pushes `ClassContext::Block`.
+/// 3. `SuperFinder` stopped at nested defs/classes/modules, but RuboCop's
+///    `each_descendant(:super, :zsuper)` traverses into everything. A `super`
+///    in a nested scope inside `def initialize` counts as "containing super"
+///    for RuboCop, preventing the offense. Removed the early-return overrides
+///    in `SuperFinder` to match.
 pub struct MissingSuper;
 
 /// Lifecycle callback method names that require `super`.
@@ -269,11 +286,23 @@ impl<'pr> Visit<'pr> for MissingSuperVisitor<'_, '_> {
         self.class_stack.pop();
     }
 
+    fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
+        // Lambda blocks (-> { } and lambda { }) count as block ancestors in
+        // RuboCop's :any_block. Push Block context so `initialize` inside a
+        // lambda is not flagged (FP fix).
+        self.class_stack.push(ClassContext::Block);
+        ruby_prism::visit_lambda_node(self, node);
+        self.class_stack.pop();
+    }
+
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
         let method_name = node.name().as_slice();
+        let has_receiver = node.receiver().is_some();
 
-        if method_name == b"initialize" {
-            // Check if inside a class with a stateful parent
+        if method_name == b"initialize" && !has_receiver {
+            // Only instance `def initialize` is a constructor.
+            // `def self.initialize` is a class method — RuboCop's on_defs does
+            // not check initialize, only callbacks.
             if self.is_inside_class_with_stateful_parent() && !Self::def_contains_super(node) {
                 let loc = node.location();
                 let (line, column) = self.source.offset_to_line_col(loc.start_offset());
@@ -285,7 +314,9 @@ impl<'pr> Visit<'pr> for MissingSuperVisitor<'_, '_> {
                 ));
             }
         } else if Self::is_callback_name(method_name) {
-            // Instance method callbacks (like method_added) - need to be inside a class or module
+            // Both instance and class-method callbacks (def method_added,
+            // def self.inherited) need super — RuboCop handles both on_def
+            // and on_defs for callbacks.
             if self.is_inside_class_module_or_sclass() && !Self::def_contains_super(node) {
                 let loc = node.location();
                 let (line, column) = self.source.offset_to_line_col(loc.start_offset());
@@ -304,6 +335,11 @@ impl<'pr> Visit<'pr> for MissingSuperVisitor<'_, '_> {
 }
 
 /// Finder that checks if a node tree contains a `super` or `zsuper` call.
+///
+/// RuboCop uses `node.each_descendant(:super, :zsuper).any?` which traverses
+/// into ALL child nodes including nested defs, classes, and modules. We match
+/// this behavior to avoid FPs where `super` appears inside a nested scope
+/// within `def initialize`.
 struct SuperFinder {
     found: bool,
 }
@@ -316,11 +352,6 @@ impl<'pr> Visit<'pr> for SuperFinder {
     fn visit_forwarding_super_node(&mut self, _node: &ruby_prism::ForwardingSuperNode<'pr>) {
         self.found = true;
     }
-
-    // Don't recurse into nested defs/classes/modules
-    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
-    fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
-    fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
 }
 
 #[cfg(test)]
