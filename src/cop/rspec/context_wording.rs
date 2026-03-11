@@ -1,4 +1,6 @@
-use crate::cop::node_type::{CALL_NODE, INTERPOLATED_STRING_NODE, STRING_NODE};
+use crate::cop::node_type::{
+    CALL_NODE, INTERPOLATED_STRING_NODE, INTERPOLATED_X_STRING_NODE, STRING_NODE, X_STRING_NODE,
+};
 use crate::cop::util::{self, RSPEC_DEFAULT_INCLUDE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
@@ -12,9 +14,18 @@ use crate::parse::source::SourceFile;
 /// when the call has a `do...end` or `{ }` block. Also missing receiver check:
 /// RuboCop requires nil receiver or `RSpec` constant.
 ///
-/// FN=112: Likely due to projects configuring additional prefixes or
-/// AllowedPatterns that change which descriptions are flagged. May also involve
-/// edge cases with xstr (backtick strings) or prefix matching differences.
+/// ## Corpus investigation (2026-03-11)
+///
+/// FP=5: Word boundary mismatch. nitrocop used `strip_prefix` then checked if
+/// remainder starts with space/comma/newline. RuboCop uses `\b` regex word
+/// boundary. Descriptions like "when-something" or "with.dots" should NOT be
+/// flagged because `-` and `.` are non-word chars that satisfy `\b`.
+/// Fix: check that the char after the prefix is absent or not `[a-zA-Z0-9_]`.
+///
+/// FN=112: Missing xstr (backtick string) handling. RuboCop's `any_str` pattern
+/// matches `str`, `dstr`, AND `xstr`. nitrocop only handled StringNode and
+/// InterpolatedStringNode, missing XStringNode and InterpolatedXStringNode.
+/// Fix: add xstr node types to interested_node_types and extract their content.
 pub struct ContextWording;
 
 const DEFAULT_PREFIXES: &[&str] = &["when", "with", "without"];
@@ -33,7 +44,13 @@ impl Cop for ContextWording {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[CALL_NODE, INTERPOLATED_STRING_NODE, STRING_NODE]
+        &[
+            CALL_NODE,
+            INTERPOLATED_STRING_NODE,
+            INTERPOLATED_X_STRING_NODE,
+            STRING_NODE,
+            X_STRING_NODE,
+        ]
     }
 
     fn check_node(
@@ -77,7 +94,8 @@ impl Cop for ContextWording {
             return;
         }
 
-        // Extract description text from string or interpolated string
+        // Extract description text from string, interpolated string, or xstr (backtick)
+        // RuboCop's `any_str` matches str, dstr, and xstr node types.
         let content_str: String;
         if let Some(s) = arg_list[0].as_string_node() {
             let content = s.unescaped();
@@ -87,7 +105,19 @@ impl Cop for ContextWording {
             };
         } else if let Some(interp) = arg_list[0].as_interpolated_string_node() {
             // For interpolated strings, extract leading text before first interpolation
-            let parts: Vec<_> = interp.parts().iter().collect();
+            content_str = match extract_interp_leading_text(&interp) {
+                Some(s) => s,
+                None => return,
+            };
+        } else if let Some(x) = arg_list[0].as_x_string_node() {
+            let content = x.unescaped();
+            content_str = match std::str::from_utf8(content) {
+                Ok(s) => s.to_string(),
+                Err(_) => return,
+            };
+        } else if let Some(interp_x) = arg_list[0].as_interpolated_x_string_node() {
+            // For interpolated xstr, extract leading text before first interpolation
+            let parts: Vec<_> = interp_x.parts().iter().collect();
             if let Some(first) = parts.first() {
                 if let Some(s) = first.as_string_node() {
                     let text = s.unescaped();
@@ -127,14 +157,15 @@ impl Cop for ContextWording {
             DEFAULT_PREFIXES.to_vec()
         };
 
-        // Check if description starts with any allowed prefix followed by a word boundary
+        // Check if description starts with any allowed prefix followed by a word boundary.
+        // RuboCop uses /^#{Regexp.escape(pre)}\b/ which matches when the next char
+        // is not a word character [a-zA-Z0-9_]. This means "when-foo" matches (dash
+        // is non-word), but "whenever" does not (e is a word char).
         for prefix in &prefixes {
             if let Some(after) = content_str.strip_prefix(prefix) {
-                if after.is_empty()
-                    || after.starts_with(' ')
-                    || after.starts_with(',')
-                    || after.starts_with('\n')
-                {
+                let next_is_word_char =
+                    after.as_bytes()[0].is_ascii_alphanumeric() || after.as_bytes()[0] == b'_';
+                if after.is_empty() || !next_is_word_char {
                     return;
                 }
             }
@@ -153,6 +184,15 @@ impl Cop for ContextWording {
             ),
         ));
     }
+}
+
+/// Extract leading text from an interpolated string's parts (before first interpolation).
+fn extract_interp_leading_text(interp: &ruby_prism::InterpolatedStringNode<'_>) -> Option<String> {
+    let parts: Vec<_> = interp.parts().iter().collect();
+    let first = parts.first()?;
+    let s = first.as_string_node()?;
+    let text = s.unescaped();
+    std::str::from_utf8(text).ok().map(|s| s.to_string())
 }
 
 #[cfg(test)]
