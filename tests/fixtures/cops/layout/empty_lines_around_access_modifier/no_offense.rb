@@ -94,3 +94,48 @@ app = Sinatra.new do
   public
   def pub; end
 end
+
+# `private` inside a method body (not a bare access modifier)
+class Worker
+  def private?
+    private
+  end
+end
+
+# `private` deep inside a method body conditional
+class Processor
+  def private?
+    if true
+      private
+    end
+  end
+end
+
+# Multiline class definition with superclass on next line
+class Controller <
+      Base
+  private
+
+  def action
+  end
+end
+
+# Multiline class with sclass on next line
+class <<
+      self
+  private
+
+  def action
+  end
+end
+
+# Access modifier with trailing comment (blank lines present)
+class Config
+  def setup
+  end
+
+  private # internal helpers
+
+  def helper
+  end
+end
