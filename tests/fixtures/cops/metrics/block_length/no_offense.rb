@@ -229,3 +229,36 @@ items.each do |x|
 ensure
   cleanup
 end
+
+# Block with =begin/=end multi-line comment should not count those lines
+items.each do |x|
+  a = 1
+  b = 2
+  c = 3
+  d = 4
+  e = 5
+=begin
+  This is a multi-line comment.
+  It should not be counted.
+  Line 3.
+  Line 4.
+  Line 5.
+  Line 6.
+  Line 7.
+  Line 8.
+  Line 9.
+  Line 10.
+  Line 11.
+  Line 12.
+  Line 13.
+  Line 14.
+  Line 15.
+  Line 16.
+  Line 17.
+  Line 18.
+  Line 19.
+  Line 20.
+  Line 21.
+=end
+  f = 6
+end
