@@ -1,6 +1,4 @@
-use crate::cop::node_type::{
-    BLOCK_NODE, CALL_NODE, CONSTANT_PATH_NODE, CONSTANT_READ_NODE, PROGRAM_NODE, STATEMENTS_NODE,
-};
+use crate::cop::node_type::{CALL_NODE, PROGRAM_NODE};
 use crate::cop::util::{RSPEC_DEFAULT_INCLUDE, is_rspec_example_group};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
@@ -19,6 +17,15 @@ use std::hash::{Hash, Hasher};
 ///
 /// Root cause of 82 FN was source-byte comparison failing on syntactically
 /// equivalent but textually different bodies.
+///
+/// Investigation (2026-03-11):
+/// - FP=12: AstHashVisitor was missing handlers for RangeNode (exclude_end flag)
+///   and XStringNode (backtick string content). Bodies differing only in `..`
+///   vs `...` or different backtick command strings were hashed identically.
+/// - FN=66: check_node only recursed into known parent groups (is_parent_group
+///   list). Example groups inside non-RSpec blocks (e.g. InSpec's `control`)
+///   were not compared. Fixed by checking siblings inside ANY block body,
+///   matching RuboCop's on_begin approach.
 pub struct RepeatedExampleGroupBody;
 
 impl Cop for RepeatedExampleGroupBody {
@@ -35,14 +42,7 @@ impl Cop for RepeatedExampleGroupBody {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[
-            BLOCK_NODE,
-            CALL_NODE,
-            CONSTANT_PATH_NODE,
-            CONSTANT_READ_NODE,
-            PROGRAM_NODE,
-            STATEMENTS_NODE,
-        ]
+        &[PROGRAM_NODE, CALL_NODE]
     }
 
     fn check_node(
@@ -54,54 +54,42 @@ impl Cop for RepeatedExampleGroupBody {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        // We need to look at sibling example groups within a common parent.
-        // The parent can be a ProgramNode (top-level) or any block body.
-        let stmts = node.as_program_node().map(|program| program.statements());
-
-        if stmts.is_none() {
-            // Also check inside example group blocks
-            let call = match node.as_call_node() {
-                Some(c) => c,
-                None => return,
-            };
-            let name = call.name().as_slice();
-            if !is_parent_group(name) {
-                return;
-            }
-            let block = match call.block() {
-                Some(b) => b,
-                None => return,
-            };
-            let block_node = match block.as_block_node() {
-                Some(b) => b,
-                None => return,
-            };
-            let body = match block_node.body() {
-                Some(b) => b,
-                None => return,
-            };
-            let inner_stmts = match body.as_statements_node() {
-                Some(s) => s,
-                None => return,
-            };
-            diagnostics.extend(check_sibling_groups(self, source, &inner_stmts));
+        // Handle top-level statements
+        if let Some(program) = node.as_program_node() {
+            diagnostics.extend(check_sibling_groups(self, source, &program.statements()));
             return;
         }
 
-        let program_stmts = stmts.unwrap();
-        diagnostics.extend(check_sibling_groups_from_body(self, source, &program_stmts));
+        // For ANY CallNode with a block: check inside the block body for sibling
+        // example groups. This matches RuboCop's on_begin approach — Parser creates
+        // `begin` nodes for multi-statement bodies at every level. Previously we
+        // only checked inside known parent groups (is_parent_group list), missing
+        // example groups inside non-RSpec blocks like InSpec's `control`.
+        let call = match node.as_call_node() {
+            Some(c) => c,
+            None => return,
+        };
+        let block = match call.block() {
+            Some(b) => b,
+            None => return,
+        };
+        let block_node = match block.as_block_node() {
+            Some(b) => b,
+            None => return,
+        };
+        let body = match block_node.body() {
+            Some(b) => b,
+            None => return,
+        };
+        let inner_stmts = match body.as_statements_node() {
+            Some(s) => s,
+            None => return,
+        };
+        diagnostics.extend(check_sibling_groups(self, source, &inner_stmts));
     }
 }
 
 fn check_sibling_groups(
-    cop: &RepeatedExampleGroupBody,
-    source: &SourceFile,
-    stmts: &ruby_prism::StatementsNode<'_>,
-) -> Vec<Diagnostic> {
-    check_sibling_groups_iter(cop, source, stmts.body().iter())
-}
-
-fn check_sibling_groups_from_body(
     cop: &RepeatedExampleGroupBody,
     source: &SourceFile,
     stmts: &ruby_prism::StatementsNode<'_>,
@@ -122,7 +110,6 @@ fn check_sibling_groups_iter<'a>(
             Some(c) => c,
             None => continue,
         };
-        let name = call.name().as_slice();
         if !is_rspec_example_group_for_body(&call) {
             continue;
         }
@@ -159,6 +146,7 @@ fn check_sibling_groups_iter<'a>(
         visitor.visit(&body);
 
         // Also include metadata signature to distinguish groups with different metadata
+        let name = call.name().as_slice();
         metadata_hash(source, &call, &mut hasher);
 
         let sig = hasher.finish();
@@ -395,6 +383,116 @@ impl<'a, 'pr, H: Hasher> Visit<'pr> for AstHashVisitor<'a, H> {
         node.name().as_slice().hash(self.hasher);
         ruby_prism::visit_def_node(self, node);
     }
+
+    fn visit_range_node(&mut self, node: &ruby_prism::RangeNode<'pr>) {
+        // Hash the operator source (.. vs ...) to distinguish inclusive/exclusive ranges.
+        // Without this, `1..99` and `1...99` hash identically (same RangeNode discriminant
+        // and same children) causing false positives.
+        let op_loc = node.operator_loc();
+        self.src[op_loc.start_offset()..op_loc.end_offset()].hash(self.hasher);
+        ruby_prism::visit_range_node(self, node);
+    }
+
+    fn visit_x_string_node(&mut self, node: &ruby_prism::XStringNode<'pr>) {
+        // Hash backtick string content. Without this, all XStringNode values
+        // hash identically (same discriminant, no children) causing false positives.
+        node.unescaped().hash(self.hasher);
+    }
+
+    fn visit_interpolated_x_string_node(
+        &mut self,
+        node: &ruby_prism::InterpolatedXStringNode<'pr>,
+    ) {
+        // Hash interpolated backtick string content via default child traversal.
+        ruby_prism::visit_interpolated_x_string_node(self, node);
+    }
+
+    fn visit_required_parameter_node(&mut self, node: &ruby_prism::RequiredParameterNode<'pr>) {
+        // Hash parameter names — without this, `def foo(a)` and `def foo(b)` hash identically.
+        node.name().as_slice().hash(self.hasher);
+    }
+
+    fn visit_optional_parameter_node(&mut self, node: &ruby_prism::OptionalParameterNode<'pr>) {
+        node.name().as_slice().hash(self.hasher);
+        ruby_prism::visit_optional_parameter_node(self, node);
+    }
+
+    fn visit_rest_parameter_node(&mut self, node: &ruby_prism::RestParameterNode<'pr>) {
+        if let Some(name) = node.name() {
+            name.as_slice().hash(self.hasher);
+        }
+    }
+
+    fn visit_keyword_rest_parameter_node(
+        &mut self,
+        node: &ruby_prism::KeywordRestParameterNode<'pr>,
+    ) {
+        if let Some(name) = node.name() {
+            name.as_slice().hash(self.hasher);
+        }
+    }
+
+    fn visit_block_parameter_node(&mut self, node: &ruby_prism::BlockParameterNode<'pr>) {
+        if let Some(name) = node.name() {
+            name.as_slice().hash(self.hasher);
+        }
+    }
+
+    fn visit_required_keyword_parameter_node(
+        &mut self,
+        node: &ruby_prism::RequiredKeywordParameterNode<'pr>,
+    ) {
+        node.name().as_slice().hash(self.hasher);
+    }
+
+    fn visit_optional_keyword_parameter_node(
+        &mut self,
+        node: &ruby_prism::OptionalKeywordParameterNode<'pr>,
+    ) {
+        node.name().as_slice().hash(self.hasher);
+        ruby_prism::visit_optional_keyword_parameter_node(self, node);
+    }
+
+    fn visit_block_local_variable_node(&mut self, node: &ruby_prism::BlockLocalVariableNode<'pr>) {
+        node.name().as_slice().hash(self.hasher);
+    }
+
+    fn visit_local_variable_target_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableTargetNode<'pr>,
+    ) {
+        node.name().as_slice().hash(self.hasher);
+    }
+
+    fn visit_instance_variable_target_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableTargetNode<'pr>,
+    ) {
+        node.name().as_slice().hash(self.hasher);
+    }
+
+    fn visit_class_variable_target_node(
+        &mut self,
+        node: &ruby_prism::ClassVariableTargetNode<'pr>,
+    ) {
+        node.name().as_slice().hash(self.hasher);
+    }
+
+    fn visit_global_variable_target_node(
+        &mut self,
+        node: &ruby_prism::GlobalVariableTargetNode<'pr>,
+    ) {
+        node.name().as_slice().hash(self.hasher);
+    }
+
+    fn visit_constant_write_node(&mut self, node: &ruby_prism::ConstantWriteNode<'pr>) {
+        node.name().as_slice().hash(self.hasher);
+        ruby_prism::visit_constant_write_node(self, node);
+    }
+
+    fn visit_constant_target_node(&mut self, node: &ruby_prism::ConstantTargetNode<'pr>) {
+        node.name().as_slice().hash(self.hasher);
+    }
 }
 
 fn is_skip_or_pending_body(body: &ruby_prism::Node<'_>) -> bool {
@@ -413,25 +511,6 @@ fn is_skip_or_pending_body(body: &ruby_prism::Node<'_>) -> bool {
         }
     }
     false
-}
-
-fn is_parent_group(name: &[u8]) -> bool {
-    matches!(
-        name,
-        b"describe"
-            | b"context"
-            | b"feature"
-            | b"example_group"
-            | b"xdescribe"
-            | b"xcontext"
-            | b"xfeature"
-            | b"fdescribe"
-            | b"fcontext"
-            | b"ffeature"
-            | b"shared_examples"
-            | b"shared_examples_for"
-            | b"shared_context"
-    )
 }
 
 #[cfg(test)]
@@ -481,6 +560,361 @@ end
             diags.len(),
             2,
             "Expected 2 offenses for identical bodies with different parens, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn skip_with_args_excluded() {
+        let source = b"
+describe '#load' do
+  skip 'storage feature needed'
+end
+
+describe '#save' do
+  skip 'storage feature needed'
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "skip with args should be excluded: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn pending_with_args_excluded() {
+        let source = b"
+describe '#get_foo' do
+  pending 'foo feature is broken'
+end
+
+describe '#set_foo' do
+  pending 'foo feature is broken'
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "pending with args should be excluded: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn skip_with_block_not_excluded() {
+        let source = b"
+describe '#load' do
+  skip { cool_predicate_method }
+end
+
+describe '#save' do
+  skip { cool_predicate_method }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "skip with block should NOT be excluded: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn cross_group_type_detection() {
+        // describe and context with same body should match
+        let source = b"
+describe 'doing x' do
+  it { cool_predicate_method }
+end
+
+context 'when a is true' do
+  it { cool_predicate_method }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "describe and context with same body should match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn different_metadata_no_offense() {
+        let source = b"
+describe 'doing x' do
+  it { cool_predicate_method }
+end
+
+describe 'doing x', :request do
+  it { cool_predicate_method }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "different metadata should not match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn different_const_arg_no_offense() {
+        let source = b"
+describe CSV::Row do
+  it { is_expected.to respond_to :headers }
+end
+
+describe CSV::Table do
+  it { is_expected.to respond_to :headers }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "different const args should not match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn same_const_arg_offense() {
+        let source = b"
+context Net::HTTP do
+  it { expect(described_class).to respond_to :start }
+end
+
+context Net::HTTP do
+  it { expect(described_class).to respond_to :start }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "same const args with same body should match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn different_scopes_no_offense() {
+        // Groups at different nesting levels should not match
+        let source = b"
+describe 'A' do
+  describe '.b' do
+    context 'when this' do
+      it { do_something }
+    end
+  end
+  context 'when this' do
+    it { do_something }
+  end
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "groups at different nesting levels should not match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn separated_by_non_group_siblings() {
+        // Groups separated by non-example-group code should still match
+        let source = b"
+describe 'repeated' do
+  it { is_expected.to be_truthy }
+end
+
+before { do_something }
+
+describe 'this is repeated' do
+  it { is_expected.to be_truthy }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "groups separated by non-group code should still match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn no_descriptions_same_body() {
+        // context without descriptions but same body should match
+        let source = b"
+context do
+  let(:preferences) { %w[a] }
+
+  it { is_expected.to eq true }
+end
+
+context do
+  let(:preferences) { %w[a] }
+
+  it { is_expected.to eq true }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "context without descriptions but same body should match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn rspec_prefix_mixed_with_bare() {
+        // RSpec.describe and bare context should match if same body
+        let source = b"
+RSpec.describe 'doing x' do
+  it { cool_predicate_method }
+end
+
+context 'when a is true' do
+  it { cool_predicate_method }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "RSpec.describe and bare context with same body should match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn helpers_describe_excluded() {
+        // helpers.describe should be excluded from comparison
+        let source = b"
+helpers.describe 'doing x' do
+  it { cool_predicate_method }
+end
+
+RSpec.describe 'doing x' do
+  it { cool_predicate_method }
+end
+
+context 'when a is true' do
+  it { cool_predicate_method }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "helpers.describe should be excluded, RSpec.describe and context should match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn nested_repeated_groups() {
+        // Repeated groups nested inside another group
+        let source = b"
+RSpec.describe 'A' do
+  stub_all_http_calls()
+  before { create(:admin) }
+
+  describe '#load' do
+    it { cool_predicate_method }
+  end
+
+  describe '#load' do
+    it { cool_predicate_method }
+  end
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "nested repeated groups should match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn groups_inside_non_example_group_block() {
+        // FN root cause: describe blocks inside a non-example-group block like `control`
+        // RuboCop's on_begin fires at any level; nitrocop must check siblings everywhere
+        let source = b"
+control 'test-01' do
+  describe 'first check' do
+    it { should eq 0 }
+  end
+  describe 'second check' do
+    it { should eq 0 }
+  end
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "describe blocks inside non-example-group block should be compared: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn range_operator_difference_not_flagged() {
+        // FP root cause: .. vs ... range operators produce same RangeNode discriminant
+        // but differ in exclude_end flag which must be hashed
+        let source = b"
+describe 'included' do
+  before { @range = 1..99 }
+  it { @range.should include 50 }
+end
+
+describe 'excluded' do
+  before { @range = 1...99 }
+  it { @range.should include 50 }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "bodies with .. vs ... ranges should not match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn xstring_content_difference_not_flagged() {
+        // FP root cause: backtick strings (XStringNode) content not hashed
+        let source = b"
+context 'case a' do
+  before { `echo hello` }
+  it { should be_truthy }
+end
+
+context 'case b' do
+  before { `echo world` }
+  it { should be_truthy }
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "bodies with different backtick strings should not match: {:?}",
             diags
         );
     }

@@ -37,3 +37,14 @@ context 'parens case b' do
 ^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/RepeatedExampleGroupBody: Repeated context block body on line(s) [25]
   it { expect(subject).to eq 1 }
 end
+
+control 'test-01' do
+  describe 'first check' do
+  ^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/RepeatedExampleGroupBody: Repeated describe block body on line(s) [37]
+    it { should eq 0 }
+  end
+  describe 'second check' do
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/RepeatedExampleGroupBody: Repeated describe block body on line(s) [34]
+    it { should eq 0 }
+  end
+end
