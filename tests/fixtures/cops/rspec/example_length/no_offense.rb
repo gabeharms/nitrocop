@@ -38,4 +38,15 @@ RSpec.describe Foo do
     d = finalize(c)
     expect(d).to be_valid
   end
+
+  # Calls with receiver are not RSpec examples
+  config.it 'is not an example' do
+    a = 1
+    b = 2
+    c = 3
+    d = 4
+    e = 5
+    f = a + b + c + d + e
+    expect(f).to eq(15)
+  end
 end

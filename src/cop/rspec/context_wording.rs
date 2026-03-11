@@ -1,9 +1,20 @@
 use crate::cop::node_type::{CALL_NODE, INTERPOLATED_STRING_NODE, STRING_NODE};
-use crate::cop::util::RSPEC_DEFAULT_INCLUDE;
+use crate::cop::util::{self, RSPEC_DEFAULT_INCLUDE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-10)
+///
+/// FP=17, FN=112. Root cause of FPs: nitrocop was checking CallNode directly
+/// without requiring a block. RuboCop uses `on_block` with pattern
+/// `(block (send #rspec? { :context :shared_context } ...) ...)` — only fires
+/// when the call has a `do...end` or `{ }` block. Also missing receiver check:
+/// RuboCop requires nil receiver or `RSpec` constant.
+///
+/// FN=112: Likely due to projects configuring additional prefixes or
+/// AllowedPatterns that change which descriptions are flagged. May also involve
+/// edge cases with xstr (backtick strings) or prefix matching differences.
 pub struct ContextWording;
 
 const DEFAULT_PREFIXES: &[&str] = &["when", "with", "without"];
@@ -42,6 +53,18 @@ impl Cop for ContextWording {
         let method = call.name().as_slice();
         if method != b"context" && method != b"shared_context" {
             return;
+        }
+
+        // RuboCop uses on_block: requires a block wrapping the context call
+        if call.block().is_none() {
+            return;
+        }
+
+        // Receiver must be nil or RSpec constant
+        if let Some(recv) = call.receiver() {
+            if util::constant_name(&recv).is_none_or(|n| n != b"RSpec") {
+                return;
+            }
         }
 
         let args = match call.arguments() {

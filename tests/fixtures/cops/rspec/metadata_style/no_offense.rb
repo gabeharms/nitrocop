@@ -21,3 +21,10 @@ describe 'Something', b: 1 do
     expect(value).to eq(1)
   end
 end
+
+# Hooks with symbol metadata are fine
+before(:each, :fast) do
+end
+
+# Calls without blocks should not be flagged
+describe 'Something', a: true

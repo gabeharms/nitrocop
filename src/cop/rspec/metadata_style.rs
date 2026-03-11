@@ -1,9 +1,23 @@
 use crate::cop::node_type::{ASSOC_NODE, CALL_NODE, KEYWORD_HASH_NODE, SYMBOL_NODE, TRUE_NODE};
-use crate::cop::util::{self, RSPEC_DEFAULT_INCLUDE, is_rspec_example, is_rspec_example_group};
+use crate::cop::util::{
+    self, RSPEC_DEFAULT_INCLUDE, is_rspec_example, is_rspec_example_group, is_rspec_hook,
+    is_rspec_shared_group,
+};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-10)
+///
+/// FP=8, FN=71. Root cause of FN=71: nitrocop only checked example groups and
+/// examples but RuboCop's `Metadata` mixin also covers shared groups
+/// (`shared_examples`, `shared_context`, `shared_examples_for`) and hooks
+/// (`before`, `after`, `around`, etc.). Added `is_rspec_shared_group` and
+/// `is_rspec_hook` checks. Also added block requirement (RuboCop uses
+/// `on_block` / `on_numblock`).
+///
+/// For hooks, the first arg is the scope (`:each`, `:all`, etc.), not a
+/// description string. Metadata follows after the scope arg.
 pub struct MetadataStyle;
 
 /// Default enforces symbol style: `:foo` instead of `foo: true`.
@@ -46,7 +60,16 @@ impl Cop for MetadataStyle {
 
         let method_name = call.name().as_slice();
 
-        if !is_rspec_example_group(method_name) && !is_rspec_example(method_name) {
+        if !is_rspec_example_group(method_name)
+            && !is_rspec_example(method_name)
+            && !is_rspec_shared_group(method_name)
+            && !is_rspec_hook(method_name)
+        {
+            return;
+        }
+
+        // RuboCop uses on_block: requires a block wrapping the call
+        if call.block().is_none() {
             return;
         }
 

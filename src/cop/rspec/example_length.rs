@@ -7,6 +7,12 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-10)
+///
+/// FP=12, FN=27. FP root cause: missing receiver check — calls like
+/// `obj.it { ... }` or `config.specify { ... }` with blocks were being
+/// counted as RSpec examples. RuboCop's `example?` matcher uses `#rspec?`
+/// receiver check (nil receiver only for examples). Added receiver guard.
 pub struct ExampleLength;
 
 impl Cop for ExampleLength {
@@ -50,6 +56,11 @@ impl Cop for ExampleLength {
 
         let method_name = call.name().as_slice();
         if !is_rspec_example(method_name) {
+            return;
+        }
+
+        // RuboCop's example? matcher requires nil receiver (bare `it`, not `obj.it`)
+        if call.receiver().is_some() {
             return;
         }
 
