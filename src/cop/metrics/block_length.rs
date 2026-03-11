@@ -366,11 +366,21 @@ fn count_block_lines(
     // counted. Without this adjustment, nitrocop overcounts by including lines
     // that RuboCop's descendant-based algorithm skips.
     let mut effective_end_offset = end_offset;
+    let (closing_line, _) = source.offset_to_line_col(end_offset);
     if let Some(desc_end_line) = heredoc_descendant_max_line(source, &body) {
-        // Use descendant max line as the end boundary (matches RuboCop behavior)
-        if let Some(next_line_start) = source.line_col_to_offset(desc_end_line + 1, 0) {
-            effective_end_offset = next_line_start;
+        // Use descendant max line as the end boundary (matches RuboCop behavior).
+        // But only if the heredoc content is INSIDE the block (before the closing
+        // delimiter). For brace blocks like `{ |f| f << <<EOF }`, the heredoc
+        // content is physically after `}` — the Parser gem's block node does NOT
+        // include it, so RuboCop's early bail-out `node.line_count <= max_length`
+        // skips counting entirely. We must NOT extend past `}` in that case.
+        if desc_end_line <= closing_line {
+            // Heredoc terminates before or on the closing line — extend normally
+            if let Some(next_line_start) = source.line_col_to_offset(desc_end_line + 1, 0) {
+                effective_end_offset = next_line_start;
+            }
         }
+        // else: heredoc is after closing `}` — don't extend, use original end_offset
     } else {
         // No heredocs: for brace blocks like `lambda { Hash.new(...) }`, the final
         // body token can share the same line as the closing `}`. RuboCop counts that
@@ -384,7 +394,6 @@ fn count_block_lines(
         if body.as_begin_node().is_none() {
             let (body_end_line, _) =
                 source.offset_to_line_col(body.location().end_offset().saturating_sub(1));
-            let (closing_line, _) = source.offset_to_line_col(end_offset);
             if body_end_line == closing_line {
                 if let Some(next_line_start) = source.line_col_to_offset(closing_line + 1, 0) {
                     effective_end_offset = next_line_start;
@@ -857,6 +866,28 @@ mod tests {
             diags[0].message.contains("[26/25]"),
             "Expected [26/25] but got: {}",
             diags[0].message
+        );
+    }
+
+    #[test]
+    fn brace_block_heredoc_argument_not_body() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(25.into()))]),
+            ..CopConfig::default()
+        };
+        // Pattern: File.open('foo', 'w') { |f| f << <<EOF }
+        // The block body is `f << <<EOF` — a CallNode (<<), NOT a heredoc itself.
+        // The heredoc content physically follows the `}` but is NOT part of the block body.
+        // RuboCop sees this as a 1-line block body and does NOT fire.
+        let source = b"x = 1\nFile.open('foo.rb', 'w') { |f| f << <<EOF }\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nEOF\nz = 3\n";
+        let diags = run_cop_full_with_config(&BlockLength, source, config);
+        assert!(
+            diags.is_empty(),
+            "Brace block {{ |f| f << <<EOF }} should be 1-line body, not count heredoc content. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 

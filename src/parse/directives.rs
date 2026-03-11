@@ -108,7 +108,14 @@ impl DisabledRanges {
                     // Extract just the cop name, ignoring trailing free-text comments.
                     // Cop names are: "all", "Department", or "Department/CopName".
                     // If there's a space after the cop name, the rest is a comment.
-                    match s.find(' ') {
+                    let s = match s.find(' ') {
+                        Some(idx) => &s[..idx],
+                        None => s,
+                    };
+                    // Strip parenthesized annotations like (RuboCop) in
+                    // `# rubocop:disable Metrics/BlockLength(RuboCop)`.
+                    // RuboCop accepts this syntax and ignores the annotation.
+                    match s.find('(') {
                         Some(idx) => &s[..idx],
                         None => s,
                     }
@@ -496,6 +503,18 @@ mod tests {
         let dr = disabled_ranges("x = 1\ny = 2\n");
         assert!(dr.is_empty());
         assert!(!dr.is_disabled("Foo/Bar", 1));
+    }
+
+    #[test]
+    fn parenthesized_annotation_stripped() {
+        // RuboCop accepts `# rubocop:disable Cop(annotation)` syntax
+        let src =
+            "# rubocop:disable Metrics/BlockLength(RuboCop)\nx = 1\n# rubocop:enable Metrics/BlockLength\ny = 2\n";
+        let dr = disabled_ranges(src);
+        assert!(dr.is_disabled("Metrics/BlockLength", 1));
+        assert!(dr.is_disabled("Metrics/BlockLength", 2));
+        assert!(dr.is_disabled("Metrics/BlockLength", 3));
+        assert!(!dr.is_disabled("Metrics/BlockLength", 4));
     }
 
     #[test]
