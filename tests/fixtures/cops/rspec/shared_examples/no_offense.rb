@@ -10,3 +10,10 @@ shared_examples_for 'another example' do
     expect(1).to eq(1)
   end
 end
+shared_context 'my context' do
+  let(:value) { 42 }
+end
+include_context 'test setup'
+RSpec.shared_context 'rspec context' do
+  let(:name) { 'test' }
+end

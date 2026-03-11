@@ -4,15 +4,24 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// RSpec/SharedExamples: enforces consistent use of string or symbol for shared example names.
+///
+/// Root cause of FN=57: missing `shared_context` and `include_context` methods.
+/// RuboCop's `SharedGroups.all` includes `shared_examples`, `shared_examples_for`, AND `shared_context`.
+/// RuboCop's `Includes.all` includes `include_examples`, `include_context`, `it_behaves_like`,
+/// `it_should_behave_like`. Both were missing from nitrocop's method list.
 pub struct SharedExamples;
 
 /// Methods that accept shared example titles.
+/// Must match RuboCop's SharedGroups.all + Includes.all.
 const SHARED_EXAMPLE_METHODS: &[&[u8]] = &[
     b"it_behaves_like",
     b"it_should_behave_like",
     b"shared_examples",
     b"shared_examples_for",
+    b"shared_context",
     b"include_examples",
+    b"include_context",
 ];
 
 impl Cop for SharedExamples {
@@ -51,10 +60,12 @@ impl Cop for SharedExamples {
 
         let method_name = call.name().as_slice();
 
-        // Check for RSpec.shared_examples / ::RSpec.shared_examples as well
+        // Check for RSpec.shared_examples / RSpec.shared_context etc. as well
         let is_shared = if let Some(recv) = call.receiver() {
             util::constant_name(&recv).is_some_and(|n| n == b"RSpec")
-                && (method_name == b"shared_examples" || method_name == b"shared_examples_for")
+                && (method_name == b"shared_examples"
+                    || method_name == b"shared_examples_for"
+                    || method_name == b"shared_context")
         } else {
             SHARED_EXAMPLE_METHODS.contains(&method_name)
         };
