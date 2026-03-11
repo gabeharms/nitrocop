@@ -13,3 +13,6 @@ obj[0]..obj[1]
 (a * 2)..b
 (MESSAGES_PER_CONVERSATION + 5)..10
 [1, 0]...[1, 6]
+# Rational literals (e.g., 1/3r) are acceptable boundaries
+1/10r..1/3r
+0/1r..1/1r

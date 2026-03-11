@@ -21,6 +21,15 @@ use crate::parse::source::SourceFile;
 /// attached `BlockNode`. RuboCop requires parentheses for that boundary because
 /// the trailing block keeps the range parsing ambiguous; nitrocop was treating
 /// every non-operator call boundary as acceptable.
+///
+/// ## Corpus investigation (2026-03-11)
+///
+/// FP=1, FN=0. The remaining FP was a rational literal pattern like `1/3r`
+/// used as a range boundary. In Prism, `1/3r` parses as a CallNode with
+/// integer receiver, method `/`, and a rational argument. The basic-literal
+/// check on the receiver was rejecting it. Added `is_rational_literal()` to
+/// match RuboCop's `RationalLiteral` mixin, which explicitly accepts
+/// `(send (int _) :/ (rational _))` as an unambiguous boundary.
 pub struct AmbiguousRange;
 
 impl Cop for AmbiguousRange {
@@ -179,6 +188,12 @@ fn is_acceptable_boundary(node: &ruby_prism::Node<'_>, require_parens_for_chains
             return true;
         }
 
+        // Rational literal pattern: `int / rational` (e.g., 1/3r) — RuboCop's
+        // RationalLiteral mixin accepts these as unambiguous boundaries.
+        if is_rational_literal(&call) {
+            return true;
+        }
+
         // Method calls on basic literals are NOT acceptable (e.g., 2.to_a in 1..2.to_a)
         if let Some(recv) = call.receiver() {
             if is_basic_literal(&recv) {
@@ -232,6 +247,29 @@ fn is_operator(name: &[u8]) -> bool {
             | b"=~"
             | b"!~"
     )
+}
+
+/// Matches RuboCop's `RationalLiteral` mixin: `(send (int _) :/ (rational _))`.
+/// In Prism, `1/3r` parses as a CallNode with an integer receiver, method `/`,
+/// and a single rational argument.
+fn is_rational_literal(call: &ruby_prism::CallNode<'_>) -> bool {
+    if call.name().as_slice() != b"/" {
+        return false;
+    }
+    let Some(recv) = call.receiver() else {
+        return false;
+    };
+    if recv.as_integer_node().is_none() {
+        return false;
+    }
+    let Some(args) = call.arguments() else {
+        return false;
+    };
+    let arg_list = args.arguments();
+    if arg_list.len() != 1 {
+        return false;
+    }
+    arg_list.iter().next().unwrap().as_rational_node().is_some()
 }
 
 fn is_basic_literal(node: &ruby_prism::Node<'_>) -> bool {
