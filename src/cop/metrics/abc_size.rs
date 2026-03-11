@@ -113,6 +113,24 @@ use crate::parse::source::SourceFile;
 /// Parser gem, `-> {}` is `(block (send nil :lambda) ...)` and the `:lambda`
 /// send counts as B+1. In Prism, `-> {}` is `LambdaNode` with no CallNode.
 /// Fix: count `LambdaNode` as B+1.
+///
+/// ## Corpus investigation (2026-03-10, round 2)
+///
+/// Corpus oracle reported FP=19, FN=152. Local rerun shows 0 excess (PASS).
+///
+/// Bug (FN): RuboCop's `compound_assignment` method for shorthand assignments
+/// (||=, &&=, +=, etc.) counts non-setter `send` children as extra assignments.
+/// In Parser AST, `x ||= foo` is `(or_asgn (lvasgn :x) (send nil :foo))` and
+/// `compound_assignment` iterates direct children: sends that `respond_to?(:setter_method?)`
+/// and are NOT setter methods get an extra A+1. In Prism, `x ||= foo` is a single
+/// `LocalVariableOrWriteNode` — there is no separate lvasgn/send child, so the
+/// extra assignment was missed. Fix: added `compound_assignment_extra()` that
+/// extracts the `.value()` from any shorthand assignment node and checks if it's
+/// a non-setter CallNode, adding A+1 when true. Applied to all variable
+/// Or/And/OperatorWrite nodes and Index Or/And/OperatorWrite nodes.
+///
+/// This affects borderline methods (score within ~1.0 of Max) where the slight
+/// undercount of assignments caused nitrocop to miss offenses that RuboCop flags.
 pub struct AbcSize;
 
 /// Known iterating method names that make blocks count toward conditions.
@@ -259,6 +277,74 @@ impl AbcCounter {
         let var_name = lvar.name().as_slice().to_vec();
         // Insert returns false if the value was already present (= repeated)
         !self.seen_csend_vars.insert(var_name)
+    }
+
+    /// RuboCop's `compound_assignment` quirk: for shorthand assignments (||=, &&=, +=),
+    /// the `compound_assignment` method counts non-setter send children as extra assignments.
+    /// In Parser AST, `x ||= foo` is `(or_asgn (lvasgn :x) (send nil :foo))` and
+    /// `compound_assignment` iterates over direct children, counting sends that respond to
+    /// `setter_method?` and are NOT setter methods. The value-side send gets an extra A+1
+    /// on top of the normal B+1 it gets from branch counting.
+    ///
+    /// In Prism, `x ||= foo` is a single `LocalVariableOrWriteNode` with a `.value()` child.
+    /// We need to check if that value is a non-setter CallNode and add the extra assignment.
+    fn compound_assignment_extra(&self, node: &ruby_prism::Node<'_>) -> usize {
+        // Extract the value node from any shorthand assignment type
+        let value = if let Some(n) = node.as_local_variable_or_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_local_variable_and_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_local_variable_operator_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_instance_variable_or_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_instance_variable_and_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_instance_variable_operator_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_class_variable_or_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_class_variable_and_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_class_variable_operator_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_global_variable_or_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_global_variable_and_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_global_variable_operator_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_constant_or_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_constant_and_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_constant_operator_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_constant_path_or_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_constant_path_and_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_constant_path_operator_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_index_or_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_index_and_write_node() {
+            Some(n.value())
+        } else {
+            node.as_index_operator_write_node().map(|n| n.value())
+        };
+
+        match value {
+            Some(v) => {
+                if let Some(call) = v.as_call_node() {
+                    if !is_setter_method(call.name().as_slice()) {
+                        return 1;
+                    }
+                }
+                0
+            }
+            None => 0,
+        }
     }
 
     fn count_node(&mut self, node: &ruby_prism::Node<'_>) {
@@ -603,6 +689,10 @@ impl AbcCounter {
             // rescue clauses exist (Prism chains them via `subsequent`).
             _ => {}
         }
+
+        // RuboCop's compound_assignment quirk: for shorthand assignments,
+        // non-setter send values get an extra assignment count.
+        self.assignments += self.compound_assignment_extra(node);
     }
 
     fn score(&self) -> f64 {
@@ -1210,6 +1300,81 @@ mod tests {
         assert!(
             diags[0].message.contains("[1.73/1]"),
             "Pattern guard should not add extra condition. Got: {}",
+            diags[0].message
+        );
+    }
+
+    /// compound_assignment quirk for ||= with method call value:
+    /// `x ||= fetch_val` → A=2 (OrWrite + compound_assignment), B=1 (fetch_val), C=1 (OrWrite)
+    /// Single line: A=2, B=1, C=1 => sqrt(4+1+1) = 2.45
+    #[test]
+    fn or_write_compound_assignment_extra() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+        let source = b"def test_method\n  x ||= fetch_val\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source, config);
+        assert!(
+            !diags.is_empty(),
+            "Should fire for x ||= fetch_val with Max:1"
+        );
+        assert!(
+            diags[0].message.contains("[2.45/1]"),
+            "x ||= fetch_val should be A=2,B=1,C=1 => 2.45. Got: {}",
+            diags[0].message
+        );
+    }
+
+    /// compound_assignment quirk for += with method call value:
+    /// `x += fetch_val` → A=2 (OperatorWrite + compound_assignment), B=1 (fetch_val), C=0
+    /// Single line: A=2, B=1, C=0 => sqrt(4+1) = 2.24
+    #[test]
+    fn operator_write_compound_assignment_extra() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+        let source = b"def test_method\n  x = 0\n  x += fetch_val\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source, config);
+        assert!(
+            !diags.is_empty(),
+            "Should fire for x += fetch_val with Max:1"
+        );
+        // A=2 (x=0 + compound), but wait: x=0 is A+1, x += is A+1 + compound A+1
+        // Total: A=3 (x=0 + x+= + compound), B=1 (fetch_val), C=0
+        // sqrt(9+1) = 3.16
+        assert!(
+            diags[0].message.contains("[3.16/1]"),
+            "x=0; x+=fetch_val should be A=3,B=1,C=0 => 3.16. Got: {}",
+            diags[0].message
+        );
+    }
+
+    /// compound_assignment quirk does NOT apply when value is a literal:
+    /// `x ||= 1` → A=1 (OrWrite only), B=0, C=1 (OrWrite condition)
+    /// Single line: A=1, B=0, C=1 => sqrt(1+0+1) = 1.41
+    #[test]
+    fn or_write_no_extra_for_literal() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+        let source = b"def test_method\n  x ||= 1\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source, config);
+        assert!(!diags.is_empty(), "Should fire for x ||= 1 with Max:1");
+        assert!(
+            diags[0].message.contains("[1.41/1]"),
+            "x ||= 1 should be A=1,B=0,C=1 => 1.41. Got: {}",
             diags[0].message
         );
     }

@@ -153,3 +153,19 @@ def method_with_many_lambdas
   l = -> {}
   m = -> {}
 end
+
+# RuboCop's compound_assignment quirk: for shorthand assignments (||=, &&=, +=),
+# if the value is a non-setter method call, it counts as an extra assignment.
+# Each `x ||= fetch_val` in RuboCop produces: A+2 (lvasgn + compound_assignment),
+# B+1 (fetch_val send), C+1 (or_asgn condition).
+# 7 such lines: A=14, B=7, C=7 => sqrt(196+49+49) = sqrt(294) = 17.15
+def method_with_or_assign_calls
+^^^ Metrics/AbcSize: Assignment Branch Condition size for method_with_or_assign_calls is too high. [17.15/17]
+  a ||= fetch_val
+  b ||= fetch_val
+  c ||= fetch_val
+  d ||= fetch_val
+  e ||= fetch_val
+  f ||= fetch_val
+  g ||= fetch_val
+end

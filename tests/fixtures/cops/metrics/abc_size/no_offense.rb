@@ -188,3 +188,16 @@ def method_with_regex_match_no_offense
   q = 17
   /pattern/ =~ a
 end
+
+# ||= with literal values does NOT get the compound_assignment extra.
+# Each `x ||= 1` counts: A=1, B=0, C=1 (or_asgn condition).
+# 7 such lines: A=7, B=0, C=7 => sqrt(49+0+49) = sqrt(98) = 9.90. Under 17.
+def method_with_or_assign_literals
+  a ||= 1
+  b ||= 2
+  c ||= 3
+  d ||= 4
+  e ||= 5
+  f ||= 6
+  g ||= 7
+end
