@@ -5,6 +5,26 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Layout/EmptyLinesAfterModuleInclusion
+///
+/// Checks for an empty line after a module inclusion method (`extend`,
+/// `include` and `prepend`), or a group of them.
+///
+/// ## Investigation findings (2026-03-11)
+///
+/// **Root cause of 493 FPs:** nitrocop was firing on include/extend/prepend
+/// inside `if`/`unless` bodies. RuboCop's `next_line_node` method returns nil
+/// when `node.parent.if_type?`, which blanket-skips all includes inside
+/// conditional branches. nitrocop had no equivalent check.
+///
+/// **Fix:** Added `in_if_body` flag to the visitor, set when visiting
+/// `IfNode` and `UnlessNode` bodies. The cop now skips include calls
+/// when this flag is true, matching RuboCop's behavior.
+///
+/// **Also handles:** RuboCop's `allowed_method?` unwraps modifier forms
+/// (`include Baz if condition`) — nitrocop's line-based check already
+/// handles this because `is_module_inclusion_line` matches lines starting
+/// with `include`/`extend`/`prepend` regardless of trailing modifiers.
 pub struct EmptyLinesAfterModuleInclusion;
 
 const MODULE_INCLUSION_METHODS: &[&[u8]] = &[b"include", b"extend", b"prepend"];
@@ -46,6 +66,7 @@ impl Cop for EmptyLinesAfterModuleInclusion {
             diagnostics: Vec::new(),
             corrections: Vec::new(),
             in_block_or_send: false,
+            in_if_body: false,
         };
         visitor.visit(&parse_result.node());
         if let Some(ref mut corr) = corrections {
@@ -66,6 +87,9 @@ struct InclusionVisitor<'a> {
     /// True when inside a block, lambda, or array — contexts where
     /// include/extend/prepend are NOT module inclusions
     in_block_or_send: bool,
+    /// True when inside an if/unless body — RuboCop's `next_line_node` returns
+    /// nil when `node.parent.if_type?`, so the cop never fires in these contexts.
+    in_if_body: bool,
 }
 
 impl InclusionVisitor<'_> {
@@ -88,6 +112,12 @@ impl InclusionVisitor<'_> {
         // Skip if inside a block, array, or used as argument to another call
         // (matches RuboCop: `return if node.parent&.type?(:send, :any_block, :array)`)
         if self.in_block_or_send {
+            return;
+        }
+
+        // Skip if inside an if/unless body
+        // (matches RuboCop: `return if node.parent&.if_type?` in `next_line_node`)
+        if self.in_if_body {
             return;
         }
 
@@ -303,6 +333,23 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
             self.visit(&body);
         }
         self.in_block_or_send = was;
+    }
+
+    // If/unless bodies: RuboCop's `next_line_node` returns nil when
+    // `node.parent.if_type?`, so include/extend/prepend inside if/unless
+    // bodies are never flagged.
+    fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
+        let was = self.in_if_body;
+        self.in_if_body = true;
+        ruby_prism::visit_if_node(self, node);
+        self.in_if_body = was;
+    }
+
+    fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
+        let was = self.in_if_body;
+        self.in_if_body = true;
+        ruby_prism::visit_unless_node(self, node);
+        self.in_if_body = was;
     }
 
     // Method bodies should be treated as block context — include inside

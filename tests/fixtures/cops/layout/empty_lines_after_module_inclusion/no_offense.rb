@@ -49,3 +49,44 @@ def setup
   include MyHelper
   do_stuff
 end
+
+# include inside if/else branches (RuboCop skips when parent is if_type?)
+class Account
+  if condition
+    include Bar
+  else
+    do_something
+  end
+end
+
+# include inside unless
+class Report
+  unless disabled?
+    include Logging
+  end
+end
+
+# include inside if with elsif
+class Widget
+  if rails?
+    include ActiveModel::Validations
+  elsif sinatra?
+    include SinatraHelper
+  else
+    include BasicHelper
+  end
+end
+
+# include with modifier form followed by another include
+class Service
+  include Bar
+  include Baz if condition
+  include Qux
+end
+
+# include at top level inside if
+if condition
+  include Foo
+else
+  do_something
+end
