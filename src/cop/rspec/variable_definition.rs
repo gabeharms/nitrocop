@@ -1,9 +1,26 @@
-use crate::cop::node_type::{CALL_NODE, KEYWORD_HASH_NODE, STRING_NODE, SYMBOL_NODE};
+use crate::cop::node_type::{
+    CALL_NODE, INTERPOLATED_SYMBOL_NODE, KEYWORD_HASH_NODE, STRING_NODE, SYMBOL_NODE,
+};
 use crate::cop::util::RSPEC_DEFAULT_INCLUDE;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// RSpec/VariableDefinition - checks that memoized helper names use symbols or strings.
+///
+/// ## Investigation findings (2026-03-11)
+/// Root cause of 95 FN (9.5% match rate): all from mikel/mail repo.
+///
+/// 1. **Block requirement was too strict**: The cop previously required `call.block().is_some()`
+///    to distinguish RSpec `subject` from Mail's `subject 'text'` DSL. However, RuboCop does NOT
+///    check for block presence — it only checks `inside_example_group?`. When `subject 'text'`
+///    appears inside a `Mail.new do...end` block within an RSpec example group, RuboCop flags it.
+///    Removing the block guard matches RuboCop's behavior and fixes all 95 FN.
+///
+/// 2. **Missing InterpolatedSymbolNode (dsym) handling**: RuboCop's `any_sym_type?` matches both
+///    `:sym` and `:"dsym_#{x}"`. Added `as_interpolated_symbol_node()` check for `strings` style.
+///    Note: RuboCop's `str_type?` does NOT match `dstr` (interpolated strings), so we correctly
+///    skip `InterpolatedStringNode` for `symbols` style.
 pub struct VariableDefinition;
 
 impl Cop for VariableDefinition {
@@ -20,7 +37,13 @@ impl Cop for VariableDefinition {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[CALL_NODE, KEYWORD_HASH_NODE, STRING_NODE, SYMBOL_NODE]
+        &[
+            CALL_NODE,
+            INTERPOLATED_SYMBOL_NODE,
+            KEYWORD_HASH_NODE,
+            STRING_NODE,
+            SYMBOL_NODE,
+        ]
     }
 
     fn check_node(
@@ -52,12 +75,6 @@ impl Cop for VariableDefinition {
             return;
         }
 
-        // RSpec `let`/`subject` always have a block. If there's no block,
-        // it's a different DSL method (e.g., Mail's `subject 'text'`).
-        if call.block().is_none() {
-            return;
-        }
-
         let args = match call.arguments() {
             Some(a) => a,
             None => return,
@@ -67,30 +84,23 @@ impl Cop for VariableDefinition {
             if arg.as_keyword_hash_node().is_some() {
                 continue;
             }
-            if enforced_style == "strings" {
-                // "strings" style: flag symbol names, prefer strings
-                if arg.as_symbol_node().is_some() {
-                    let loc = arg.location();
-                    let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        line,
-                        column,
-                        "Use strings for variable names.".to_string(),
-                    ));
-                }
+            let is_offense = if enforced_style == "strings" {
+                // "strings" style: flag any symbol (sym or dsym), prefer strings
+                arg.as_symbol_node().is_some() || arg.as_interpolated_symbol_node().is_some()
             } else {
                 // Default "symbols" style: flag string names, prefer symbols
-                if arg.as_string_node().is_some() {
-                    let loc = arg.location();
-                    let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        line,
-                        column,
-                        "Use symbols for variable names.".to_string(),
-                    ));
-                }
+                // Note: RuboCop's str_type? matches only plain str, not dstr
+                arg.as_string_node().is_some()
+            };
+            if is_offense {
+                let loc = arg.location();
+                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                let msg = if enforced_style == "strings" {
+                    "Use strings for variable names."
+                } else {
+                    "Use symbols for variable names."
+                };
+                diagnostics.push(self.diagnostic(source, line, column, msg.to_string()));
             }
             break;
         }
@@ -135,5 +145,34 @@ mod tests {
         let source = b"let('foo') { 'bar' }\n";
         let diags = crate::testutil::run_cop_full_with_config(&VariableDefinition, source, config);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn strings_style_flags_interpolated_symbol() {
+        use crate::cop::CopConfig;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([(
+                "EnforcedStyle".into(),
+                serde_yml::Value::String("strings".into()),
+            )]),
+            ..CopConfig::default()
+        };
+        let source = br#"let(:"foo_#{x}") { 'bar' }
+"#;
+        let diags = crate::testutil::run_cop_full_with_config(&VariableDefinition, source, config);
+        assert_eq!(diags.len(), 1, "should flag dsym when style is strings");
+        assert!(diags[0].message.contains("strings"));
+    }
+
+    #[test]
+    fn subject_without_block_is_flagged() {
+        // RuboCop flags bare `subject 'text'` calls even without a block,
+        // as long as the method name matches a known RSpec helper.
+        let source = b"subject 'testing'\n";
+        let diags = crate::testutil::run_cop_full(&VariableDefinition, source);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("symbols"));
     }
 }
