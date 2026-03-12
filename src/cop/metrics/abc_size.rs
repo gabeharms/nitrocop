@@ -170,12 +170,29 @@ use crate::parse::source::SourceFile;
 /// at all. In Prism, the trailing comma produces `ImplicitRestNode` which was
 /// not being skipped. Fixed by checking `as_implicit_rest_node()`.
 ///
-/// Remaining: 1 FP (yard/ruby_lex.rb `token` method, score 17.03 vs RuboCop
-/// 16.64) — root cause TBD, likely a subtle condition counting edge case.
-/// 17 FN remain — each near threshold 17, not affected by these fixes (which
-/// only reduce scores). FNs likely from undercounting B or C in specific
-/// patterns (e.g., `define_method` blocks, `each do |param|` with
-/// method_missing receivers).
+/// Remaining after session 4: ~1 FP, 17 FN — all near threshold 17.
+///
+/// ## Corpus investigation (2026-03-11, session 5)
+///
+/// Bug 1 (FN): Call compound assignments (`obj.foo ||= v`, `obj.foo &&= v`,
+/// `obj.foo += v`) were not handled by `compound_assignment_extra`. In Parser,
+/// these are `(or_asgn (send obj :foo) v)` — `compound_assignment` counts ALL
+/// non-setter send children as A+1 (both target send and value send). The
+/// target send's `setter_method?` returns false (no `loc.operator`), so it IS
+/// counted. The target A+1 was already handled by `count_node` for
+/// `CallOrWriteNode` etc., but the value send's A+1 was missing. Fix: added
+/// `CallOrWriteNode`, `CallAndWriteNode`, `CallOperatorWriteNode` to
+/// `compound_assignment_extra`.
+///
+/// Bug 2 (FP): `begin...end while cond` / `begin...end until cond` post-
+/// condition loops were counted as C+1. In Parser gem, these produce
+/// `:while_post`/`:until_post` which are NOT in `COUNTED_NODES`. In Prism,
+/// they are `WhileNode`/`UntilNode` with `is_begin_modifier() == true`.
+/// Fix: skip condition count when `is_begin_modifier()` is true.
+///
+/// Remaining FN: Some should now be resolved by call compound assignment fix
+/// (e.g., foreman `inherit_parent_attributes` with 6x `||=` call compound).
+/// Others may have different root causes near threshold 17.
 pub struct AbcSize;
 
 /// Known iterating method names that make blocks count toward conditions.
@@ -375,8 +392,19 @@ impl AbcCounter {
             Some(n.value())
         } else if let Some(n) = node.as_index_and_write_node() {
             Some(n.value())
+        } else if let Some(n) = node.as_index_operator_write_node() {
+            Some(n.value())
+        // Call compound assignments: obj.foo ||= v, obj.foo &&= v, obj.foo += v
+        // In Parser, these are (or_asgn (send obj :foo) v) — compound_assignment
+        // counts ALL non-setter send children (both target and value). The target
+        // send's A+1 is already handled by count_node for CallOrWriteNode etc.,
+        // but the value send's A+1 is missing without this.
+        } else if let Some(n) = node.as_call_or_write_node() {
+            Some(n.value())
+        } else if let Some(n) = node.as_call_and_write_node() {
+            Some(n.value())
         } else {
-            node.as_index_operator_write_node().map(|n| n.value())
+            node.as_call_operator_write_node().map(|n| n.value())
         };
 
         match value {
@@ -755,9 +783,25 @@ impl AbcCounter {
                 self.conditions += 1;
                 self.assignments += 1;
             }
-            ruby_prism::Node::WhileNode { .. }
-            | ruby_prism::Node::UntilNode { .. }
-            | ruby_prism::Node::WhenNode { .. }
+            // WhileNode/UntilNode: only pre-condition loops count.
+            // `begin...end while cond` produces :while_post in Parser (NOT in
+            // COUNTED_NODES). In Prism, it's WhileNode with is_begin_modifier()
+            // = true. Skip post-condition loops to match.
+            ruby_prism::Node::WhileNode { .. } => {
+                if let Some(w) = node.as_while_node() {
+                    if !w.is_begin_modifier() {
+                        self.conditions += 1;
+                    }
+                }
+            }
+            ruby_prism::Node::UntilNode { .. } => {
+                if let Some(u) = node.as_until_node() {
+                    if !u.is_begin_modifier() {
+                        self.conditions += 1;
+                    }
+                }
+            }
+            ruby_prism::Node::WhenNode { .. }
             | ruby_prism::Node::AndNode { .. }
             | ruby_prism::Node::OrNode { .. }
             | ruby_prism::Node::RescueModifierNode { .. } => {
@@ -1339,6 +1383,61 @@ mod tests {
         );
     }
 
+    /// CallOrWriteNode with method call value: obj.foo ||= other.bar
+    /// RuboCop's compound_assignment counts BOTH target send and value send
+    /// as non-setter sends, each getting A+1. The target send and value send
+    /// are both branches (B+1 each). or_asgn is condition (C+1).
+    /// With local var receivers: A=2 (compound target + value), B=2, C=1
+    /// => sqrt(4+4+1) = 3.0
+    #[test]
+    fn call_or_write_compound_extra_for_value_call() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+        // obj and other are parameters (local vars), so no B for receivers
+        let source = b"def test_method(obj, other)\n  obj.foo ||= other.bar\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source, config);
+        assert!(
+            !diags.is_empty(),
+            "Should fire for obj.foo ||= other.bar with Max:1"
+        );
+        assert!(
+            diags[0].message.contains("[3.00/1]"),
+            "obj.foo ||= other.bar should be A=2,B=2,C=1 => 3.00. Got: {}",
+            diags[0].message
+        );
+    }
+
+    /// CallOperatorWriteNode with method call value: obj.count += other.delta
+    /// compound_assignment counts target send (A+1) + value send (A+1).
+    /// Both sends are branches. op_asgn is NOT condition.
+    /// A=2, B=2, C=0 => sqrt(4+4) = 2.83
+    #[test]
+    fn call_operator_write_compound_extra_for_value_call() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+        let source = b"def test_method(obj, other)\n  obj.count += other.delta\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source, config);
+        assert!(
+            !diags.is_empty(),
+            "Should fire for obj.count += other.delta with Max:1"
+        );
+        assert!(
+            diags[0].message.contains("[2.83/1]"),
+            "obj.count += other.delta should be A=2,B=2,C=0 => 2.83. Got: {}",
+            diags[0].message
+        );
+    }
+
     /// CallOperatorWriteNode (obj.count += v): A+1, B+1 from node, plus B+1
     /// from `obj` receiverless call. No condition.
     /// Total: A=1, B=2, C=0 => sqrt(1+4) = 2.24
@@ -1584,6 +1683,56 @@ mod tests {
         assert!(
             diags[0].message.contains("[2.24/1]"),
             "numblock: A=1,B=2,C=0 => 2.24. Got: {}",
+            diags[0].message
+        );
+    }
+
+    /// `begin...end while cond` produces :while_post in Parser (NOT in COUNTED_NODES).
+    /// In Prism it's WhileNode with is_begin_modifier() = true. Must not count as condition.
+    /// Same for `begin...end until cond` → :until_post.
+    #[test]
+    fn begin_end_while_not_counted_as_condition() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+
+        // `begin x = x + 1 end while x < 10` — post-condition while
+        // A=2 (x=0, x=x+1), B=1 (+), C=1 (< comparison only, NOT while itself)
+        // => sqrt(4+1+1) = 2.45
+        // If while_post were counted: C=2 => sqrt(4+1+4) = 3.00
+        let source_while = b"def foo\n  x = 0\n  begin\n    x = x + 1\n  end while x < 10\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source_while, config.clone());
+        assert!(!diags.is_empty(), "Should fire with Max:1");
+        assert!(
+            diags[0].message.contains("[2.45/1]"),
+            "begin..end while: post-condition while should NOT count as condition. Got: {}",
+            diags[0].message
+        );
+
+        // Regular `while cond do body end` DOES count as condition
+        // A=2 (x=0, x=x+1), B=1 (+), C=2 (while + < comparison)
+        // => sqrt(4+1+4) = 3.00
+        let source_regular_while =
+            b"def foo\n  x = 0\n  while x < 10 do\n    x = x + 1\n  end\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source_regular_while, config.clone());
+        assert!(!diags.is_empty(), "Regular while should fire");
+        assert!(
+            diags[0].message.contains("[3.00/1]"),
+            "Regular while SHOULD count as condition. Got: {}",
+            diags[0].message
+        );
+
+        // begin...end until — same: post-condition should NOT count
+        let source_until = b"def foo\n  x = 0\n  begin\n    x = x + 1\n  end until x > 10\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source_until, config);
+        assert!(!diags.is_empty(), "Should fire with Max:1");
+        assert!(
+            diags[0].message.contains("[2.45/1]"),
+            "begin..end until: post-condition should NOT count. Got: {}",
             diags[0].message
         );
     }
