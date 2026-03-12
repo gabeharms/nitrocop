@@ -150,6 +150,32 @@ use crate::parse::source::SourceFile;
 /// directly (block is a child), so our code saw it as a non-setter call and
 /// incorrectly added A+1. Fix: skip CallNodes that have a block in
 /// `compound_assignment_extra`.
+///
+/// ## Corpus investigation (2026-03-11, session 4)
+///
+/// Corpus oracle reported FP=19, FN=17.
+///
+/// Bug 1 (FP, ~13 of 19): it-blocks (Ruby 4.0 `it` implicit parameter) and
+/// numblocks (`_1`/`_2` numbered parameters) were counted as iterating block
+/// conditions (C+1), but RuboCop's Parser gem produces `:itblock`/`:numblock`
+/// node types which are NOT in `COUNTED_NODES`. Only regular `:block` and
+/// `:block_pass` count. In Prism, all blocks are `BlockNode` — fixed by
+/// checking `parameters()` for `ItParametersNode`/`NumberedParametersNode`
+/// and skipping the condition count for those. Same pattern as
+/// CyclomaticComplexity and PerceivedComplexity (already fixed).
+///
+/// Bug 2 (FP, ~5 of 19): `ImplicitRestNode` in multi-write (`relay, = expr`)
+/// was counted as an assignment (A+1), but it has no variable target. In
+/// Parser gem, `relay, = expr` has `(mlhs (lvasgn :relay))` — no rest node
+/// at all. In Prism, the trailing comma produces `ImplicitRestNode` which was
+/// not being skipped. Fixed by checking `as_implicit_rest_node()`.
+///
+/// Remaining: 1 FP (yard/ruby_lex.rb `token` method, score 17.03 vs RuboCop
+/// 16.64) — root cause TBD, likely a subtle condition counting edge case.
+/// 17 FN remain — each near threshold 17, not affected by these fixes (which
+/// only reduce scores). FNs likely from undercounting B or C in specific
+/// patterns (e.g., `define_method` blocks, `each do |param|` with
+/// method_missing receivers).
 pub struct AbcSize;
 
 /// Known iterating method names that make blocks count toward conditions.
@@ -433,9 +459,13 @@ impl AbcCounter {
                             self.assignments += 1;
                         }
                     }
-                    // Also count the rest target if present
+                    // Also count the rest target if present.
+                    // ImplicitRestNode (`a, = expr` — trailing comma, no splat)
+                    // should NOT be counted — it has no variable target.
                     if let Some(rest) = mw.rest() {
-                        let skip = if let Some(splat) = rest.as_splat_node() {
+                        let skip = if rest.as_implicit_rest_node().is_some() {
+                            true // `a, = expr` — no actual rest target
+                        } else if let Some(splat) = rest.as_splat_node() {
                             splat.expression().is_none()
                                 || splat.expression().is_some_and(|expr| {
                                     expr.as_local_variable_target_node()
@@ -632,14 +662,28 @@ impl AbcCounter {
                         {
                             self.conditions += 1;
                         }
-                        // Iterating block: a call with a block (BlockNode or BlockArgumentNode)
-                        // to a known iterating method counts as a condition.
-                        // BlockArgumentNode handles `items.map(&:foo)` (block_pass).
-                        if call.block().is_some_and(|b| {
-                            b.as_block_node().is_some() || b.as_block_argument_node().is_some()
-                        }) && KNOWN_ITERATING_METHODS.contains(&method_name)
-                        {
-                            self.conditions += 1;
+                        // Iterating block: a call with a block to a known iterating
+                        // method counts as a condition. RuboCop's Parser gem produces
+                        // :numblock for _1/_2 params and :itblock for `it` params,
+                        // neither of which is in COUNTED_NODES. Only regular :block
+                        // and :block_pass count. In Prism all blocks are BlockNode,
+                        // so we check parameters to distinguish.
+                        if let Some(block) = call.block() {
+                            let should_count = if let Some(block_node) = block.as_block_node() {
+                                match block_node.parameters() {
+                                    Some(params) => {
+                                        params.as_numbered_parameters_node().is_none()
+                                            && params.as_it_parameters_node().is_none()
+                                    }
+                                    None => true,
+                                }
+                            } else {
+                                // BlockArgumentNode (&:method) — always counts
+                                block.as_block_argument_node().is_some()
+                            };
+                            if should_count && KNOWN_ITERATING_METHODS.contains(&method_name) {
+                                self.conditions += 1;
+                            }
                         }
                     }
                 }
@@ -1464,6 +1508,83 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Should skip method matching AllowedPatterns regex ^_"
+        );
+    }
+
+    /// `relay, = expr` (implicit rest, trailing comma) should NOT count the
+    /// implicit rest as an assignment. Only the named target (relay) counts.
+    /// In Prism, this produces ImplicitRestNode (not SplatNode).
+    #[test]
+    fn implicit_rest_not_counted_as_assignment() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+        // `relay, = foo(1, 2)` — A=1 (relay only), B=1 (foo), C=0
+        // => sqrt(1+1+0) = 1.41
+        // If ImplicitRestNode wrongly counted: A=2 => sqrt(4+1) = 2.24
+        let source = b"def bar\n  relay, = foo(1, 2)\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source, config);
+        assert!(!diags.is_empty(), "Should fire with Max:1");
+        assert!(
+            diags[0].message.contains("[1.41/1]"),
+            "Implicit rest should NOT be counted. Got: {}",
+            diags[0].message
+        );
+    }
+
+    /// it-blocks (Ruby 4.0 `it` implicit parameter) produce :itblock in Parser gem,
+    /// which is NOT in COUNTED_NODES. So `items.each do ... it ... end` should NOT
+    /// count as a condition. Same for numblocks (_1, _2). Regular blocks DO count.
+    #[test]
+    fn itblock_and_numblock_not_counted_as_condition() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+
+        // Regular block: items.each do |item| item end
+        // A=2 (x, |item|), B=2 (items, each), C=1 (iterating block condition)
+        // => sqrt(4+4+1) = 3.00
+        let source_regular = b"def foo\n  x = items.each do |item|\n    item\n  end\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source_regular, config.clone());
+        assert!(!diags.is_empty(), "Regular block should fire");
+        assert!(
+            diags[0].message.contains("[3.00/1]"),
+            "Regular block: A=2,B=2,C=1 => 3.00. Got: {}",
+            diags[0].message
+        );
+
+        // it-block: items.each do ... it ... end
+        // `it` is ItLocalVariableReadNode (not a CallNode), so B stays at 2
+        // A=1 (x), B=2 (items, each), C=0 (it-block NOT counted as condition)
+        // => sqrt(1+4+0) = 2.24
+        let source_itblock = b"def foo\n  x = items.each do\n    it\n  end\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source_itblock, config.clone());
+        assert!(!diags.is_empty(), "it-block should still fire");
+        assert!(
+            diags[0].message.contains("[2.24/1]"),
+            "it-block: A=1,B=2,C=0 => 2.24. Got: {}",
+            diags[0].message
+        );
+
+        // numblock: items.each do ... _1 ... end
+        // `_1` is LocalVariableReadNode (not a CallNode), so B stays at 2
+        // A=1 (x), B=2 (items, each), C=0 (numblock NOT counted)
+        // => sqrt(1+4+0) = 2.24
+        let source_numblock = b"def foo\n  x = items.each do\n    _1\n  end\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source_numblock, config);
+        assert!(!diags.is_empty(), "numblock should still fire");
+        assert!(
+            diags[0].message.contains("[2.24/1]"),
+            "numblock: A=1,B=2,C=0 => 2.24. Got: {}",
+            diags[0].message
         );
     }
 }

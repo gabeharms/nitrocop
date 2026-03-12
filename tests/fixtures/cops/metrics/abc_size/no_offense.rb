@@ -208,6 +208,60 @@ def simple_multi_assign
   a, b = 1, 2
 end
 
+# Iterating blocks using `it` (Ruby 4.0 implicit parameter) produce :itblock in
+# Parser gem, which is NOT in COUNTED_NODES. So `items.each do ... it ... end`
+# does NOT count as a condition. Similarly for numbered parameters (_1, _2).
+# A=15, B=2 (2x each calls), C=1 (outer each block condition only, inner it-block skipped)
+# => sqrt(225+4+1) = 15.17. Under 17 = no offense.
+# If inner it-block wrongly counted: C=2 => sqrt(225+4+4) = 15.26 — still under 17 here,
+# but the pattern matches corpus FPs where the extra C+1 pushes borderline methods over.
+def method_with_it_block
+  a = 1
+  b = 2
+  c = 3
+  d = 4
+  e = 5
+  f = 6
+  g = 7
+  h = 8
+  i = 9
+  j = 10
+  k = 11
+  l = 12
+  m = 13
+  n = 14
+  o = 15
+  items.each do |item|
+    items.each do
+      it
+    end
+  end
+end
+
+# Same with _1 numbered parameter — :numblock in Parser, should not count as condition.
+def method_with_numblock
+  a = 1
+  b = 2
+  c = 3
+  d = 4
+  e = 5
+  f = 6
+  g = 7
+  h = 8
+  i = 9
+  j = 10
+  k = 11
+  l = 12
+  m = 13
+  n = 14
+  o = 15
+  items.each do |item|
+    items.each do
+      _1
+    end
+  end
+end
+
 # ||= where the value is a method call WITH A BLOCK should NOT get
 # compound_assignment_extra A+1. In Parser AST, a call+block is wrapped
 # as (or_asgn lvasgn (block (send ...) ...)) — the block node doesn't
