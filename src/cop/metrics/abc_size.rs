@@ -190,9 +190,16 @@ use crate::parse::source::SourceFile;
 /// they are `WhileNode`/`UntilNode` with `is_begin_modifier() == true`.
 /// Fix: skip condition count when `is_begin_modifier()` is true.
 ///
-/// Remaining FN: Some should now be resolved by call compound assignment fix
-/// (e.g., foreman `inherit_parent_attributes` with 6x `||=` call compound).
-/// Others may have different root causes near threshold 17.
+/// Bug 3 (FN): `&block` parameters in nested defs/blocks were not counted
+/// as A+1. Prism's generated `visit_parameters_node` calls
+/// `visit_block_parameter_node` directly instead of through `visitor.visit()`,
+/// bypassing `visit_leaf_node_enter`. Fix: override `visit_block_parameter_node`
+/// in AbcCounter.
+///
+/// Remaining FN=5: Near-threshold methods where nitrocop scores slightly below
+/// 17.0 but RuboCop scores above. Root causes not yet identified — likely
+/// subtle counting differences in `for` loops, chained method calls, or
+/// rescue variable handling.
 pub struct AbcSize;
 
 /// Known iterating method names that make blocks count toward conditions.
@@ -834,6 +841,13 @@ impl<'pr> Visit<'pr> for AbcCounter {
 
     fn visit_leaf_node_enter(&mut self, node: ruby_prism::Node<'pr>) {
         self.count_node(&node);
+    }
+
+    // Prism's generated visit_parameters_node calls visit_block_parameter_node
+    // directly instead of visitor.visit(), bypassing visit_leaf_node_enter.
+    // Override to count the block parameter as an assignment.
+    fn visit_block_parameter_node(&mut self, node: &ruby_prism::BlockParameterNode<'pr>) {
+        self.count_node(&node.as_node());
     }
 
     // The Prism visitor calls specific visit_*_node methods for certain child nodes,
@@ -1733,6 +1747,46 @@ mod tests {
         assert!(
             diags[0].message.contains("[2.45/1]"),
             "begin..end until: post-condition should NOT count. Got: {}",
+            diags[0].message
+        );
+    }
+
+    /// BlockParameterNode in nested def: Prism's visit_parameters_node calls
+    /// visit_block_parameter_node directly (not via visit()), bypassing
+    /// visit_leaf_node_enter. Our override of visit_block_parameter_node
+    /// ensures the &block param is counted as A+1.
+    #[test]
+    fn block_parameter_counted_in_nested_def() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(1.into()))]),
+            ..CopConfig::default()
+        };
+
+        // Nested def with &block param inside a block:
+        // A=1 (&block param), B=1 (Struct.new), C=0
+        // => sqrt(1+1) = 1.41
+        // Without the fix, &block wouldn't be counted: A=0 => sqrt(0+1) = 1.00
+        let source =
+            b"def test_method\n  Struct.new do\n    def foo(&block)\n    end\n  end\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source, config.clone());
+        assert!(!diags.is_empty(), "Should fire with Max:1");
+        assert!(
+            diags[0].message.contains("[1.41/1]"),
+            "Nested &block param should count as A+1. Got: {}",
+            diags[0].message
+        );
+
+        // Block params: |&block| in a block
+        // A=1 (&block), B=1 (define_method), C=0
+        let source = b"def test_method\n  define_method(:foo) do |&block|\n    block\n  end\nend\n";
+        let diags = run_cop_full_with_config(&AbcSize, source, config);
+        assert!(!diags.is_empty(), "Should fire with Max:1");
+        assert!(
+            diags[0].message.contains("[1.41/1]"),
+            "Block |&block| param should count as A+1. Got: {}",
             diags[0].message
         );
     }
