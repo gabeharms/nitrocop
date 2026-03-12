@@ -430,6 +430,37 @@ fn count_block_lines(
         }
     }
 
+    // RuboCop uses `body.source.lines` which spans from the first to last
+    // AST body statement. Content between the last statement and the closing
+    // keyword is NOT included — but only non-AST content like =begin/=end
+    // comment blocks causes a meaningful count difference. Trailing blank
+    // lines and # comments are counted by count_body_lines_ex regardless
+    // of whether they're in body.source, because they exist between the
+    // body start and closing keyword boundaries.
+    //
+    // We specifically detect =begin/=end blocks between the body's end and
+    // the closing keyword. When found, clip effective_end_offset to exclude
+    // the =begin/=end content, matching RuboCop's behavior.
+    if body.as_begin_node().is_none() {
+        let body_actual_end = body.location().end_offset();
+        if body_actual_end < end_offset {
+            // Check if there's a =begin block between body end and closing keyword
+            let (body_last_line, _) = source.offset_to_line_col(body_actual_end.saturating_sub(1));
+            let (closing_line_num, _) = source.offset_to_line_col(end_offset);
+            let src = source.as_bytes();
+            let has_begin_end = (body_last_line + 1..closing_line_num).any(|line| {
+                source
+                    .line_col_to_offset(line, 0)
+                    .is_some_and(|start| src[start..].starts_with(b"=begin"))
+            });
+            if has_begin_end {
+                if let Some(after_body_start) = source.line_col_to_offset(body_last_line + 1, 0) {
+                    effective_end_offset = effective_end_offset.min(after_body_start);
+                }
+            }
+        }
+    }
+
     // Collect foldable ranges from CountAsOne config. Heredocs are only
     // folded when "heredoc" is explicitly in CountAsOne (default: []).
     // For non-bare-heredoc bodies, RuboCop's CodeLengthCalculator includes
@@ -950,6 +981,31 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Single-child block with heredoc: inner `end` should NOT be counted. Expected 7 body lines. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn begin_end_comment_between_body_and_closing() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([("Max".into(), serde_yml::Value::Number(3.into()))]),
+            ..CopConfig::default()
+        };
+        // Block body has 2 non-blank lines, then =begin/=end with 20 lines before end.
+        // RuboCop uses body.source which only spans the AST body (lines 2-3),
+        // so =begin/=end content is NOT counted. Count should be 2, not 22+.
+        let mut source = String::from("x = 0\nfoo do\n  a = 1\n  b = 2\n\n=begin\n");
+        for i in 0..20 {
+            source.push_str(&format!("  commented line {}\n", i));
+        }
+        source.push_str("=end\n\nend\n");
+        let diags = run_cop_full_with_config(&BlockLength, source.as_bytes(), config);
+        assert!(
+            diags.is_empty(),
+            "Block with =begin/=end after body should count only body lines (2). Got: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
