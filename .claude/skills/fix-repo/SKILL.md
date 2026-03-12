@@ -1,6 +1,6 @@
 ---
 name: fix-repo
-description: Improve a specific repo's corpus conformance by fixing its top diverging cops in parallel using worktree-isolated teammates.
+description: Improve a specific repo's corpus conformance by fixing its top diverging cops in parallel.
 allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob, Task, TeamCreate, TaskCreate, TaskUpdate, TaskList, TaskGet, SendMessage
 ---
 
@@ -13,8 +13,9 @@ match rate.
 It is corpus-repo scoped: synthetic-only cops have no repo attribution here and
 should be handled via `/fix-department`.
 
-If you edit code yourself (without dispatching teammates), do that work in a dedicated
-git worktree by default. Only skip this when the user explicitly asks to use the current tree.
+**Worktree isolation depends on platform:** On macOS (local dev), use `isolation: "worktree"`
+for teammates. On Linux (cloud VM), do NOT use worktree isolation — teammates commit directly
+to the current branch. Cloud VM worktrees get cleaned up on agent timeout, losing committed work.
 
 ## Workflow
 
@@ -92,14 +93,12 @@ Summarize: cop name, repo-specific FP/FN, global FP/FN, minimal repro(s), root c
 2. Create tasks for each cop fix.
 
 3. Spawn one teammate per cop using the Agent tool. **Critical settings:**
-   - `isolation: "worktree"` — each teammate gets its own git worktree
    - `subagent_type: "general-purpose"` — needs full edit/bash access
    - `team_name: "fix-repo"`
    - `mode: "bypassPermissions"` — teammates need to run cargo test etc.
-
-   **Worktree caveat:** `isolation: "worktree"` may silently fail, leaving the teammate
-   writing directly to the main tree. The teammate workflow below includes a self-check.
-   During Phase 4, also verify with `git status --short` that no leaked changes landed on main.
+   - **macOS only:** add `isolation: "worktree"` so each teammate gets its own git worktree
+   - **Linux (cloud VM):** do NOT use `isolation: "worktree"` — teammates commit directly
+     to the current branch (worktrees get cleaned up on timeout, losing work)
 
 4. Each teammate prompt MUST include:
    - The exact cop name (e.g., `Lint/ConstantResolution`)
@@ -115,14 +114,12 @@ Summarize: cop name, repo-specific FP/FN, global FP/FN, minimal repro(s), root c
 You are fixing false positives/negatives in a single nitrocop cop to improve corpus
 conformance for a target repo. Follow the CLAUDE.md rules strictly.
 
-**NEVER use git stash or git stash pop.** You should be in an isolated git worktree — just commit directly.
+**NEVER use git stash or git stash pop.** Commit directly to the current branch.
 Parallel-agent activity is common. If you see unrelated modified files, do not edit/revert them.
 
 ## Step 0: Verify your working directory
 
-Run `git rev-parse --show-toplevel` and check that it contains `.claude/worktrees/` in the path.
-If you are in the main repo (no worktree), note this in your report — your commits will land
-directly on main.
+Run `git rev-parse --show-toplevel` to confirm you're in the right repo.
 
 ## Steps
 
@@ -187,8 +184,9 @@ directly on main.
 1. Wait for all teammates to report back.
 
 2. For each completed fix:
-   - Note the worktree branch name from the Task result
-   - Cherry-pick or merge the commit into your working branch
+   - **macOS (worktree mode):** note the worktree branch name from the Task result
+     and cherry-pick the commit into your working branch
+   - **Linux (no worktree):** commits are already on the current branch — no cherry-picking needed
 
 3. Run full verification:
    ```bash
@@ -245,20 +243,18 @@ directly on main.
 
 ### Phase 5: Integrate Back to Main (Default)
 
-Do not leave retained progress only in a worktree/collector branch.
+Do not leave retained progress only in a feature branch.
 
 1. Ensure all retained progress is committed:
    - Accepted cop fixes: one commit per cop (preferred).
    - Useful investigation artifacts retained in repo (for example, reverted-attempt notes): separate commit.
 
 2. Integrate those commit(s) into `main` immediately (unless the user explicitly says not to).
-   If teammates committed in worktrees, cherry-pick from the worktree branch:
+   If on a feature branch or worktree branch, cherry-pick into main:
    ```bash
    git checkout main
    git cherry-pick <sha1> [<sha2> ...]
    ```
-   If teammates committed directly on main (worktree isolation failed), their commits
-   are already on main — just verify with `git log`.
 
 3. Verify integration on `main`:
    ```bash
