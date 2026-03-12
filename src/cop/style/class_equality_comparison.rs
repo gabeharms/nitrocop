@@ -12,18 +12,18 @@ use ruby_prism::Visit;
 ///   the enclosing def method name. RuboCop checks `matches_allowed_pattern?(def_node.method_name)`.
 ///   Fixed by matching AllowedPatterns against `enclosing_def_name` like AllowedMethods.
 ///
-/// ## Corpus investigation (2026-03-11)
+/// ## Corpus investigation (2026-03-12)
 ///
 /// Corpus oracle reported FP=3, FN=0.
 ///
-/// Attempted fix: skip safe-navigation receiver chains such as `saved_only&.class == Ticket`
-/// and `error&.class&.to_s == "Errno::EACCES"`.
-/// Acceptance gate before: expected=542, actual=545, excess=3, missing=0.
-/// Acceptance gate after: expected=542, actual=538, excess=0, missing=4.
-/// Reverted because the change traded the 3 target false positives for 4 new false negatives.
-/// A second narrower variant that only skipped `&.class` / `&.name` / `&.to_s` / `&.inspect`
-/// on the compared receiver also landed at actual=538 on 2026-03-11. A correct fix needs a
-/// narrower distinction than simply checking for `&.` on the compared receiver call(s).
+/// Attempted fix: require the matched `.class` and optional `.name` / `.to_s` /
+/// `.inspect` calls to use plain `.` rather than `&.`.
+/// Acceptance gate before: expected=526, actual=516, excess=0, missing=10.
+/// Acceptance gate after: expected=526, actual=513, excess=0, missing=13.
+/// Reverted because the change removed the 3 target false positives but also
+/// dropped 3 additional true positives on the current local corpus rerun.
+/// A correct fix needs a narrower distinction than simply checking the matched
+/// call operators for `&.`.
 pub struct ClassEqualityComparison;
 
 impl Cop for ClassEqualityComparison {

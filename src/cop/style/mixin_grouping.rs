@@ -3,6 +3,25 @@ use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// ## Corpus investigation (2026-03-12)
+///
+/// Corpus oracle reported FP=2, FN=0.
+///
+/// FP=2: both false positives came from `class << self` bodies that contain
+/// multi-argument mixin macros such as `include Foo, Bar`.
+///
+/// Attempted fix: skip `SingletonClassNode` bodies entirely so `class << self`
+/// helpers are ignored.
+/// Acceptance gate before: expected=196, actual=198, excess=2, missing=0.
+/// Acceptance gate after: expected=196, actual=181, excess=0, missing=15.
+/// A second attempt that skipped only bare `include` inside singleton-class
+/// bodies also landed at actual=181 and did not clear the known FP locations in
+/// `puppetlabs/puppet`.
+///
+/// Reverted because the change introduced 15 false negatives across the corpus.
+/// A correct fix needs a narrower distinction than simply ignoring singleton
+/// classes; some real RuboCop offenses are still emitted from singleton-class
+/// scopes.
 pub struct MixinGrouping;
 
 const MIXIN_METHODS: &[&[u8]] = &[b"include", b"extend", b"prepend"];

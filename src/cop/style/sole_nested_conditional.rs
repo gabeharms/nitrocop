@@ -25,6 +25,21 @@ fn collect_assigned_variables(node: &ruby_prism::Node<'_>, names: &mut Vec<Vec<u
     }
 }
 
+/// ## Corpus investigation (2026-03-12)
+///
+/// Corpus oracle reported FP=2, FN=0.
+///
+/// Attempted fix: replace the narrow assignment collector with a full visitor so
+/// assignments nested inside comparison calls and multi-write nodes also suppress
+/// the offense.
+/// Acceptance gate before: expected=1952, actual=1908, excess=0, missing=44.
+/// Acceptance gate after: expected=1952, actual=1906, excess=0, missing=46.
+/// Reverted because the broader collector suppressed 2 additional true positives
+/// on the current local corpus rerun. One corpus example in `ruby/rdoc` also
+/// reduced to a case where RuboCop still fires, so not all remaining oracle FPs
+/// are attributable to missing assignment-descendant handling.
+pub struct SoleNestedConditional;
+
 /// Check if the inner branch's condition references a variable assigned in the outer condition.
 /// Mirrors RuboCop's `use_variable_assignment_in_condition?`.
 fn has_variable_assignment_dependency(
@@ -53,14 +68,6 @@ fn has_variable_assignment_dependency(
 
     false
 }
-
-/// Corpus investigation (2026-03-10): 3 FP, 0 FN.
-/// Root cause: missing `use_variable_assignment_in_condition?` check from RuboCop.
-/// RuboCop skips the offense when the outer condition assigns a variable that is
-/// referenced in the inner condition (e.g., `if var = foo; do_something if var; end`).
-/// Fix: added `has_variable_assignment_dependency()` to check for local variable
-/// writes in the outer condition whose names appear as reads in the inner condition.
-pub struct SoleNestedConditional;
 
 impl Cop for SoleNestedConditional {
     fn name(&self) -> &'static str {
