@@ -99,6 +99,28 @@ use std::collections::HashMap;
 ///    Fix: added visitors for all operator/and/or write and target node types.
 /// 5. **Variable target nodes**: `LocalVariableTargetNode` (multi-assign `a, b = ...`) and
 ///    similar target nodes have names that default visitors don't emit.
+///
+/// **Investigation (2026-03-11, round 3):** 279 FPs and 36 FNs remaining.
+///
+/// FP root cause: The `AstFingerprinter` was missing custom visitors for several leaf-like
+/// node types that have meaningful attribute values not exposed as child nodes. These nodes
+/// use the default visitor which is a no-op (no children to visit), causing structurally
+/// different AST subtrees to produce identical fingerprints.
+///
+/// Specific gaps fixed:
+/// 1. **Regex flags**: `RegularExpressionNode`, `InterpolatedRegularExpressionNode`,
+///    `MatchLastLineNode`, `InterpolatedMatchLastLineNode` all have flags (i, m, x, etc.)
+///    stored in `closing_loc()`. The fingerprinter only emitted `unescaped()` (pattern content)
+///    without flags, so `/pattern/i` and `/pattern/m` produced identical fingerprints.
+///    In RuboCop AST, regex flags are part of the `(regopt ...)` child node.
+///    Fix: emit `closing_loc()` which contains the flags portion (e.g., `/im`).
+/// 2. **Back reference read nodes** (`$&`, `$``, `$'`, `$~`): `BackReferenceReadNode` has a
+///    `name` attribute but the default visitor is a no-op. All back references produced the
+///    same fingerprint. Fix: emit `name()`.
+/// 3. **Numbered reference read nodes** (`$1`, `$2`, etc.): `NumberedReferenceReadNode` has a
+///    `number` attribute. Fix: emit `number()` as little-endian bytes.
+/// 4. **XString nodes** (backtick strings): `XStringNode` has `unescaped()` content but the
+///    default visitor is a no-op. Fix: emit `unescaped()`.
 pub struct RepeatedExample;
 
 impl Cop for RepeatedExample {
@@ -622,7 +644,62 @@ impl<'pr> Visit<'pr> for AstFingerprinter {
 
     fn visit_regular_expression_node(&mut self, node: &ruby_prism::RegularExpressionNode<'pr>) {
         self.emit_bytes(node.unescaped());
+        // Include regex flags (i, m, x, etc.) to distinguish /foo/i from /foo/m.
+        // In RuboCop AST, regopt flags are part of the node structure.
+        self.emit_bytes(node.closing_loc().as_slice());
         ruby_prism::visit_regular_expression_node(self, node);
+    }
+
+    fn visit_interpolated_regular_expression_node(
+        &mut self,
+        node: &ruby_prism::InterpolatedRegularExpressionNode<'pr>,
+    ) {
+        // Include regex flags to distinguish /#{x}/i from /#{x}/m
+        self.emit_bytes(node.closing_loc().as_slice());
+        ruby_prism::visit_interpolated_regular_expression_node(self, node);
+    }
+
+    fn visit_match_last_line_node(&mut self, node: &ruby_prism::MatchLastLineNode<'pr>) {
+        // Match-last-line is /regex/ in conditional context. Include content and flags.
+        self.emit_bytes(node.unescaped());
+        self.emit_bytes(node.closing_loc().as_slice());
+        ruby_prism::visit_match_last_line_node(self, node);
+    }
+
+    fn visit_interpolated_match_last_line_node(
+        &mut self,
+        node: &ruby_prism::InterpolatedMatchLastLineNode<'pr>,
+    ) {
+        self.emit_bytes(node.closing_loc().as_slice());
+        ruby_prism::visit_interpolated_match_last_line_node(self, node);
+    }
+
+    fn visit_x_string_node(&mut self, node: &ruby_prism::XStringNode<'pr>) {
+        // Backtick string content: `cmd` — the content distinguishes them
+        self.emit_bytes(node.unescaped());
+        ruby_prism::visit_x_string_node(self, node);
+    }
+
+    fn visit_interpolated_x_string_node(
+        &mut self,
+        node: &ruby_prism::InterpolatedXStringNode<'pr>,
+    ) {
+        // Interpolated backtick strings — default visitor handles child parts
+        ruby_prism::visit_interpolated_x_string_node(self, node);
+    }
+
+    fn visit_back_reference_read_node(&mut self, node: &ruby_prism::BackReferenceReadNode<'pr>) {
+        // $&, $`, $', $~ etc. — each has a different name in RuboCop AST
+        self.emit_bytes(node.name().as_slice());
+    }
+
+    fn visit_numbered_reference_read_node(
+        &mut self,
+        node: &ruby_prism::NumberedReferenceReadNode<'pr>,
+    ) {
+        // $1, $2, etc. — the number distinguishes them in RuboCop AST
+        let n = node.number();
+        self.buf.extend_from_slice(&n.to_le_bytes());
     }
 
     fn visit_true_node(&mut self, _node: &ruby_prism::TrueNode<'pr>) {

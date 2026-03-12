@@ -179,3 +179,49 @@ describe 'nested block params' do
   it { expect { |a| run }.to yield_control }
   it { expect { |b| run }.to yield_control }
 end
+
+# Examples with different regex flags are NOT duplicates
+# RuboCop distinguishes /foo/i from /foo/m in AST comparison
+describe 'regex flags' do
+  it { expect(str).to match(/pattern/i) }
+  it { expect(str).to match(/pattern/m) }
+end
+
+# Regex with flags vs no flags are NOT duplicates
+describe 'regex no flags' do
+  it { expect(str).to match(/pattern/) }
+  it { expect(str).to match(/pattern/i) }
+end
+
+# Interpolated regex with different flags are NOT duplicates
+describe 'interpolated regex flags' do
+  it { expect(str).to match(/#{prefix}value/i) }
+  it { expect(str).to match(/#{prefix}value/m) }
+end
+
+# Match-last-line (/regex/ in conditional) with different flags
+describe 'match last line flags' do
+  it { if /pattern/i; expect(true).to eq("x"); end }
+  it { if /pattern/m; expect(true).to eq("x"); end }
+end
+
+# Examples with different back references are NOT duplicates
+# $& vs $` are different in RuboCop AST (back_ref :$& vs back_ref :$`)
+describe 'back references' do
+  it { str =~ /pat/; expect($&).to eq("x") }
+  it { str =~ /pat/; expect($`).to eq("x") }
+end
+
+# Examples with different numbered references are NOT duplicates
+# $1 vs $2 are different in RuboCop AST (nth_ref 1 vs nth_ref 2)
+describe 'numbered references' do
+  it { str =~ /(a)(b)/; expect($1).to eq("x") }
+  it { str =~ /(a)(b)/; expect($2).to eq("x") }
+end
+
+# XString (backtick) with different content but same surrounding code NOT duplicates
+describe 'xstring diff content' do
+  it { result = `cmd1`; expect(result).to eq("x") }
+  it { result = `cmd2`; expect(result).to eq("x") }
+end
+
