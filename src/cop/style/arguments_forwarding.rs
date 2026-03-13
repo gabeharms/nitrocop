@@ -5,6 +5,20 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// FP=115 investigation (2026-03-13): nitrocop's `NonForwardingRefFinder` had two bugs:
+///
+/// 1. **Missing write node types**: Only tracked `LocalVariableWriteNode` (simple `x = ...`),
+///    missing `LocalVariableTargetNode` (multi-write `a, b, c = ...`), `LocalVariableOrWriteNode`
+///    (`x ||= ...`), `LocalVariableAndWriteNode` (`x &&= ...`), and
+///    `LocalVariableOperatorWriteNode` (`x += ...`). This caused params reassigned via
+///    multi-assignment or `||=` to not be detected as referenced.
+///
+/// 2. **Overly broad forwarding context**: Marked the entire subtree of splat/kwsplat/block_pass
+///    as "forwarding context", but RuboCop only checks the immediate parent. `*options[:cipher]`
+///    should mark `options` as referenced since it's used as a hash, not forwarded.
+///
+/// Fix: Added visitors for all write node types. Changed splat/kwsplat/block_pass visitors to
+/// only skip direct lvar children (matching RuboCop's immediate-parent check).
 pub struct ArgumentsForwarding;
 
 const FORWARDING_MSG: &str = "Use shorthand syntax `...` for arguments forwarding.";
@@ -571,7 +585,6 @@ impl<'pr> Visit<'pr> for SendClassifier {
 /// Find local variable names that are referenced outside of forwarding contexts
 fn non_forwarding_references(node: &ruby_prism::Node<'_>) -> std::collections::HashSet<String> {
     let mut finder = NonForwardingRefFinder {
-        in_forwarding_context: false,
         referenced: std::collections::HashSet::new(),
     };
     finder.visit(node);
@@ -579,16 +592,13 @@ fn non_forwarding_references(node: &ruby_prism::Node<'_>) -> std::collections::H
 }
 
 struct NonForwardingRefFinder {
-    in_forwarding_context: bool,
     referenced: std::collections::HashSet<String>,
 }
 
 impl<'pr> Visit<'pr> for NonForwardingRefFinder {
     fn visit_local_variable_read_node(&mut self, node: &ruby_prism::LocalVariableReadNode<'pr>) {
-        if !self.in_forwarding_context {
-            let name = String::from_utf8_lossy(node.name().as_slice()).to_string();
-            self.referenced.insert(name);
-        }
+        let name = String::from_utf8_lossy(node.name().as_slice()).to_string();
+        self.referenced.insert(name);
     }
 
     fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
@@ -597,25 +607,76 @@ impl<'pr> Visit<'pr> for NonForwardingRefFinder {
         ruby_prism::visit_local_variable_write_node(self, node);
     }
 
+    // Multi-write target: `a, b, c = ...` — each LHS var is a LocalVariableTargetNode
+    fn visit_local_variable_target_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableTargetNode<'pr>,
+    ) {
+        let name = String::from_utf8_lossy(node.name().as_slice()).to_string();
+        self.referenced.insert(name);
+    }
+
+    // `block ||= ...`
+    fn visit_local_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableOrWriteNode<'pr>,
+    ) {
+        let name = String::from_utf8_lossy(node.name().as_slice()).to_string();
+        self.referenced.insert(name);
+        ruby_prism::visit_local_variable_or_write_node(self, node);
+    }
+
+    // `block &&= ...`
+    fn visit_local_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
+    ) {
+        let name = String::from_utf8_lossy(node.name().as_slice()).to_string();
+        self.referenced.insert(name);
+        ruby_prism::visit_local_variable_and_write_node(self, node);
+    }
+
+    // `x += 1`
+    fn visit_local_variable_operator_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
+    ) {
+        let name = String::from_utf8_lossy(node.name().as_slice()).to_string();
+        self.referenced.insert(name);
+        ruby_prism::visit_local_variable_operator_write_node(self, node);
+    }
+
+    // For splat/kwsplat/block_pass, only the direct expression (immediate child lvar)
+    // is a forwarding reference. Deeper nested lvars (e.g., `*options[:key]`) are NOT
+    // forwarding — they use the variable as a hash/object, not as a splat forward.
+    // RuboCop checks only the immediate parent of the lvar node.
     fn visit_splat_node(&mut self, node: &ruby_prism::SplatNode<'pr>) {
-        let was = self.in_forwarding_context;
-        self.in_forwarding_context = true;
+        if let Some(expr) = node.expression() {
+            if expr.as_local_variable_read_node().is_some() {
+                // Direct lvar child: this IS a forwarding use, skip it
+                return;
+            }
+        }
+        // Not a direct lvar — recurse normally (lvars inside will be marked as referenced)
         ruby_prism::visit_splat_node(self, node);
-        self.in_forwarding_context = was;
     }
 
     fn visit_assoc_splat_node(&mut self, node: &ruby_prism::AssocSplatNode<'pr>) {
-        let was = self.in_forwarding_context;
-        self.in_forwarding_context = true;
+        if let Some(expr) = node.value() {
+            if expr.as_local_variable_read_node().is_some() {
+                return;
+            }
+        }
         ruby_prism::visit_assoc_splat_node(self, node);
-        self.in_forwarding_context = was;
     }
 
     fn visit_block_argument_node(&mut self, node: &ruby_prism::BlockArgumentNode<'pr>) {
-        let was = self.in_forwarding_context;
-        self.in_forwarding_context = true;
+        if let Some(expr) = node.expression() {
+            if expr.as_local_variable_read_node().is_some() {
+                return;
+            }
+        }
         ruby_prism::visit_block_argument_node(self, node);
-        self.in_forwarding_context = was;
     }
 
     // Don't recurse into nested defs
