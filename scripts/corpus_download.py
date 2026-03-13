@@ -201,6 +201,16 @@ def _github_api_download(url: str, token: str) -> bytes:
 def _try_curl_api(repo: str | None) -> tuple[Path, int, str] | None:
     """Try downloading via GitHub REST API with GH_TOKEN env var."""
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        # Fall back to gh CLI auth token if available
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"], capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                token = result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
     if not repo:
         return None
 
