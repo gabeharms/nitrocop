@@ -62,6 +62,7 @@ fn is_truthy_literal(node: &ruby_prism::Node<'_>) -> bool {
         || node.as_float_node().is_some()
         || node.as_array_node().is_some()
         || node.as_hash_node().is_some()
+        || node.as_keyword_hash_node().is_some()
 }
 
 /// Returns true if the node is a falsey literal (false, nil).
