@@ -13,6 +13,7 @@ allow = [
   "github.com",
   "*.github.com",
   "*.githubusercontent.com",
+  "*.blob.core.windows.net",  # GitHub Actions artifact downloads
 
   # AI providers
   "anthropic.com",
@@ -101,6 +102,4 @@ allow = [
 [cli]
 [[cli.tools]]
 name = "gh"
-env = ["GH_TOKEN"]
-allow = ["*"]
-deny = ["auth token", "auth login", "auth logout", "auth refresh"]
+mode = "direct"
