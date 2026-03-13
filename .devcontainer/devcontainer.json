@@ -2,7 +2,7 @@
   "name": "nitrocop",
   "mounts": [
     "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly",
-    "source=/run/host-services/ssh-auth.sock,target=/ssh-agent,type=bind"
+    "source=/run/host-services/ssh-auth.sock,target=/ssh-agent,type=bind",
   ],
   "containerEnv": {
     "CC": "clang",
@@ -11,17 +11,12 @@
     "SSH_AUTH_SOCK": "/ssh-agent",
     "GIT_CONFIG_GLOBAL": "/home/vscode/.gitconfig-local",
     "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:DEVCONTAINER_CLAUDE_CODE_OAUTH_TOKEN}",
-    "GITHUB_TOKEN": "${localEnv:DEVCONTAINER_GITHUB_TOKEN}",
-    "MISE_GITHUB_TOKEN": "${localEnv:DEVCONTAINER_GITHUB_TOKEN}"
   },
   "postCreateCommand": ".devcontainer/setup.sh",
   "postStartCommand": "sudo chmod 666 /ssh-agent 2>/dev/null || true",
   "remoteUser": "vscode",
-  "dockerComposeFile": [
-    "docker-compose.yml",
-    "docker-compose.kap.yml"
-  ],
+  "dockerComposeFile": ["docker-compose.yml", "docker-compose.kap.yml"],
   "service": "app",
   "workspaceFolder": "/workspace",
-  "initializeCommand": "kap sidecar-init"
+  "initializeCommand": "kap sidecar-init",
 }

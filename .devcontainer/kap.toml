@@ -40,6 +40,18 @@ allow = [
   "*.ruby-lang.org",
   "rubyonrails.org",
   "*.rubyonrails.org",
+  "rubocop.org",
+  "*.rubocop.org",
+  "ruby-doc.org",
+  "*.ruby-doc.org",
+  "rubydoc.info",
+  "*.rubydoc.info",
+  "rubyapi.org",
+  "rspec.info",
+  "*.rspec.info",
+  "relishapp.com",
+  "*.relishapp.com",
+  "yardoc.org",
 
   # Node
   "*.npmjs.org",

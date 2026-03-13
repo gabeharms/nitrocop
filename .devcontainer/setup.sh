@@ -47,9 +47,11 @@ mise use -g node@lts
 mise install
 mise reshim
 
-# Persist mise to zsh: PATH in .zshenv (all shells), activation in .zshrc (interactive)
+# Persist mise to all shells
 echo 'export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"' >> ~/.zshenv
 echo 'eval "$(~/.local/bin/mise activate zsh)"' >> ~/.zshrc
+echo 'export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"' >> ~/.bashrc
+echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
 
 # AI coding assistants
 curl -fsSL https://claude.ai/install.sh | bash
