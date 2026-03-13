@@ -1,35 +1,138 @@
-use crate::cop::node_type::{ARRAY_NODE, SYMBOL_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
+use ruby_prism::Visit;
 
+/// Style/SymbolArray: flags bracket arrays of symbols that could use %i.
+///
+/// Investigation (FP=152): The main source of false positives was missing the
+/// `invalid_percent_array_context?` check from RuboCop's PercentArray mixin.
+/// When a bracket symbol array is an argument to a non-parenthesized method
+/// call that also has a block (e.g. `can [:admin, :read], Model do ... end`),
+/// `%i[...]` would be ambiguous — Ruby cannot distinguish the `{` as a block
+/// vs hash literal. RuboCop exempts these arrays and so must we.
+///
+/// Also added `complex_content?` check: symbols containing spaces or
+/// unmatched delimiters (`[]`, `()`) cannot be represented in `%i` syntax.
 pub struct SymbolArray;
+
+/// Delimiter characters that cannot appear unmatched in %i arrays.
+const DELIMITERS: &[char] = &['[', ']', '(', ')'];
+
+/// Check if a symbol has "complex content" that %i can't represent.
+/// Matches RuboCop's `complex_content?` method: symbols with spaces or
+/// unmatched delimiters (after removing balanced non-space-containing pairs).
+fn symbol_has_complex_content(sym_node: &ruby_prism::SymbolNode<'_>) -> bool {
+    let value = sym_node.unescaped();
+    let content = match std::str::from_utf8(value) {
+        Ok(s) => s,
+        Err(_) => return true,
+    };
+
+    if content.contains(' ') {
+        return true;
+    }
+
+    // Strip matched delimiter pairs that don't contain spaces or nested delimiters,
+    // then check for remaining unmatched delimiters.
+    let stripped = strip_balanced_pairs(content);
+    DELIMITERS.iter().any(|d| stripped.contains(*d))
+}
+
+/// Remove balanced `[...]` and `(...)` pairs whose contents have no spaces
+/// or nested delimiters. Matches RuboCop's gsub with
+/// `/(\[[^\s\[\]]*\])|(\([^\s()]*\))/`.
+fn strip_balanced_pairs(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' || chars[i] == '(' {
+            let close = if chars[i] == '[' { ']' } else { ')' };
+            // Look for matching close without spaces or nested delimiters
+            if let Some(end) = find_simple_close(&chars, i + 1, close) {
+                i = end + 1; // skip the matched pair
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+/// Find a closing delimiter that contains no spaces, brackets, or parens.
+fn find_simple_close(chars: &[char], start: usize, close: char) -> Option<usize> {
+    for (offset, &ch) in chars[start..].iter().enumerate() {
+        if ch == close {
+            return Some(start + offset);
+        }
+        if ch.is_whitespace() || ch == '[' || ch == ']' || ch == '(' || ch == ')' {
+            return None;
+        }
+    }
+    None
+}
+
+fn array_has_complex_content(array_node: &ruby_prism::ArrayNode<'_>) -> bool {
+    for elem in array_node.elements().iter() {
+        if let Some(sym) = elem.as_symbol_node() {
+            if symbol_has_complex_content(&sym) {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 impl Cop for SymbolArray {
     fn name(&self) -> &'static str {
         "Style/SymbolArray"
     }
 
-    fn interested_node_types(&self) -> &'static [u8] {
-        &[ARRAY_NODE, SYMBOL_NODE]
-    }
-
-    fn check_node(
+    fn check_source(
         &self,
         source: &SourceFile,
-        node: &ruby_prism::Node<'_>,
         parse_result: &ruby_prism::ParseResult<'_>,
+        _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let array_node = match node.as_array_node() {
-            Some(a) => a,
-            None => return,
-        };
+        let min_size = config.get_usize("MinSize", 2);
+        let enforced_style = config.get_str("EnforcedStyle", "percent");
 
+        if enforced_style == "brackets" {
+            return;
+        }
+
+        let mut visitor = SymbolArrayVisitor {
+            cop: self,
+            source,
+            parse_result,
+            min_size,
+            diagnostics: Vec::new(),
+            in_ambiguous_block_context: false,
+        };
+        visitor.visit(&parse_result.node());
+        diagnostics.extend(visitor.diagnostics);
+    }
+}
+
+struct SymbolArrayVisitor<'a, 'src, 'pr> {
+    cop: &'a SymbolArray,
+    source: &'src SourceFile,
+    parse_result: &'a ruby_prism::ParseResult<'pr>,
+    min_size: usize,
+    diagnostics: Vec<Diagnostic>,
+    /// True when we're inside arguments of a non-parenthesized call with a block.
+    in_ambiguous_block_context: bool,
+}
+
+impl<'pr> SymbolArrayVisitor<'_, '_, 'pr> {
+    fn check_array(&mut self, node: &ruby_prism::ArrayNode<'pr>) {
         // Must have `[` opening (not %i or %I)
-        let opening = match array_node.opening_loc() {
+        let opening = match node.opening_loc() {
             Some(loc) => loc,
             None => return,
         };
@@ -38,35 +141,25 @@ impl Cop for SymbolArray {
             return;
         }
 
-        let elements = array_node.elements();
-        let min_size = config.get_usize("MinSize", 2);
-        let enforced_style = config.get_str("EnforcedStyle", "percent");
+        let elements = node.elements();
 
-        // "brackets" style: never flag bracket arrays — they ARE the preferred style
-        if enforced_style == "brackets" {
+        if elements.len() < self.min_size {
             return;
         }
 
-        if elements.len() < min_size {
+        // Skip if in ambiguous block context (invalid_percent_array_context?)
+        if self.in_ambiguous_block_context {
             return;
         }
 
         // Skip arrays containing comments — %i[] can't contain comments
-        let array_start_line = source
-            .offset_to_line_col(array_node.location().start_offset())
-            .0;
-        let array_end_line = source
-            .offset_to_line_col(array_node.location().end_offset().saturating_sub(1))
-            .0;
-        if array_start_line != array_end_line {
-            for comment in parse_result.comments() {
-                let comment_line = source
-                    .offset_to_line_col(comment.location().start_offset())
-                    .0;
-                if comment_line >= array_start_line && comment_line <= array_end_line {
-                    return;
-                }
-            }
+        let array_start = opening.start_offset();
+        let array_end = node
+            .closing_loc()
+            .map(|c| c.end_offset())
+            .unwrap_or(array_start);
+        if has_comment_in_range(self.parse_result, array_start, array_end) {
+            return;
         }
 
         // All elements must be symbol nodes
@@ -76,14 +169,68 @@ impl Cop for SymbolArray {
             }
         }
 
-        let (line, column) = source.offset_to_line_col(opening.start_offset());
-        diagnostics.push(self.diagnostic(
-            source,
+        // Skip arrays with complex content (spaces, unmatched delimiters)
+        if array_has_complex_content(node) {
+            return;
+        }
+
+        let (line, column) = self.source.offset_to_line_col(opening.start_offset());
+        self.diagnostics.push(self.cop.diagnostic(
+            self.source,
             line,
             column,
             "Use `%i` or `%I` for an array of symbols.".to_string(),
         ));
     }
+
+    /// Check if a call node represents an ambiguous block context:
+    /// non-parenthesized method call with a block.
+    fn is_ambiguous_block_call(&self, call: &ruby_prism::CallNode<'pr>) -> bool {
+        // Must have a block
+        if call.block().is_none() {
+            return false;
+        }
+        // Must have arguments
+        if call.arguments().is_none() {
+            return false;
+        }
+        // Must NOT be parenthesized
+        call.opening_loc().is_none()
+    }
+}
+
+impl<'pr> Visit<'pr> for SymbolArrayVisitor<'_, '_, 'pr> {
+    fn visit_array_node(&mut self, node: &ruby_prism::ArrayNode<'pr>) {
+        self.check_array(node);
+        ruby_prism::visit_array_node(self, node);
+    }
+
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        let is_ambiguous = self.is_ambiguous_block_call(node);
+        let prev = self.in_ambiguous_block_context;
+        if is_ambiguous {
+            self.in_ambiguous_block_context = true;
+        }
+
+        ruby_prism::visit_call_node(self, node);
+
+        self.in_ambiguous_block_context = prev;
+    }
+}
+
+/// Check if there are any comments within a byte offset range.
+fn has_comment_in_range(
+    parse_result: &ruby_prism::ParseResult<'_>,
+    start: usize,
+    end: usize,
+) -> bool {
+    for comment in parse_result.comments() {
+        let comment_start = comment.location().start_offset();
+        if comment_start >= start && comment_start < end {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
