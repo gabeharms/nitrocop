@@ -76,10 +76,16 @@ use crate::parse::source::SourceFile;
 /// condition, interpolated symbol (`:"#{a}"`), and regex/interpolated-regex as
 /// no-offense in if conditions.
 ///
-/// FP=20 root cause: Not yet identified. All literal types in `is_literal()` verified
-/// as matching RuboCop's `TRUTHY_LITERALS` + `FALSEY_LITERALS`. The remaining FPs may
-/// be from edge cases in config resolution, disable comment handling, or other subtle
-/// behavioral differences. Requires corpus data with example locations to investigate.
+/// FP=20 root cause analysis:
+/// - ~10 FPs: Pattern matching guards (`in X if true`, `in X if false`) in case/in
+///   blocks were incorrectly flagged. Prism represents these guards as IfNode/UnlessNode
+///   inside InNode.pattern, so the AST walker visits them and the IfNode handler fires.
+///   RuboCop does NOT fire `on_if` for pattern matching guards (in the Parser gem AST,
+///   guards are part of the `in_pattern` node, not separate `if` nodes).
+///   Fix: Added `is_pattern_matching_guard()` check that detects when an IfNode/UnlessNode
+///   is on a line starting with `in ` (indicating it's a guard, not a standalone condition).
+/// - ~10 FPs: Config/exclude differences (files excluded by RuboCop project config but not
+///   by nitrocop). These are config resolution issues, not cop logic bugs.
 pub struct LiteralAsCondition;
 
 /// Check if a node is a literal value (matches RuboCop's `literal?`).
@@ -184,6 +190,23 @@ fn check_bang_receiver(
     }
 }
 
+/// Check if an IfNode or UnlessNode is a pattern matching guard (e.g., `in 4 if true`).
+/// In Prism, pattern matching guards are represented as IfNode/UnlessNode inside
+/// InNode.pattern. We detect this by checking if the text from line start to the
+/// node's start offset is `in ` (with optional leading whitespace).
+fn is_pattern_matching_guard(source: &SourceFile, node: &ruby_prism::Node<'_>) -> bool {
+    let loc = node.location();
+    let start = loc.start_offset();
+    let (line, _col) = source.offset_to_line_col(start);
+    if let Some(line_start) = source.line_col_to_offset(line, 0) {
+        if let Some(prefix) = source.try_byte_slice(line_start, start) {
+            let trimmed = prefix.trim();
+            return trimmed == "in";
+        }
+    }
+    false
+}
+
 fn node_source_text<'a>(node: &ruby_prism::Node<'a>) -> &'a str {
     let loc = node.location();
     std::str::from_utf8(loc.as_slice()).unwrap_or("literal")
@@ -275,6 +298,10 @@ impl Cop for LiteralAsCondition {
         // Only checks the direct predicate -- nested &&/||/! are handled by
         // on_and/on_or/on_send handlers respectively.
         if let Some(if_node) = node.as_if_node() {
+            // Skip pattern matching guards (e.g., `in 4 if true`)
+            if is_pattern_matching_guard(source, node) {
+                return;
+            }
             let predicate = if_node.predicate();
 
             if is_falsey_literal(&predicate) || is_truthy_literal(&predicate) {
@@ -285,6 +312,10 @@ impl Cop for LiteralAsCondition {
 
         // on_unless: unless with literal condition (UnlessNode is separate in Prism)
         if let Some(unless_node) = node.as_unless_node() {
+            // Skip pattern matching guards (e.g., `in 4 unless false`)
+            if is_pattern_matching_guard(source, node) {
+                return;
+            }
             let predicate = unless_node.predicate();
             if is_falsey_literal(&predicate) || is_truthy_literal(&predicate) {
                 add_literal_offense(self, source, &predicate, diagnostics);

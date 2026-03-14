@@ -74,3 +74,18 @@ end
 unless /ready/
   retry
 end
+
+# Pattern matching guards should not be flagged
+case value
+in 4 if true
+  x = 1
+in 4 if false
+  x = 2
+end
+
+case value
+in Integer if true
+  x = 1
+in String unless false
+  x = 2
+end
