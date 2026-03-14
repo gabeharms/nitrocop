@@ -42,6 +42,37 @@ use crate::parse::source::SourceFile;
 /// Also fixed `normalize_single_quoted_source` which over-escaped backslashes
 /// when converting `:'...'` to `:"..."` form (used `escape_double_quoted_symbol`
 /// on raw source chars instead of just escaping `"`).
+///
+/// ## Corpus investigation (2026-03-14)
+///
+/// Corpus oracle reported FP=14, FN=94 (98.6% match rate).
+///
+/// Extensive analysis performed comparing RuboCop's `on_sym`/`on_send` logic
+/// against nitrocop's `check_symbol_node`/`check_call_node`:
+///
+/// - Verified: `.to_sym`/`.intern` on single/double-quoted strings, operator
+///   symbols, instance/class/global variables, method-name symbols with `?`/`!`/`=`
+///   suffixes, colon-style and rocket-style hash keys, `%i`/`%I` arrays, `alias`
+///   statements, setter exemptions, escape sequence handling, and
+///   `source_matches_correction` normalization all match RuboCop behavior.
+///
+/// - Added comprehensive test coverage for all verified patterns.
+///
+/// - Two potential FP sources identified but unconfirmed (no corpus data available):
+///   (1) `alias :"foo" :"bar"` — RuboCop has `in_alias?` check to skip alias
+///   arguments, nitrocop relies on Prism's `opening_loc` filtering which works
+///   for bare `alias foo bar` but may not for explicitly quoted alias arguments.
+///   (2) Multi-line rocket-style hash keys where `=>` is on next line — nitrocop's
+///   byte scanning only skips spaces/tabs, not newlines, so may miss the `=>`
+///   and treat the key as standalone.
+///
+/// - `EnforcedStyle: consistent` is still not implemented. The corpus baseline
+///   uses `strict` (default) so this should not affect corpus FP/FN. However,
+///   individual project configs that set `consistent` would have FNs.
+///
+/// Root cause of remaining 94 FNs is not definitively identified; may require
+/// corpus-level debugging with `investigate-cop.py --context` once corpus data
+/// with example locations is available.
 pub struct SymbolConversion;
 
 const BARE_OPERATOR_SYMBOLS: &[&[u8]] = &[
@@ -502,6 +533,293 @@ mod tests {
                 !diags.is_empty(),
                 "Expected offense for {:?} but got none",
                 source
+            );
+        }
+    }
+
+    #[test]
+    fn single_quoted_string_to_sym() {
+        let cop = SymbolConversion;
+        // Single-quoted strings with .to_sym should be flagged
+        let offense_cases = [
+            ("'foo'.to_sym", ":foo"),
+            ("'foo_bar'.to_sym", ":foo_bar"),
+            ("'foo-bar'.to_sym", ":\"foo-bar\""),
+            ("'foo'.intern", ":foo"),
+        ];
+        for (source, expected) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+            assert!(
+                diags[0].message.contains(&format!("`{expected}`")),
+                "Expected correction {} in message for {:?}, got: {}",
+                expected,
+                source,
+                diags[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn to_sym_with_empty_parens() {
+        let cop = SymbolConversion;
+        // .to_sym() with empty parens should still be flagged
+        let offense_cases = [
+            (r#""foo".to_sym()"#, ":foo"),
+            (r#"'bar'.intern()"#, ":bar"),
+            (":baz.to_sym()", ":baz"),
+        ];
+        for (source, expected) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+            assert!(
+                diags[0].message.contains(&format!("`{expected}`")),
+                "Expected correction {} in message for {:?}, got: {}",
+                expected,
+                source,
+                diags[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn comprehensive_offense_check() {
+        let cop = SymbolConversion;
+        // Comprehensive list of patterns that should be offenses
+        let offense_cases: Vec<(&str, &str)> = vec![
+            // to_sym on string literals (single and double quoted)
+            (r#""foo".to_sym"#, ":foo"),
+            ("'foo'.to_sym", ":foo"),
+            // intern
+            (r#""foo".intern"#, ":foo"),
+            ("'foo'.intern", ":foo"),
+            // to_sym on symbol literal (redundant)
+            (":foo.to_sym", ":foo"),
+            (":foo.intern", ":foo"),
+            // Quoted standalone symbols
+            (":\"foo\"", ":foo"),
+            (":'foo'", ":foo"),
+            (":\"foo_bar\"", ":foo_bar"),
+            (":'foo_bar'", ":foo_bar"),
+            // Operator symbols that can be unquoted (excluding those ending with =)
+            (":\"<<\"", ":<<"),
+            (":'<<'", ":<<"),
+            (":\"[]\"", ":[]"),
+            (":'[]'", ":[]"),
+            (":\"+\"", ":+"),
+            (":'+'", ":+"),
+            (":\"-\"", ":-"),
+            (":'-'", ":-"),
+            (":\"**\"", ":**"),
+            (":'**'", ":**"),
+            // Instance/class variable symbols
+            (":\"@foo\"", ":@foo"),
+            (":'@foo'", ":@foo"),
+            (":\"@@foo\"", ":@@foo"),
+            (":'@@foo'", ":@@foo"),
+            // Global variable symbols
+            (":\"$foo\"", ":$foo"),
+            (":'$foo'", ":$foo"),
+            // Colon-style hash keys
+            ("{ 'foo': 1 }", "foo:"),
+            ("{ \"foo\": 1 }", "foo:"),
+            ("{ 'foo_bar': 1 }", "foo_bar:"),
+            // Rocket-style hash keys with identifier start
+            ("{ :'foo' => 1 }", ":foo"),
+            ("{ :\"foo\" => 1 }", ":foo"),
+            // Method-like symbols
+            (":\"foo?\"", ":foo?"),
+            (":'foo?'", ":foo?"),
+            (":\"foo!\"", ":foo!"),
+            (":'foo!'", ":foo!"),
+            // Hash keys ending with ? or !
+            ("{ 'foo?': 1 }", "foo?:"),
+            ("{ 'foo!': 1 }", "foo!:"),
+        ];
+        for (source, expected_contains) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+            assert!(
+                diags[0].message.contains(&format!("`{expected_contains}`")),
+                "Expected `{}` in message for {:?}, got: {}",
+                expected_contains,
+                source,
+                diags[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn symbol_in_various_contexts() {
+        let cop = SymbolConversion;
+        // Symbols in various contexts should all be flagged
+        let offense_cases = [
+            // In array
+            (r#"[:"foo", :"bar"]"#, 2),
+            // In method arguments
+            (r#"method(:"foo")"#, 1),
+            // In assignment
+            (r#"x = :"foo""#, 1),
+            // In conditional
+            (r#"if x == :"foo" then 1 end"#, 1),
+            // In case/when
+            (r#"case x; when :"foo" then 1; end"#, 1),
+            // Nested in hash value
+            (r#"{ key: :"foo" }"#, 1),
+            // Multiple in same line
+            (r#"[:"foo", :'bar', "baz".to_sym]"#, 3),
+            // In string interpolation context
+            (r#"send(:"foo")"#, 1),
+            // Method receiver
+            (r#":"foo".to_s"#, 1),
+        ];
+        for (source, expected_count) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert_eq!(
+                diags.len(),
+                *expected_count,
+                "Expected {} offense(s) for {:?} but got {}: {:?}",
+                expected_count,
+                source,
+                diags.len(),
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn to_sym_with_special_strings() {
+        let cop = SymbolConversion;
+        // Various string forms with .to_sym
+        let offense_cases = [
+            // Method-like strings
+            ("'foo?'.to_sym", ":foo?"),
+            ("'foo!'.to_sym", ":foo!"),
+            ("'foo='.to_sym", ":foo="),
+            // Operator strings
+            ("'+'.to_sym", ":+"),
+            ("'<<'.to_sym", ":<<"),
+            ("'[]'.to_sym", ":[]"),
+            ("'[]='.to_sym", ":[]="),
+            ("'<=>'.to_sym", ":<=>"),
+            // Instance variable strings
+            ("'@foo'.to_sym", ":@foo"),
+            ("'@@foo'.to_sym", ":@@foo"),
+            // Global variable strings
+            ("'$foo'.to_sym", ":$foo"),
+            // Strings that need quoting as symbols
+            ("'foo-bar'.to_sym", ":\"foo-bar\""),
+            ("'foo bar'.to_sym", ":\"foo bar\""),
+        ];
+        for (source, expected) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+            assert!(
+                diags[0].message.contains(&format!("`{expected}`")),
+                "Expected `{}` in message for {:?}, got: {}",
+                expected,
+                source,
+                diags[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn double_quoted_hash_key_with_suffix() {
+        let cop = SymbolConversion;
+        // Double-quoted hash keys with ? and ! suffix
+        let offense_cases = [
+            ("{ \"foo?\": 1 }", "foo?:"),
+            ("{ \"foo!\": 1 }", "foo!:"),
+            ("{ \"Foo\": 1 }", "Foo:"),
+            ("{ \"_foo\": 1 }", "_foo:"),
+        ];
+        for (source, expected) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+            assert!(
+                diags[0].message.contains(&format!("`{expected}`")),
+                "Expected `{}` in message for {:?}, got: {}",
+                expected,
+                source,
+                diags[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn comprehensive_no_offense_check() {
+        let cop = SymbolConversion;
+        let no_offense_cases: Vec<&str> = vec![
+            // Bare symbols
+            ":foo",
+            ":foo_bar",
+            ":Foo",
+            // Symbols that need quoting
+            ":\"foo-bar\"",
+            ":'foo-bar'",
+            ":\"foo bar\"",
+            ":'foo bar'",
+            ":\"foo:bar\"",
+            // Setter symbols (properly quoted)
+            ":\"foo=\"",
+            ":'foo='",
+            // Bare hash keys
+            "{ foo: 1 }",
+            // Hash keys that need quoting
+            "{ 'foo-bar': 1 }",
+            "{ 'foo bar': 1 }",
+            "{ '==': 1 }",
+            "{ 'foo=': 1 }",
+            // Empty symbol
+            ":\"\"",
+            // Percent arrays
+            "%i(foo bar)",
+            "%I(foo bar)",
+            // Alias
+            "alias foo bar",
+            // to_sym on non-literal
+            "name.to_sym",
+            "x.to_sym",
+            // to_sym with args
+            "\"foo\".to_sym(1)",
+            // Escape-needed symbols
+            ":\"\\n\"",
+            ":\"\\t\"",
+            // Rocket-style with non-identifier start
+            "{ :'@ivar' => 1 }",
+            "{ :'+' => 1 }",
+            // Numeric-start hash key (needs quotes)
+            "{ '7_days': 1 }",
+            "{ \"7_days\": 1 }",
+        ];
+        for source in &no_offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                diags.is_empty(),
+                "Expected no offense for {:?} but got: {:?}",
+                source,
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
         }
     }
