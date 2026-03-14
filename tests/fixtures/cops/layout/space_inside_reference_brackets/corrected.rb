@@ -8,4 +8,7 @@ cache[key] ||= {}
 
 totals[key] += 1
 
+v[0] += # comment
+  42
+
 items[]

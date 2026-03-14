@@ -31,6 +31,15 @@ use crate::parse::source::SourceFile;
 ///    brackets (e.g. `CONST[ resp[:x][:y] ]`) or the receiver has brackets
 ///    (e.g. `user['k'][ arg['id'] ]`), the outer brackets are never checked.
 ///    Added `should_skip_outer_brackets` to match this behavior.
+///
+/// ## Corpus investigation (2026-03-14)
+///
+/// FN=1: `v [0 ] += # comment\n  42` — multiline compound assignment where
+/// brackets are single-line but the IndexOperatorWriteNode spans multiple
+/// lines (the RHS value is on the next line). RuboCop's `on_send` receives
+/// the inner `[]` send node (single-line), not the outer op_asgn. Fixed by
+/// restricting the whole-node multiline skip to CallNode only; index write
+/// nodes already have the bracket-span multiline check.
 pub struct SpaceInsideReferenceBrackets;
 
 impl Cop for SpaceInsideReferenceBrackets {
@@ -136,12 +145,17 @@ impl Cop for SpaceInsideReferenceBrackets {
             return;
         }
 
-        // RuboCop skips when the entire node is multiline (e.g. `obj[key] = if\n...\nend`),
-        // not just when the brackets span multiple lines.
-        let node_start_line = source.offset_to_line_col(node.location().start_offset()).0;
-        let node_end_line = source.offset_to_line_col(node.location().end_offset()).0;
-        if node_start_line != node_end_line {
-            return;
+        // RuboCop skips when the entire send node is multiline (e.g. `obj[key] = if\n...\nend`),
+        // not just when the brackets span multiple lines. This only applies to CallNode
+        // (where `[]`/`[]=` is the send). For IndexOperatorWriteNode/IndexAndWriteNode/
+        // IndexOrWriteNode, the node includes the RHS value expression (which can be on a
+        // different line), but RuboCop's `on_send` only sees the inner `[]` send node.
+        if node.as_call_node().is_some() {
+            let node_start_line = source.offset_to_line_col(node.location().start_offset()).0;
+            let node_end_line = source.offset_to_line_col(node.location().end_offset()).0;
+            if node_start_line != node_end_line {
+                return;
+            }
         }
 
         // RuboCop's token-based bracket selection can skip the outer brackets of
