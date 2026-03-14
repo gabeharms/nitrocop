@@ -30,6 +30,19 @@ use crate::parse::source::SourceFile;
 ///    skipped by RuboCop. Nitrocop was flagging these as trailing blanks.
 ///
 /// Both exemptions now implemented.
+///
+/// ## Corpus investigation (2026-03-14, second pass)
+///
+/// FP=46, FN=6. Rewrote detection to match RuboCop's exact algorithm:
+/// RuboCop captures trailing whitespace with `/\s*\Z/`, counts newlines
+/// in that match, and computes `blank_lines = newline_count - 1`. The old
+/// nitrocop approach used line-by-line `is_blank_line()` which incorrectly
+/// treated whitespace-only content after the final newline (e.g., `"code\n  "`)
+/// as a trailing blank line. RuboCop does NOT flag such files because the
+/// trailing whitespace contains only 1 newline, yielding blank_lines=0.
+///
+/// Also fixed message format: RuboCop reports "N trailing blank lines
+/// detected." (with count) when N > 1, not the generic singular message.
 pub struct TrailingEmptyLines;
 
 /// Check if the source contains `__END__` (with optional leading whitespace).
@@ -41,24 +54,22 @@ fn contains_end_marker(bytes: &[u8]) -> bool {
     bytes.windows(7).any(|w| w == b"__END__")
 }
 
-fn is_blank_line(line: &[u8]) -> bool {
-    line.iter().all(|&b| matches!(b, b' ' | b'\t' | b'\r'))
-}
-
-fn trailing_blank_lines(lines: &[&[u8]], ends_with_newline: bool) -> Option<(usize, usize)> {
-    let mut first_non_blank_after_tail = lines.len();
-    while first_non_blank_after_tail > 0 && is_blank_line(lines[first_non_blank_after_tail - 1]) {
-        first_non_blank_after_tail -= 1;
+/// Count trailing whitespace length and newlines, matching RuboCop's
+/// `buffer.source[/\s*\Z/]` approach. Returns (trailing_ws_len, newline_count).
+fn trailing_whitespace_info(bytes: &[u8]) -> (usize, usize) {
+    let mut ws_len = 0;
+    let mut newline_count = 0;
+    for &b in bytes.iter().rev() {
+        if matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
+            ws_len += 1;
+            if b == b'\n' {
+                newline_count += 1;
+            }
+        } else {
+            break;
+        }
     }
-
-    let trailing_slices = lines.len().saturating_sub(first_non_blank_after_tail);
-    let trailing_blank_lines = if ends_with_newline {
-        trailing_slices.saturating_sub(1)
-    } else {
-        trailing_slices
-    };
-
-    (trailing_blank_lines > 0).then_some((trailing_blank_lines, first_non_blank_after_tail + 1))
+    (ws_len, newline_count)
 }
 
 impl Cop for TrailingEmptyLines {
@@ -92,103 +103,56 @@ impl Cop for TrailingEmptyLines {
         if bytes.ends_with(b"%\n\n") {
             return;
         }
-        let lines: Vec<&[u8]> = source.lines().collect();
-        let ends_with_newline = bytes.ends_with(b"\n");
+        // Match RuboCop's approach: capture trailing whitespace, count newlines
+        // blank_lines = newline_count - 1
+        // wanted_blank_lines = 0 for final_newline, 1 for final_blank_line
+        let (ws_len, newline_count) = trailing_whitespace_info(bytes);
+        let blank_lines = newline_count as isize - 1;
+        let wanted_blank_lines: isize = if style == "final_blank_line" { 1 } else { 0 };
 
-        match style {
-            "final_blank_line" => {
-                // Require file to end with \n\n (blank line before EOF)
-                if *bytes.last().unwrap() != b'\n' {
-                    let line_count = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
-                    let mut diag = self.diagnostic(
-                        source,
-                        line_count,
-                        0,
-                        "Final newline missing.".to_string(),
-                    );
-                    if let Some(ref mut corr) = corrections {
-                        corr.push(crate::correction::Correction {
-                            start: bytes.len(),
-                            end: bytes.len(),
-                            replacement: "\n".to_string(),
-                            cop_name: self.name(),
-                            cop_index: 0,
-                        });
-                        diag.corrected = true;
-                    }
-                    diagnostics.push(diag);
-                }
-                // Need at least \n\n at end
-                if bytes.len() < 2 || bytes[bytes.len() - 2] != b'\n' {
-                    let line_count = bytes.iter().filter(|&&b| b == b'\n').count();
-                    let mut diag = self.diagnostic(
-                        source,
-                        line_count,
-                        0,
-                        "Trailing blank line missing.".to_string(),
-                    );
-                    if let Some(ref mut corr) = corrections {
-                        corr.push(crate::correction::Correction {
-                            start: bytes.len(),
-                            end: bytes.len(),
-                            replacement: "\n".to_string(),
-                            cop_name: self.name(),
-                            cop_index: 0,
-                        });
-                        diag.corrected = true;
-                    }
-                    diagnostics.push(diag);
-                }
-            }
-            _ => {
-                // "final_newline" (default): require exactly one trailing newline
-                if let Some((_count, first_blank_line)) =
-                    trailing_blank_lines(&lines, ends_with_newline)
-                {
-                    let mut diag = self.diagnostic(
-                        source,
-                        first_blank_line,
-                        0,
-                        "Trailing blank line detected.".to_string(),
-                    );
-                    if let Some(ref mut corr) = corrections {
-                        if let Some(start) = source.line_col_to_offset(first_blank_line, 0) {
-                            corr.push(crate::correction::Correction {
-                                start,
-                                end: bytes.len(),
-                                replacement: String::new(),
-                                cop_name: self.name(),
-                                cop_index: 0,
-                            });
-                            diag.corrected = true;
-                        }
-                    }
-                    diagnostics.push(diag);
-                    return;
-                }
-
-                if !ends_with_newline {
-                    let line_count = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
-                    let mut diag = self.diagnostic(
-                        source,
-                        line_count,
-                        0,
-                        "Final newline missing.".to_string(),
-                    );
-                    if let Some(ref mut corr) = corrections {
-                        corr.push(crate::correction::Correction {
-                            start: bytes.len(),
-                            end: bytes.len(),
-                            replacement: "\n".to_string(),
-                            cop_name: self.name(),
-                            cop_index: 0,
-                        });
-                        diag.corrected = true;
-                    }
-                    diagnostics.push(diag);
-                }
-            }
+        if blank_lines == wanted_blank_lines {
+            return;
         }
+
+        // Determine offense location and message
+        let message = match blank_lines {
+            -1 => "Final newline missing.".to_string(),
+            0 => "Trailing blank line missing.".to_string(),
+            1 => "Trailing blank line detected.".to_string(),
+            n => {
+                if wanted_blank_lines == 0 {
+                    format!("{n} trailing blank lines detected.")
+                } else {
+                    format!("{n} trailing blank lines instead of {wanted_blank_lines} detected.")
+                }
+            }
+        };
+
+        // Calculate report position: RuboCop reports at begin_pos+1 (unless
+        // trailing whitespace is empty), which is the first byte after the
+        // last non-whitespace content.
+        let begin_pos = bytes.len() - ws_len;
+        let report_pos = if ws_len > 0 { begin_pos + 1 } else { begin_pos };
+        let (report_line, report_col) = source.offset_to_line_col(report_pos);
+
+        let mut diag = self.diagnostic(source, report_line, report_col, message);
+
+        if let Some(ref mut corr) = corrections {
+            let replacement = if style == "final_blank_line" {
+                "\n\n".to_string()
+            } else {
+                "\n".to_string()
+            };
+            corr.push(crate::correction::Correction {
+                start: begin_pos,
+                end: bytes.len(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+        diagnostics.push(diag);
     }
 }
 
@@ -243,7 +207,7 @@ mod tests {
         TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].location.line, 2);
-        assert_eq!(diags[0].message, "Trailing blank line detected.");
+        assert_eq!(diags[0].message, "3 trailing blank lines detected.");
     }
 
     #[test]
@@ -336,6 +300,64 @@ mod tests {
             diags.is_empty(),
             "should skip files ending with percent blank string"
         );
+    }
+
+    #[test]
+    fn whitespace_after_final_newline_no_offense() {
+        // File ends with "x = 1\n  " (trailing spaces after newline, no second newline)
+        // RuboCop does NOT flag this: trailing whitespace regex counts 1 newline,
+        // blank_lines = 0 = wanted, so no offense.
+        let source = SourceFile::from_bytes("test.rb", b"x = 1\n  ".to_vec());
+        let mut diags = Vec::new();
+        TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert!(
+            diags.is_empty(),
+            "should not flag trailing whitespace after final newline: got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn whitespace_after_final_newline_tabs_no_offense() {
+        // Same as above but with tabs
+        let source = SourceFile::from_bytes("test.rb", b"x = 1\n\t\t".to_vec());
+        let mut diags = Vec::new();
+        TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert!(
+            diags.is_empty(),
+            "should not flag trailing tabs after final newline: got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn whitespace_newline_whitespace_flags_offense() {
+        // File "x = 1\n  \n  " - has a blank line (with whitespace) followed by
+        // more whitespace. RuboCop counts 2 newlines, blank_lines = 1, flags it.
+        let source = SourceFile::from_bytes("test.rb", b"x = 1\n  \n  ".to_vec());
+        let mut diags = Vec::new();
+        TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "Trailing blank line detected.");
+    }
+
+    #[test]
+    fn multiple_trailing_message_format() {
+        // RuboCop reports "N trailing blank lines detected." for N > 1
+        let source = SourceFile::from_bytes("test.rb", b"x = 1\n\n\n\n".to_vec());
+        let mut diags = Vec::new();
+        TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "3 trailing blank lines detected.");
+    }
+
+    #[test]
+    fn two_trailing_blank_lines_message() {
+        let source = SourceFile::from_bytes("test.rb", b"x = 1\n\n\n".to_vec());
+        let mut diags = Vec::new();
+        TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "2 trailing blank lines detected.");
     }
 
     #[test]
