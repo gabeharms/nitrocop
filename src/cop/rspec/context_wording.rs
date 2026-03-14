@@ -26,6 +26,16 @@ use crate::parse::source::SourceFile;
 /// matches `str`, `dstr`, AND `xstr`. nitrocop only handled StringNode and
 /// InterpolatedStringNode, missing XStringNode and InterpolatedXStringNode.
 /// Fix: add xstr node types to interested_node_types and extract their content.
+///
+/// ## Corpus investigation (2026-03-14)
+///
+/// FP=2, FN=95.
+///
+/// FP=2: asciidoctor__asciidoctor-pdf. Both FPs are `context 'Cache', if: ...,
+/// &(proc do ... end)` and `context 'ICU', if: ..., &(proc do ... end)` style.
+/// Root cause: `&(proc do end)` stores a `BlockArgumentNode` in `call.block()`,
+/// not a `BlockNode`. RuboCop's `on_block` pattern only fires for `BlockNode`.
+/// Fix: require `call.block().as_block_node().is_some()` instead of `is_some()`.
 pub struct ContextWording;
 
 const DEFAULT_PREFIXES: &[&str] = &["when", "with", "without"];
@@ -72,8 +82,9 @@ impl Cop for ContextWording {
             return;
         }
 
-        // RuboCop uses on_block: requires a block wrapping the context call
-        if call.block().is_none() {
+        // RuboCop uses on_block: requires an actual BlockNode (do...end or { }).
+        // &(proc do end) stores a BlockArgumentNode, not a BlockNode — skip it.
+        if call.block().map_or(true, |b| b.as_block_node().is_none()) {
             return;
         }
 

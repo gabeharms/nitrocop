@@ -4,6 +4,15 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-14)
+///
+/// FP=2, FN=8.
+///
+/// FP=2: asciidoctor__asciidoctor-pdf repo, spec/cli_spec.rb:93 and :102.
+/// Both are `it '...', cli: true, visual: true, if: ..., &(proc do ... end)`.
+/// Root cause: `&(proc do end)` stores a BlockArgumentNode in call.block(),
+/// not a BlockNode. RuboCop's on_block pattern only fires for BlockNode.
+/// Fix: require call.block().as_block_node().is_some() instead of is_some().
 pub struct SortMetadata;
 
 impl Cop for SortMetadata {
@@ -44,8 +53,8 @@ impl Cop for SortMetadata {
             return;
         }
 
-        // Must have a block
-        if call.block().is_none() {
+        // Must have a BlockNode (do...end or { }), not BlockArgumentNode (&proc)
+        if call.block().map_or(true, |b| b.as_block_node().is_none()) {
             return;
         }
 

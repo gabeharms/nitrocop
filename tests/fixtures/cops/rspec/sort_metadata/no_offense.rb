@@ -13,3 +13,8 @@ context 'Something', baz: true, foo: 'bar' do
     expect(result).to be_valid
   end
 end
+
+# Block-argument style (&proc) should not be flagged: RuboCop's on_block
+# only fires for BlockNode, not BlockArgumentNode
+it 'Something', cli: true, visual: true, if: condition, &(proc do
+end)

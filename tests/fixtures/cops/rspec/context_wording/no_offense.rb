@@ -17,6 +17,11 @@ end
 # Calls without a block should not be flagged
 context 'some non-prefix text'
 
+# Block-argument style (proc passed as &arg) should not be flagged
+# RuboCop's on_block only fires for BlockNode, not BlockArgumentNode (&proc)
+context 'Cache', if: condition, &(proc do
+end)
+
 # Prefix followed by non-word characters (hyphen, dot, colon) should not be flagged
 # RuboCop uses \b word boundary which matches at non-word chars
 context 'when-something-happens' do
