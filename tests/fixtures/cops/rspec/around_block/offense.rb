@@ -12,3 +12,8 @@ around do |test|
            ^^^^ RSpec/AroundBlock: You should call `test.call` or `test.run`.
   do_something
 end
+
+around(:each) do |example|
+                  ^^^^^^^ RSpec/AroundBlock: You should call `example.call` or `example.run`.
+  example.run(test_server)
+end

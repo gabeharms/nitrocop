@@ -89,3 +89,13 @@ end
 obj.around do |test|
   test.inspect
 end
+# Block arg style |&block| with block.call is valid
+around do |&block|
+  super() do
+    block.call
+  end
+end
+# around with multiple args beyond sym doesn't match hook_block pattern
+around(:each, net_connect: true) do |ex|
+  ex.run_with_retry retry: 2
+end
