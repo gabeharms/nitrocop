@@ -65,3 +65,31 @@ func(x: {
        c: 1,
        d: 2
      })
+
+# Hash where only element is a double-splat (no regular pairs)
+# RuboCop skips first-element check when hash has no pairs
+patch(:update, params: {
+        id: stack.to_param,
+        schedule: {
+    **valid_params
+        }
+      })
+
+# Hash with double-splat followed by a comment (no regular pairs)
+patch(:update, params: {
+        id: stack.to_param,
+        schedule: {
+    # Make Sunday end before it starts
+    **valid_params.merge(end_time: "08:00")
+        }
+      })
+
+# Tab-indented hash: closing brace at same indentation as line where { appears
+# (this was a false positive when indentation_of only counted spaces)
+	stuff = {
+			:host => /pattern/,
+			:user => /pattern2/
+	}
+
+# Tab-indented hash on single line (never flagged)
+	data = { "colon" => ":", "tab" => "\t" }.freeze

@@ -1,9 +1,17 @@
 use ruby_prism::Visit;
 
-use crate::cop::util::indentation_of;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
+
+/// Count leading whitespace characters (spaces and tabs) as columns.
+/// Unlike `indentation_of()` which only counts spaces, this counts both spaces
+/// and tabs as 1 column each, matching `offset_to_line_col()`'s character counting.
+fn leading_whitespace_columns(line: &[u8]) -> usize {
+    line.iter()
+        .take_while(|&&b| b == b' ' || b == b'\t')
+        .count()
+}
 
 /// ## Corpus investigation (2026-03-08)
 ///
@@ -21,6 +29,28 @@ use crate::parse::source::SourceFile;
 /// Fix: reuse a shared indent-base calculation for both the first element and
 /// the right brace, and keep checking empty multiline hashes so `a << {` / `}`
 /// cases are covered.
+///
+/// ## Corpus investigation (2026-03-14)
+///
+/// FP=12, FN=14 remaining. Root causes:
+///
+/// 1. Tab-indented files (WhatWeb, phlex, crowdint, iobridge, puppetlabs): `indentation_of()`
+///    only counts spaces, returning 0 for tab-indented lines, while `offset_to_line_col()` counts
+///    tabs as column positions. Fix: use `leading_whitespace_columns()` that counts both tabs and
+///    spaces as single columns, consistent with `offset_to_line_col()`.
+///
+/// 2. Splat FP (Shopify/shipit-engine): hashes whose only elements are `**var` (AssocSplatNode)
+///    were being checked for first-element indentation, but RuboCop's `hash_node.pairs.first`
+///    skips kwsplat nodes. Fix: filter to AssocNode elements only (matching `.pairs`).
+///
+/// 3. Double-splat FN (vagrant-hostmanager): hashes inside `**{...}` in method args were not
+///    found because `find_hash_args_in_call` didn't traverse AssocSplatNode. Fix: add traversal.
+///
+/// 4. Local var assignment FN (foreigner): hash inside `options = {` in method args. Fix: add
+///    LocalVariableWriteNode traversal.
+///
+/// 5. Ternary FN (jekyll-assets): hash inside `cond ? a : {...}` in method args. Fix: add
+///    IfNode traversal for both if_true and if_false branches.
 pub struct FirstHashElementIndentation;
 
 impl Cop for FirstHashElementIndentation {
@@ -141,7 +171,7 @@ impl HashIndentVisitor<'_> {
     ) -> (usize, IndentBaseKind) {
         let (open_line, open_col) = self.source.offset_to_line_col(opening_loc.start_offset());
         let open_line_bytes = self.source.lines().nth(open_line - 1).unwrap_or(b"");
-        let open_line_indent = indentation_of(open_line_bytes);
+        let open_line_indent = leading_whitespace_columns(open_line_bytes);
 
         match self.style {
             "consistent" => (open_line_indent, IndentBaseKind::StartOfLine),
@@ -217,8 +247,13 @@ impl HashIndentVisitor<'_> {
             return;
         }
 
-        let elements: Vec<_> = hash_node.elements().iter().collect();
-        if let Some(first_element) = elements.first() {
+        // Match RuboCop's `hash_node.pairs.first` — only consider AssocNode elements,
+        // skipping AssocSplatNode (`**var`). RuboCop doesn't check indentation of splats.
+        let first_pair = hash_node
+            .elements()
+            .iter()
+            .find(|e| e.as_assoc_node().is_some());
+        if let Some(first_element) = first_pair {
             let (open_line, _) = self.source.offset_to_line_col(opening_loc.start_offset());
             let first_loc = first_element.location();
             let (elem_line, elem_col) = self.source.offset_to_line_col(first_loc.start_offset());
@@ -293,6 +328,14 @@ impl HashIndentVisitor<'_> {
             return;
         }
 
+        // Double-splat `**{...}` — traverse into the hash expression
+        if let Some(assoc_splat) = node.as_assoc_splat_node() {
+            if let Some(expr) = assoc_splat.value() {
+                self.find_hash_args_in_call(&expr, paren_line, paren_col);
+            }
+            return;
+        }
+
         if let Some(parens) = node.as_parentheses_node() {
             if let Some(body) = parens.body() {
                 self.find_hash_args_in_call(&body, paren_line, paren_col);
@@ -303,6 +346,32 @@ impl HashIndentVisitor<'_> {
         if let Some(array) = node.as_array_node() {
             for elem in array.elements().iter() {
                 self.find_hash_args_in_call(&elem, paren_line, paren_col);
+            }
+            return;
+        }
+
+        // Local variable assignment in args: `options = {...}`
+        if let Some(write) = node.as_local_variable_write_node() {
+            self.find_hash_args_in_call(&write.value(), paren_line, paren_col);
+            return;
+        }
+
+        // Ternary/if expression in args: `cond ? a : {...}`
+        if let Some(if_node) = node.as_if_node() {
+            if let Some(if_true) = if_node.statements() {
+                for stmt in if_true.body().iter() {
+                    self.find_hash_args_in_call(&stmt, paren_line, paren_col);
+                }
+            }
+            if let Some(subsequent) = if_node.subsequent() {
+                // The else branch can be an ElseNode — traverse into its statements
+                if let Some(else_node) = subsequent.as_else_node() {
+                    if let Some(stmts) = else_node.statements() {
+                        for stmt in stmts.body().iter() {
+                            self.find_hash_args_in_call(&stmt, paren_line, paren_col);
+                        }
+                    }
+                }
             }
         }
     }
