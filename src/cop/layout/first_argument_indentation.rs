@@ -5,6 +5,29 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Layout/FirstArgumentIndentation checks the indentation of the first argument
+/// in a method call (both parenthesized and non-parenthesized).
+///
+/// ## Investigation (2026-03-14)
+///
+/// **FN root cause (104 FNs, 76 from `whenever`):** The cop previously only checked
+/// parenthesized calls (requiring `opening_loc == "("`). RuboCop's `on_send` checks
+/// ALL calls with arguments, including non-parenthesized ones like:
+///   `Whenever.cron \`
+///   `<<-file`
+/// Fixed by removing the parenthesis requirement and checking all calls with arguments.
+///
+/// **FP root causes (6 FPs):**
+/// 1. `end.(params[:q], params[:t])` — lambda/proc `.call()` on block end. The
+///    `call_start_offset` points to the `begin` keyword (far above), making the
+///    call appear multi-line. Fixed by using `call_operator_loc` or `opening_loc`
+///    to determine the call line when `message_loc` is absent.
+/// 2. String interpolation `#{builder.attachment(\n  :image,` — calls inside
+///    heredoc interpolation have meaningless indentation context. Fixed by tracking
+///    interpolation depth and skipping calls inside interpolation.
+/// 3. Tab-indented code — the tab indentation case is handled by the existing
+///    indentation calculation but misfires when tabs mix with spaces. This is a
+///    minor edge case that would need tab-width-aware indentation to fix properly.
 pub struct FirstArgumentIndentation;
 
 impl Cop for FirstArgumentIndentation {
@@ -34,6 +57,7 @@ impl Cop for FirstArgumentIndentation {
             diagnostics: Vec::new(),
             // Stack of parent call info: (is_parenthesized, call_start_offset)
             parent_call_stack: Vec::new(),
+            in_interpolation: 0,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -50,6 +74,8 @@ struct FirstArgVisitor<'a> {
     /// call_node_start_col is the column of the start of the entire call expression
     /// (including receiver), matching RuboCop's node.source_range.begin_pos
     parent_call_stack: Vec<ParentCallInfo>,
+    /// Depth of string interpolation nesting — skip checks when > 0
+    in_interpolation: usize,
 }
 
 struct ParentCallInfo {
@@ -68,15 +94,16 @@ impl FirstArgVisitor<'_> {
         call_start_offset: usize,
         message_loc: Option<ruby_prism::Location<'_>>,
         opening_loc: Option<ruby_prism::Location<'_>>,
+        call_operator_loc: Option<ruby_prism::Location<'_>>,
         arguments: Option<ruby_prism::ArgumentsNode<'_>>,
         name: &str,
     ) {
-        // Must have parenthesized arguments
-        let _open_loc = match opening_loc {
-            Some(loc) if loc.as_slice() == b"(" => loc,
-            _ => return,
-        };
+        // Skip calls inside string interpolation — indentation context is meaningless
+        if self.in_interpolation > 0 {
+            return;
+        }
 
+        // Must have arguments (parenthesized or not)
         let args_node = match arguments {
             Some(a) => a,
             None => return,
@@ -92,8 +119,13 @@ impl FirstArgVisitor<'_> {
         // Use message_loc (method name) for determining the call line.
         // This handles chained calls where call_start_offset would be on
         // a different line (the receiver's line).
+        // For `end.(args)` calls, message_loc is None but call_start_offset
+        // points to the beginning of the block (far above). Use call_operator_loc
+        // or opening_loc as fallback.
         let call_line_offset = message_loc
             .map(|loc| loc.start_offset())
+            .or_else(|| call_operator_loc.map(|loc| loc.start_offset()))
+            .or_else(|| opening_loc.map(|loc| loc.start_offset()))
             .unwrap_or(call_start_offset);
         let (call_line, _) = self.source.offset_to_line_col(call_line_offset);
 
@@ -322,6 +354,7 @@ impl<'pr> Visit<'pr> for FirstArgVisitor<'_> {
             call_start_offset,
             node.message_loc(),
             node.opening_loc(),
+            node.call_operator_loc(),
             node.arguments(),
             name_str,
         );
@@ -351,6 +384,12 @@ impl<'pr> Visit<'pr> for FirstArgVisitor<'_> {
         self.parent_call_stack.push(parent_info);
         ruby_prism::visit_call_node(self, node);
         self.parent_call_stack.pop();
+    }
+
+    fn visit_embedded_statements_node(&mut self, node: &ruby_prism::EmbeddedStatementsNode<'pr>) {
+        self.in_interpolation += 1;
+        ruby_prism::visit_embedded_statements_node(self, node);
+        self.in_interpolation -= 1;
     }
 }
 

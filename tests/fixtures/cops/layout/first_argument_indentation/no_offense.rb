@@ -36,3 +36,34 @@ expect(described_class.new(inbox: inbox).available_agent(
            inbox_members[3].user_id
          ].map(&:to_s)
        )).to eq inbox_members[2].user
+
+# Lambda/proc end.() call — should not flag
+search = lambda do |params|
+  query = { match_all: {} }
+  filter = nil
+  if params[:q]
+    query = params[:q]
+  end
+  if params[:t]
+    filter = params[:t]
+  end
+  { bool: { must: [query], filter: filter } }
+end.(params[:q], params[:t]),
+
+# String interpolation with method call inside heredoc — should not flag
+content = <<~HTML
+  #{builder.attachment(
+    :image,
+    titled: true
+  )}
+HTML
+
+# Non-parenthesized call with backslash continuation — correctly indented
+tag.button \
+  class: "btn",
+  data: { action: "messages#returnToLatest" },
+  hidden: true
+
+# Backslash continuation with correct indent
+f.write \
+  "some string"
