@@ -1,3 +1,4 @@
-  x = 1
+#~# ORIGINAL
+
+ foo and bar
 ^ Layout/InitialIndentation: Indentation of first line in file detected.
-y = 2

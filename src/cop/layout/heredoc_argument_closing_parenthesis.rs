@@ -46,6 +46,15 @@ use ruby_prism::Visit;
 /// ModuleNode, SingletonClassNode, BlockNode (do..end only, not braces), BeginNode,
 /// IfNode/UnlessNode/WhileNode/UntilNode (statement forms with end_keyword), ForNode,
 /// CaseNode, CaseMatchNode.
+///
+/// Investigation findings (2026-03-14):
+/// Root cause of 24 remaining FPs (all from puppetlabs/puppet): heredoc in a method call
+/// with an attached `do..end` block, e.g., `newfunction(:x, doc: <<-'DOC'\n...\nDOC\n) do |v|`.
+/// In RuboCop's AST, `block(send(...), ...)` wraps the send, so the block is an ancestor
+/// and `end_keyword_before_closing_parenthesis?` suppresses it. In Prism, the block is a
+/// child of the CallNode (via `call.block()`), so the `end_depth` tracking doesn't see it.
+/// Fix: explicitly check `call.block()` for a `do..end` BlockNode before firing.
+/// Remaining: 2 FNs in ruby-formatter/rufo (no corpus access to investigate exact patterns).
 pub struct HeredocArgumentClosingParenthesis;
 
 impl Cop for HeredocArgumentClosingParenthesis {
@@ -235,6 +244,18 @@ impl HeredocParenVisitor<'_> {
             return;
         }
 
+        // In RuboCop's AST, a block wraps the send node: block(send(...), args, body).
+        // So `send.ancestors` includes the block, and if it's do..end, the cop is suppressed.
+        // In Prism, the block is a child of the CallNode. We need to check if this call
+        // has an attached do..end block.
+        if let Some(block) = call.block() {
+            if let Some(block_node) = block.as_block_node() {
+                if block_node.closing_loc().as_slice() == b"end" {
+                    return;
+                }
+            }
+        }
+
         self.diagnostics.push(self.cop.diagnostic(
             self.source,
             close_line,
@@ -385,4 +406,21 @@ mod tests {
         HeredocArgumentClosingParenthesis,
         "cops/layout/heredoc_argument_closing_parenthesis"
     );
+
+    #[test]
+    fn no_offense_heredoc_with_do_end_block() {
+        // Exact pattern from puppetlabs/puppet that was causing 24 FPs
+        let source = b"newfunction(:defined, type: :rvalue, doc: <<-'DOC'\n\
+    Determines whether a given class or resource type is defined.\n\
+  DOC\n\
+) do |_vals|\n\
+  Puppet::Parser::Functions::Error.is4x('defined')\n\
+end\n";
+        let diags = crate::testutil::run_cop_full(&HeredocArgumentClosingParenthesis, source);
+        assert!(
+            diags.is_empty(),
+            "Expected no offenses for heredoc with do..end block, got: {:?}",
+            diags,
+        );
+    }
 }

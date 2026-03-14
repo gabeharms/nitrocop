@@ -187,3 +187,27 @@ class Config
     )
   end
 end
+
+# Heredoc in method call with do..end block attached to the call
+newfunction(:defined, type: :rvalue, doc: <<-'DOC'
+    Determines whether a given class or resource type is defined.
+  DOC
+) do |_vals|
+  some_work
+end
+
+# Heredoc in method call with do..end block (simple case)
+foo(<<~SQL
+  SELECT 1
+SQL
+) do |result|
+  process(result)
+end
+
+# Heredoc in method call with do..end block and multiple args
+bar(arg1, <<~TEXT, arg2
+  hello
+TEXT
+) do
+  something
+end

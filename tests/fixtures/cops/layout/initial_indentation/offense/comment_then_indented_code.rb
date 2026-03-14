@@ -1,3 +1,4 @@
-  x = 1
+# frozen_string_literal: true
+  class Foo
 ^ Layout/InitialIndentation: Indentation of first line in file detected.
-y = 2
+  end
