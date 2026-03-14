@@ -14,15 +14,23 @@ use crate::parse::source::SourceFile;
 /// after the multiline early return. Empty-bracket detection now treats CR/LF
 /// as whitespace and runs before the multiline guard.
 ///
-/// FP=12: the cached nested-reference examples were not reproduced by the local
-/// fixtures in this batch. The corpus rerun remains dominated by parser-crash
-/// file-drop noise (`jruby__jruby__0303464` reported 358 dropped offenses),
-/// so no additional bracket-selection change was made here.
+/// ## Corpus investigation (2026-03-13)
 ///
-/// Acceptance gate after this patch (`scripts/check-cop.py --verbose --rerun`):
-/// expected=830, actual=970, CI baseline=841, raw excess=140, missing=0,
-/// file-drop noise=358. The rerun passes against the CI baseline once that
-/// existing noise is accounted for.
+/// FP=9 across 3 repos: zammad (5), activemerchant (3), puppet (1). Two root
+/// causes:
+///
+/// 1. **Multiline node skip (2 FPs):** RuboCop's `return if node.multiline?`
+///    checks the entire send node span, not just the bracket span. For
+///    `mail[ key ] = if ... end` and `memo[ key ] = { ... }`, the brackets are
+///    on one line but the node spans multiple lines. Added a whole-node
+///    multiline check.
+///
+/// 2. **Nested bracket selection (7 FPs):** RuboCop's token-based
+///    `left_ref_bracket` method picks the first or last `tLBRACK2` token in
+///    the node range. For `[]` (read) calls where arguments contain chained
+///    brackets (e.g. `CONST[ resp[:x][:y] ]`) or the receiver has brackets
+///    (e.g. `user['k'][ arg['id'] ]`), the outer brackets are never checked.
+///    Added `should_skip_outer_brackets` to match this behavior.
 pub struct SpaceInsideReferenceBrackets;
 
 impl Cop for SpaceInsideReferenceBrackets {
@@ -121,10 +129,28 @@ impl Cop for SpaceInsideReferenceBrackets {
             return;
         }
 
-        // Skip multiline non-empty brackets.
+        // Skip multiline non-empty brackets (bracket span).
         let (open_line, _) = source.offset_to_line_col(open_start);
         let (close_line, _) = source.offset_to_line_col(close_start);
         if open_line != close_line {
+            return;
+        }
+
+        // RuboCop skips when the entire node is multiline (e.g. `obj[key] = if\n...\nend`),
+        // not just when the brackets span multiple lines.
+        let node_start_line = source.offset_to_line_col(node.location().start_offset()).0;
+        let node_end_line = source.offset_to_line_col(node.location().end_offset()).0;
+        if node_start_line != node_end_line {
+            return;
+        }
+
+        // RuboCop's token-based bracket selection can skip the outer brackets of
+        // a `[]` read call when the arguments contain nested reference brackets.
+        // Match that behavior: for `[]` calls (not `[]=`), skip if the bytes
+        // between the outer brackets contain `[` AND either (a) the last inner
+        // `[` is preceded by `]` (chained access like `[:x][:y]`), or (b) the
+        // byte before the outer `[` is `]` (receiver has brackets).
+        if should_skip_outer_brackets(node, bytes, open_start, open_end, close_start) {
             return;
         }
 
@@ -292,6 +318,66 @@ fn index_write_bracket_offsets(
 ) -> Option<(usize, usize)> {
     receiver?;
     Some((open_start, close_start))
+}
+
+/// Returns true if the outer brackets of a `[]` read call should be skipped
+/// because RuboCop's token-based bracket selection would not check them.
+///
+/// This matches RuboCop's `left_ref_bracket` method behavior: for a `[]` call,
+/// it picks the last or first reference bracket token within the node range.
+/// When arguments contain nested `[` brackets, the outer brackets can be
+/// skipped if either:
+/// (a) the last `[` in the bracket content is preceded by `]` (chained access), or
+/// (b) the byte before the outer `[` is `]` (receiver has brackets).
+fn should_skip_outer_brackets(
+    node: &ruby_prism::Node<'_>,
+    bytes: &[u8],
+    open_start: usize,
+    open_end: usize,
+    close_start: usize,
+) -> bool {
+    // Only applies to `[]` read calls, not `[]=` or index write nodes.
+    let call = match node.as_call_node() {
+        Some(c) => c,
+        None => return false,
+    };
+    if call.name().as_slice() != b"[]" {
+        return false;
+    }
+
+    let inner = &bytes[open_end..close_start];
+
+    // Check if arguments contain any `[` (nested reference brackets).
+    let last_bracket_pos = match inner.iter().rposition(|&b| b == b'[') {
+        Some(pos) => pos,
+        None => return false, // no inner brackets
+    };
+
+    // (a) Is the last inner `[` preceded by `]` (ignoring whitespace)?
+    // This indicates chained access like `response[:x][:y]`.
+    let before_last = &inner[..last_bracket_pos];
+    let last_non_ws = before_last
+        .iter()
+        .rev()
+        .find(|&&b| !matches!(b, b' ' | b'\t'));
+    if last_non_ws == Some(&b']') {
+        return true;
+    }
+
+    // (b) Is the byte before the outer `[` a `]` (ignoring whitespace)?
+    // This indicates the receiver has brackets like `user['key'][...]`.
+    if open_start > 0 {
+        let before_open = &bytes[..open_start];
+        let prev_non_ws = before_open
+            .iter()
+            .rev()
+            .find(|&&b| !matches!(b, b' ' | b'\t'));
+        if prev_non_ws == Some(&b']') {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn nested_reference_brackets(receiver: &ruby_prism::Node<'_>) -> Option<(usize, usize)> {
