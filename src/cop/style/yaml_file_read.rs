@@ -15,6 +15,15 @@ use crate::parse::source::SourceFile;
 /// Reverted. A correct fix needs to preserve RuboCop's positive cases for
 /// `YAML.load/safe_load/parse(File.read(path), ...)` while still excluding
 /// non-replaceable `File.read` variants with extra read-time options.
+///
+/// ## Fix (2026-03-14)
+///
+/// Instead of checking total arg count on `File.read`, check specifically for
+/// `KeywordHashNode` in `File.read`'s arguments. Keyword args like `encoding:`
+/// change reading behavior and `_file` variants don't accept them. This is more
+/// targeted than the arg-count approach and preserves valid cases like
+/// `YAML.load(File.read(path), permitted_classes: ...)` where the extra args
+/// are on the YAML method, not on File.read.
 pub struct YAMLFileRead;
 
 /// YAML methods that should use _file variants
@@ -103,6 +112,18 @@ impl Cop for YAMLFileRead {
 
         if !is_file_read {
             return;
+        }
+
+        // Skip when File.read has keyword arguments (e.g., encoding: ...),
+        // since those change reading behavior and _file variants don't accept them.
+        if let Some(arg_call) = arg_list[0].as_call_node() {
+            if let Some(file_read_args) = arg_call.arguments() {
+                for file_read_arg in file_read_args.arguments().iter() {
+                    if file_read_arg.as_keyword_hash_node().is_some() {
+                        return;
+                    }
+                }
+            }
         }
 
         // YAML.safe_load_file was introduced in Ruby 3.0;
