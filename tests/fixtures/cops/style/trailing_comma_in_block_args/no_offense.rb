@@ -14,3 +14,17 @@ test do |a,|
   a
 end
 define_method(:m) { |a,| a }
+
+# Chained blocks: inner block has single-param trailing comma,
+# outer block has 2+ params. RuboCop incorrectly flags these
+# due to a bug in argument_tokens (pipe-matching across blocks).
+# nitrocop correctly does NOT flag.
+items.sort_by { |name,| name }.map do |name, value|
+  value.to_s
+end
+data.select { |k,| allowed?(k) }.each do |k, v|
+  process(k, v)
+end
+groups.sort_by do |day,| day end.reverse_each do |day, entries|
+  display(day, entries)
+end

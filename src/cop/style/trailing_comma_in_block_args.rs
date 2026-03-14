@@ -1,8 +1,26 @@
-use crate::cop::node_type::{BLOCK_NODE, BLOCK_PARAMETERS_NODE};
+use crate::cop::node_type::BLOCK_NODE;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Corpus conformance: 62.5% (5 matches, 0 FP, 3 FN).
+///
+/// All 3 FNs are caused by a RuboCop bug in `argument_tokens`: when a chained
+/// block expression has an inner block with a single-param trailing comma
+/// (`|name,|`) and an outer block with 2+ params (`|name, constant|`), RuboCop's
+/// `tokens_within(node)` for the outer block includes the inner block's tokens.
+/// The `pipes.select` then picks the first two `|` characters (from the inner
+/// block), causing `trailing_comma?` to check the inner block's params instead
+/// of the outer block's. Combined with `arg_count > 1` from the outer block,
+/// this incorrectly flags the inner block's single-param trailing comma.
+///
+/// Affected corpus patterns (all identical root cause):
+/// - `sort_by { |name,| name }.map do |name, constant|` (ffi)
+/// - `.select { |k,| ... }.each do |k, v|` (openproject)
+/// - `sort_by do |day,| day end.reverse_each do |day, entries|` (rdoc)
+///
+/// Isolated `|name,|` (single param) is correctly NOT flagged by RuboCop.
+/// nitrocop is correct here; the FNs are RuboCop false positives.
 pub struct TrailingCommaInBlockArgs;
 
 impl Cop for TrailingCommaInBlockArgs {
@@ -15,7 +33,7 @@ impl Cop for TrailingCommaInBlockArgs {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[BLOCK_NODE, BLOCK_PARAMETERS_NODE]
+        &[BLOCK_NODE]
     }
 
     fn check_node(
