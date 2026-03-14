@@ -65,14 +65,11 @@ Use this when the user wants commits from one or more branches landed onto
    git log -1 --format='%an <%ae>' <sha1>
    git cherry-pick <sha1>
    # build clean message: strip claude.ai URLs and existing Co-Authored-By lines
-   clean_msg=$(git log -1 --format='%B' HEAD | grep -v 'https://claude\.ai' | grep -v '^Co-Authored-By:' | sed -e :a -e '/^\n*$/{$d;N;ba}')
+   clean_msg=$(git log -1 --format='%B' HEAD | grep -v 'https://claude\.ai' | grep -v '^Co-Authored-By:')
    # amend to reset author, clean message, add Co-Authored-By with blank line
-   git commit --amend --reset-author -m "$(cat <<EOF
-   $clean_msg
+   git commit --amend --reset-author -m "$clean_msg
 
-   Co-Authored-By: Original Name <original@email>
-   EOF
-   )"
+   Co-Authored-By: Original Name <original@email>"
    # verify success, then repeat for next commit
    ```
 
