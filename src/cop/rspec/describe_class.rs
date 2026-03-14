@@ -46,6 +46,16 @@ use std::collections::HashMap;
 /// nodes wrapping describe calls (`(block (send ...))` pattern). A bare
 /// `describe 'foo'` without `do...end` is not a spec group. Fixed by adding
 /// `call.block().is_none()` guard.
+///
+/// ## Corpus investigation (2026-03-14)
+///
+/// Corpus oracle reported FP=3, FN=0.
+///
+/// FP=3: Fixed. Root cause: `describe '...', &(proc do end)` uses BlockArgumentNode
+/// in `call.block()`, so `call.block().is_none()` guard did NOT skip it. RuboCop's
+/// `TopLevelGroup` uses the `(block (send ...))` AST pattern which requires an actual
+/// BlockNode wrapper around the describe call, not block_pass. Fix: changed guard to
+/// require `call.block().as_block_node().is_some()` — only actual BlockNode qualifies.
 pub struct DescribeClass;
 
 impl Cop for DescribeClass {
@@ -198,7 +208,10 @@ fn check_top_level_describe(
 
     // RuboCop's TopLevelGroup only fires for block nodes (describe ... do/end).
     // A bare `describe 'foo'` without a block is not a spec group.
-    if call.block().is_none() {
+    // Also, `describe '...', &(proc do end)` uses BlockArgumentNode in call.block(),
+    // which RuboCop does NOT treat as a spec group (requires `(block (send ...))` pattern,
+    // i.e., an actual BlockNode wrapper, not block_pass).
+    if call.block().map_or(true, |b| b.as_block_node().is_none()) {
         return;
     }
 

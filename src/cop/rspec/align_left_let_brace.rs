@@ -181,7 +181,7 @@ mod tests {
     fn debug_interpolated_string_let() {
         use ruby_prism::Visit;
         let source = "let(\"foo\x23{1}\") { 1 }\nlet!(\"foo\x23{1}\") { 1 }\n";
-        eprintln!("Source: {:?}", source);
+        println!("Source: {:?}", source);
         let parse_result = ruby_prism::parse(source.as_bytes());
 
         struct DebugVisitor {
@@ -193,7 +193,7 @@ mod tests {
             fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
                 let name = String::from_utf8_lossy(node.name().as_slice()).to_string();
                 let call_start = node.location().start_offset();
-                eprintln!("CallNode name={:?} at start_offset={}", name, call_start);
+                println!("CallNode name={:?} at start_offset={}", name, call_start);
 
                 if node.receiver().is_none() && (name == "let" || name == "let!") {
                     if let Some(block) = node.block() {
@@ -202,7 +202,7 @@ mod tests {
                             let close_offset = block_node.closing_loc().start_offset();
                             let open_char = self.source_bytes.get(open_offset).copied().unwrap_or(0) as char;
                             let close_char = self.source_bytes.get(close_offset).copied().unwrap_or(0) as char;
-                            eprintln!("  -> let/let! block: open_offset={} ({:?}), close_offset={} ({:?})",
+                            println!("  -> let/let! block: open_offset={} ({:?}), close_offset={} ({:?})",
                                 open_offset, open_char, close_offset, close_char);
                             self.calls.push((name, open_offset, close_offset));
                         }
@@ -219,14 +219,14 @@ mod tests {
         };
         visitor.visit(&parse_result.node());
 
-        eprintln!("Collected calls: {:?}", visitor.calls);
+        println!("Collected calls: {:?}", visitor.calls);
         // Print column positions
         for (name, open_off, close_off) in &visitor.calls {
             // Find line start for open_off
             let before = &source.as_bytes()[..*open_off];
             let line_start = before.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
             let col = open_off - line_start;
-            eprintln!("  {} open col={} (offset={})", name, col, open_off);
+            println!("  {} open col={} (offset={})", name, col, open_off);
         }
     }
 }
