@@ -10,7 +10,45 @@ use crate::parse::source::SourceFile;
 /// but `end_col>0`, causing every multi-line def to fire. Fixed by using
 /// `offset_to_line_col` on the first non-whitespace byte position (skipping both
 /// spaces and tabs) instead of raw space counting. Also handles BOM correctly.
+///
+/// FP/FN investigation (2026-03-14): 1 FP and 3 FN caused by `start_of_line` mode
+/// always aligning `end` with the first non-ws char on the `def` line. RuboCop's
+/// `on_def` handler aligns `end` with the `def` keyword in BOTH modes; the
+/// `start_of_line` vs `def` distinction only applies in `on_send` for modifier
+/// methods (e.g., `private def foo`). Fixed by detecting whether the `def` is
+/// preceded by a modifier-like prefix (identifiers + whitespace only) vs non-modifier
+/// code (semicolons, operators, parens). Non-modifier mid-line defs now align `end`
+/// with the `def` keyword. Cases: minified `class H<Hash;def ...` (FP), parenthesized
+/// `protected (def bar ...` (FN), `false && def ...` (FN), `module X;def ...` (FN).
 pub struct DefEndAlignment;
+
+/// Check if the text before `def` on the same line looks like a modifier method chain.
+/// Modifier patterns: `private def`, `foo bar def`, `private_class_method def self.helper`.
+/// Non-modifier patterns: `class H<Hash;def`, `false && def`, `protected (def`.
+/// Returns true if the prefix contains only word characters (a-z, A-Z, 0-9, _) and whitespace.
+fn is_modifier_prefix(source: &SourceFile, def_kw_offset: usize) -> bool {
+    let bytes = source.as_bytes();
+    // Find start of the line containing `def`
+    let mut line_start = def_kw_offset;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+    // Skip UTF-8 BOM if present at the very start of the file
+    if line_start == 0 && bytes.len() >= 3 && bytes[0..3] == [0xEF, 0xBB, 0xBF] {
+        line_start = 3;
+    }
+    // Check all bytes between line start and def keyword
+    let prefix = &bytes[line_start..def_kw_offset];
+    // If prefix is only whitespace, def starts the line — treat as modifier-compatible
+    // (alignment with line start is correct since def IS at line start)
+    if prefix.iter().all(|b| *b == b' ' || *b == b'\t') {
+        return true;
+    }
+    // Check if prefix is only word chars + whitespace (modifier pattern)
+    prefix
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b' ' || *b == b'\t')
+}
 
 impl Cop for DefEndAlignment {
     fn name(&self) -> &'static str {
@@ -64,14 +102,31 @@ impl Cop for DefEndAlignment {
                 }
             }
             _ => {
-                // "start_of_line" (default): align `end` with start of the line containing `def`
-                diagnostics.extend(util::check_keyword_end_alignment(
-                    self.name(),
-                    source,
-                    "def",
-                    def_kw_offset,
-                    end_kw_loc.start_offset(),
-                ));
+                // "start_of_line" (default): RuboCop's on_def always aligns end with
+                // the def keyword. The start_of_line vs def distinction only applies
+                // in on_send for modifier methods. Detect modifier prefixes (e.g.,
+                // `private def`) and align with line start; for non-modifier mid-line
+                // defs (e.g., `class X;def` or `false && def`), align with def keyword.
+                if is_modifier_prefix(source, def_kw_offset) {
+                    diagnostics.extend(util::check_keyword_end_alignment(
+                        self.name(),
+                        source,
+                        "def",
+                        def_kw_offset,
+                        end_kw_loc.start_offset(),
+                    ));
+                } else {
+                    // Non-modifier mid-line def: align end with def keyword
+                    let (_, def_col) = source.offset_to_line_col(def_kw_offset);
+                    if end_col != def_col {
+                        diagnostics.push(self.diagnostic(
+                            source,
+                            end_line,
+                            end_col,
+                            "Align `end` with `def`.".to_string(),
+                        ));
+                    }
+                }
             }
         }
     }

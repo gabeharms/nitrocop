@@ -25,3 +25,13 @@ end
 	private def tab_modifier_method
 		43
 	end
+
+# Non-modifier mid-line def: end aligns with def keyword (semicolons before def)
+class H < Hash; def lookup(m)
+                  m.to_s
+                end; end
+
+# Non-modifier mid-line def: end aligns with def keyword (boolean guard)
+false && def guarded_method
+           42
+         end
