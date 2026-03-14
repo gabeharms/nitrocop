@@ -64,3 +64,15 @@ shared_context "with permissions" do
     end
   end
 end
+
+# shared_context with only describe blocks (no actual it/specify examples).
+# RuboCop's Examples.all does not include describe/context (those are ExampleGroups).
+shared_context 'with digest algorithms' do
+  def self.with_digest_algorithms(&block)
+    ALGORITHMS.each do |alg|
+      describe("when algorithm is #{alg}") do
+        instance_eval(&block)
+      end
+    end
+  end
+end

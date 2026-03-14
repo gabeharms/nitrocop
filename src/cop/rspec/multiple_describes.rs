@@ -5,6 +5,12 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
 /// RSpec/MultipleDescribes: Flag multiple top-level example groups in a single file.
+///
+/// ## Corpus investigation (2026-03-14)
+///
+/// FP=1: asciidoctor-pdf `describe '...', if: cond, &(proc do...end)` style.
+/// `&(proc do end)` stores a BlockArgumentNode in call.block(), not a BlockNode.
+/// RuboCop's on_block only fires for BlockNode. Fixed by requiring BlockNode.
 pub struct MultipleDescribes;
 
 impl Cop for MultipleDescribes {
@@ -54,7 +60,10 @@ impl Cop for MultipleDescribes {
         for stmt in body.iter() {
             if let Some(call) = stmt.as_call_node() {
                 let name = call.name().as_slice();
-                if is_top_level_example_group(call.receiver().as_ref(), name) {
+                // Must have a real BlockNode (do...end or { }). BlockArgumentNode (&proc)
+                // is not counted — RuboCop's on_block only fires for BlockNode.
+                let has_block_node = call.block().is_some_and(|b| b.as_block_node().is_some());
+                if has_block_node && is_top_level_example_group(call.receiver().as_ref(), name) {
                     let loc = call.location();
                     let (line, col) = source.offset_to_line_col(loc.start_offset());
                     example_groups.push((line, col));

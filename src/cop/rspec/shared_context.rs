@@ -20,6 +20,14 @@ use crate::parse::source::SourceFile;
 ///
 /// **Fix:** Changed from direct-child iteration to recursive AST search using
 /// `has_examples_recursive` and `has_context_recursive` to match RuboCop behavior.
+///
+/// ## Corpus investigation (2026-03-14)
+///
+/// FP=1 (puppetlabs/puppet): `shared_context` containing only `describe` blocks
+/// (no actual `it`/`specify` examples). `is_example_method` previously included
+/// `describe` and `context`, but RuboCop's `Examples.all` does NOT include them —
+/// those are ExampleGroups, not examples. Fixed by removing `describe` and `context`
+/// from `is_example_method`.
 pub struct SharedContext;
 
 impl Cop for SharedContext {
@@ -173,8 +181,10 @@ fn is_example_method(name: &[u8]) -> bool {
             | b"pending"
             | b"skip"
             | b"its"
-            | b"describe"
-            | b"context"
+            // Note: `describe` and `context` are ExampleGroups, NOT examples.
+            // RuboCop's Examples.all does not include them; omitting them here
+            // prevents false positives when shared_context only has describe/context
+            // blocks (without actual it/specify examples inside).
             // Example inclusions also count as examples
             | b"it_behaves_like"
             | b"it_should_behave_like"
