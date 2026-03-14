@@ -3,3 +3,6 @@ y = 2
 z = 3
 a = 4
 wide = :a
+# comment with trailing spaces
+# Required  Numbers  Only
+#

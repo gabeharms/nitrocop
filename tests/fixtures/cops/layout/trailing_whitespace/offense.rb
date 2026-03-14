@@ -7,3 +7,9 @@ a = 4
      ^^ Layout/TrailingWhitespace: Trailing whitespace detected.
 wide = :a　
          ^ Layout/TrailingWhitespace: Trailing whitespace detected.
+# comment with trailing spaces 
+                              ^ Layout/TrailingWhitespace: Trailing whitespace detected.
+# Required  Numbers  Only 
+                         ^ Layout/TrailingWhitespace: Trailing whitespace detected.
+#     
+ ^^^^^ Layout/TrailingWhitespace: Trailing whitespace detected.
