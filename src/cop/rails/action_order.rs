@@ -15,6 +15,13 @@ use crate::parse::source::SourceFile;
 /// calls, treating those methods as non-public. Fix: pre-collect all symbol arguments
 /// to `private`/`protected` calls in the class body, then exclude matching def names.
 ///
+/// Root cause of third FP batch (100 FPs): the max-seen-idx algorithm reported offenses
+/// for ALL actions that fall below the maximum index seen so far. RuboCop uses `each_cons(2)`
+/// (consecutive pair comparison): only compare each action to its IMMEDIATELY PRECEDING action.
+/// Example: `update(5), new(2), edit(3)` — the old approach flagged both `new` and `edit`
+/// (both < max=5), but RuboCop only flags `new` (new < update), not `edit` (edit >= new).
+/// Fix: changed from max-seen tracking to `windows(2)` consecutive pair comparison.
+///
 /// Root cause of FN=1: the cop only looked at direct children of the class StatementsNode,
 /// missing `def` nodes nested inside `if`/`unless` blocks.
 ///
@@ -226,28 +233,26 @@ impl Cop for ActionOrder {
             }
         }
 
-        let mut max_seen_idx = 0;
-        let mut max_seen_name: Vec<u8> = Vec::new();
-
-        for (name, idx, offset) in &actions {
-            let idx = *idx;
-            let offset = *offset;
-            if idx < max_seen_idx {
-                let (line, column) = source.offset_to_line_col(offset);
+        // Check each consecutive pair of actions (matching RuboCop's each_cons(2) behavior).
+        // Only compare each action to its IMMEDIATELY PRECEDING action in the collected list.
+        // This prevents over-reporting: when `destroy` appears first, subsequent lower-index
+        // actions are only flagged if out of order relative to their immediate predecessor,
+        // not relative to the global maximum seen so far.
+        for pair in actions.windows(2) {
+            let (prev_name, prev_idx, _) = &pair[0];
+            let (name, idx, offset) = &pair[1];
+            if idx < prev_idx {
+                let (line, column) = source.offset_to_line_col(*offset);
                 let name_str = String::from_utf8_lossy(name);
-                let other_str = String::from_utf8_lossy(&max_seen_name);
+                let prev_str = String::from_utf8_lossy(prev_name);
                 diagnostics.push(self.diagnostic(
                     source,
                     line,
                     column,
                     format!(
-                        "Action `{name_str}` should appear before `{other_str}` in the controller."
+                        "Action `{name_str}` should appear before `{prev_str}` in the controller."
                     ),
                 ));
-            }
-            if idx >= max_seen_idx {
-                max_seen_idx = idx;
-                max_seen_name = name.clone();
             }
         }
     }

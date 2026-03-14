@@ -84,3 +84,16 @@ class MixedSymbolPrivateController < ApplicationController
   def show; end
   private :destroy, :show
 end
+
+# Consecutive-pair comparison: actions in partial expected order (new, edit, create) — no offense
+# because each action is in order relative to its immediate predecessor.
+class PartialOrderController < ApplicationController
+  def new
+  end
+
+  def edit
+  end
+
+  def create
+  end
+end

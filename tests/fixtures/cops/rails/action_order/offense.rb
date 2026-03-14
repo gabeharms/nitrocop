@@ -28,7 +28,6 @@ class OrdersController < ApplicationController
   end
 
   def edit
-  ^^^ Rails/ActionOrder: Action `edit` should appear before `update` in the controller.
   end
 end
 
