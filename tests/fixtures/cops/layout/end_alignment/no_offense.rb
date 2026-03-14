@@ -18,3 +18,20 @@ when 1
 end
 
 x = 1 if true
+
+unless false
+  1
+end
+
+until done
+  work
+end
+
+class << self
+  def foo; end
+end
+
+case [1, 2]
+in [a, b]
+  a + b
+end

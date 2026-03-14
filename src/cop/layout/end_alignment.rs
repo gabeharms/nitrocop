@@ -1,9 +1,23 @@
-use crate::cop::node_type::{CASE_NODE, CLASS_NODE, IF_NODE, MODULE_NODE, UNTIL_NODE, WHILE_NODE};
+use crate::cop::node_type::{
+    CASE_MATCH_NODE, CASE_NODE, CLASS_NODE, IF_NODE, MODULE_NODE, SINGLETON_CLASS_NODE,
+    UNLESS_NODE, UNTIL_NODE, WHILE_NODE,
+};
 use crate::cop::util::assignment_context_base_col;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Layout/EndAlignment: checks that `end` keywords are aligned with their opening keyword.
+///
+/// Investigation findings (2026-03-14):
+/// - **5 FPs** from BOM (U+FEFF) at file start: the 3-byte UTF-8 BOM counted as 1 column,
+///   making `module` appear at col 1 instead of col 0. Fixed by subtracting the BOM character
+///   from keyword column when on line 1.
+/// - **55 FNs** from missing node types:
+///   - `UnlessNode`: Prism parses `unless` as a separate node type, not `IfNode`.
+///   - `CaseMatchNode`: pattern matching `case/in` uses `CaseMatchNode`, not `CaseNode`.
+///   - `SingletonClassNode`: `class << self` uses `SingletonClassNode`, not `ClassNode`.
+///     All three were added to `interested_node_types` and handled in `check_node`.
 pub struct EndAlignment;
 
 /// Check if a specific operator (like `<<`) appears on the same line before `keyword_offset`.
@@ -40,10 +54,13 @@ impl Cop for EndAlignment {
 
     fn interested_node_types(&self) -> &'static [u8] {
         &[
+            CASE_MATCH_NODE,
             CASE_NODE,
             CLASS_NODE,
             IF_NODE,
             MODULE_NODE,
+            SINGLETON_CLASS_NODE,
+            UNLESS_NODE,
             UNTIL_NODE,
             WHILE_NODE,
         ]
@@ -144,6 +161,45 @@ impl Cop for EndAlignment {
                 "case",
                 style,
             ));
+            return;
+        }
+
+        if let Some(case_match_node) = node.as_case_match_node() {
+            let kw_loc = case_match_node.case_keyword_loc();
+            let end_loc = case_match_node.end_keyword_loc();
+            diagnostics.extend(self.check_keyword_end(
+                source,
+                kw_loc.start_offset(),
+                end_loc.start_offset(),
+                "case",
+                style,
+            ));
+            return;
+        }
+
+        if let Some(unless_node) = node.as_unless_node() {
+            let kw_loc = unless_node.keyword_loc();
+            // Only check statement-form unless (has end keyword), not modifier form
+            if let Some(end_loc) = unless_node.end_keyword_loc() {
+                diagnostics.extend(self.check_keyword_end(
+                    source,
+                    kw_loc.start_offset(),
+                    end_loc.start_offset(),
+                    "unless",
+                    style,
+                ));
+            }
+            return;
+        }
+
+        if let Some(sclass_node) = node.as_singleton_class_node() {
+            diagnostics.extend(self.check_keyword_end(
+                source,
+                sclass_node.class_keyword_loc().start_offset(),
+                sclass_node.end_keyword_loc().start_offset(),
+                "class",
+                style,
+            ));
         }
 
         // NOTE: `begin` blocks are not checked here — that's handled by
@@ -160,8 +216,19 @@ impl EndAlignment {
         keyword: &str,
         style: &str,
     ) -> Vec<Diagnostic> {
-        let (kw_line, kw_col) = source.offset_to_line_col(kw_offset);
+        let (kw_line, mut kw_col) = source.offset_to_line_col(kw_offset);
         let (end_line, end_col) = source.offset_to_line_col(end_offset);
+
+        // If the keyword is on the first line and the file starts with a UTF-8 BOM
+        // (\xEF\xBB\xBF), subtract the BOM character from the column so that
+        // alignment comparisons work correctly. RuboCop strips the BOM during
+        // source processing, so `module` after BOM is at column 0, not 1.
+        if kw_line == 1 {
+            let bytes = source.as_bytes();
+            if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+                kw_col = kw_col.saturating_sub(1);
+            }
+        }
 
         // Skip single-line constructs (e.g., `class Foo; end`)
         if kw_line == end_line {
@@ -309,6 +376,65 @@ mod tests {
             diags.is_empty(),
             "variable style should accept end at line start for << case: {:?}",
             diags
+        );
+    }
+
+    #[test]
+    fn bom_does_not_cause_false_positive() {
+        // UTF-8 BOM + module Foo / end — correctly aligned, should not flag
+        let source = b"\xEF\xBB\xBFmodule Foo\n  VERSION = '1.0'\nend\n";
+        let diags = run_cop_full(&EndAlignment, source);
+        assert!(
+            diags.is_empty(),
+            "BOM should not cause false positive: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn unless_misaligned_end_flags() {
+        let source = b"unless condition\n  do_something\n  end\n";
+        let diags = run_cop_full(&EndAlignment, source);
+        assert_eq!(diags.len(), 1, "should flag misaligned end for unless");
+    }
+
+    #[test]
+    fn unless_aligned_end_no_offense() {
+        let source = b"unless condition\n  do_something\nend\n";
+        let diags = run_cop_full(&EndAlignment, source);
+        assert!(diags.is_empty(), "should not flag aligned end for unless");
+    }
+
+    #[test]
+    fn case_match_misaligned_end_flags() {
+        let source = b"case [1, 2]\nin [a, b]\n  a + b\n  end\n";
+        let diags = run_cop_full(&EndAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "should flag misaligned end for case/in: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn singleton_class_misaligned_end_flags() {
+        let source = b"class << self\n  def foo; end\n  end\n";
+        let diags = run_cop_full(&EndAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "should flag misaligned end for class << self"
+        );
+    }
+
+    #[test]
+    fn singleton_class_aligned_end_no_offense() {
+        let source = b"class << self\n  def foo; end\nend\n";
+        let diags = run_cop_full(&EndAlignment, source);
+        assert!(
+            diags.is_empty(),
+            "should not flag aligned end for class << self"
         );
     }
 
