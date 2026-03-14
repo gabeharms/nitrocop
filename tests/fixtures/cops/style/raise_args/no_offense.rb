@@ -24,3 +24,6 @@ raise MyError.new(*args)
 
 # Double-splat (forwarding hash) is allowed
 raise MyError.new(**opts)
+
+# raise with .new taking a block - can't convert to exploded form
+raise(CustomError.new { "dynamic message" })

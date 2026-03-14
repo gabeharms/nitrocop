@@ -3,6 +3,10 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (2026-03):
+/// - FP in rom-rb/rom: `raise(MissingAttribute.new { "..." })` — `.new` called with a block,
+///   not regular args. The block form can't be converted to exploded `raise Error, msg` style.
+///   Fixed by checking `arg_call.block().is_some()` before flagging.
 pub struct RaiseArgs;
 
 /// Extract the constant name from a node by reading its source text.
@@ -93,6 +97,11 @@ impl RaiseArgs {
         };
 
         if arg_call.name().as_slice() != b"new" {
+            return;
+        }
+
+        // Skip if .new has a block argument — can't convert to exploded form
+        if arg_call.block().is_some() {
             return;
         }
 
