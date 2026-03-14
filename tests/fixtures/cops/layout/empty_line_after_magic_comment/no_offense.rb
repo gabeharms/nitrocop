@@ -12,3 +12,6 @@ y = 2
 # coding: ISO-8859-15
 
 z = 3
+
+# CoDiNg:   bIg5
+$magic_comment_result = __ENCODING__.name

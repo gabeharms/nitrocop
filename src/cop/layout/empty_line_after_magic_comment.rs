@@ -33,6 +33,13 @@ use std::sync::OnceLock;
 /// top-of-file scan treated the BOM as code, so the cop missed
 /// `\xEF\xBB\xBF# frozen_string_literal: true` and
 /// `\xEF\xBB\xBF# coding: utf-8` headers.
+///
+/// Follow-up investigation on 2026-03-13 found 1 remaining FP on
+/// jruby/jruby `spec/ruby/language/fixtures/case_magic_comment.rb`:
+/// `# CoDiNg:   bIg5` (triple space after colon). The encoding regex used
+/// `:\s+` which matched multiple spaces, but RuboCop's SimpleComment#encoding
+/// uses a literal `": "` (colon-space) so multi-space comments don't match.
+/// Fixed by changing `:\s+` to `: ` in encoding_re().
 pub struct EmptyLineAfterMagicComment;
 
 impl Cop for EmptyLineAfterMagicComment {
@@ -201,7 +208,7 @@ fn encoding_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?i)^\s*#\s*(?:frozen[_-]string[_-]literal:\s*(?:true|false))?\s*(?:en)?coding:\s+(?P<token>[[:alnum:]_-]+(?:-[[:alnum:]_-]+)*)",
+            r"(?i)^\s*#\s*(?:frozen[_-]string[_-]literal:\s*(?:true|false))?\s*(?:en)?coding: (?P<token>[[:alnum:]_-]+(?:-[[:alnum:]_-]+)*)",
         )
         .unwrap()
     })
@@ -305,6 +312,18 @@ mod tests {
             b"# -*- coding: us-ascii -*-\n# frozen-string-literal: false\n\n# regular comment\nrequire \"logger\"\n";
         let diags = crate::testutil::run_cop_full(&EmptyLineAfterMagicComment, source);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn no_offense_for_multi_space_encoding_comment() {
+        // RuboCop uses a literal space after "coding:" so multi-space doesn't match
+        let source = b"# CoDiNg:   bIg5\n$magic_comment_result = __ENCODING__.name\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterMagicComment, source);
+        assert!(
+            diags.is_empty(),
+            "expected no offense for multi-space encoding comment, got {:?}",
+            diags
+        );
     }
 
     #[test]
