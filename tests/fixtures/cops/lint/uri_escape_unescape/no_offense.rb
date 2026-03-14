@@ -4,3 +4,7 @@ URI.parse("http://example.com")
 CGI.escape("test")
 x = "escape"
 ::URI.parse("http://example.com")
+SomeModule::URI.escape("http://example.com")
+SomeModule::URI.encode("http://example.com")
+Nested::Module::URI.unescape("%20")
+Nested::Module::URI.decode("%20")
