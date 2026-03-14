@@ -4,6 +4,30 @@ use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// Layout/LineEndStringConcatenationIndentation
+///
+/// ## Investigation findings (2026-03-14)
+///
+/// **Root cause of 28 FNs:** The visitor only explicitly set `ParentType::Other`
+/// for a handful of node types (CallNode, LocalVariableWriteNode, etc.). Any
+/// node type NOT overridden (e.g., `IndexOperatorWriteNode`,
+/// `LocalVariableOperatorWriteNode`, `CallOperatorWriteNode`,
+/// `LocalVariableOrWriteNode`, `ParenthesesNode`, etc.) inherited the parent
+/// type from its enclosing scope. Inside a `def` body, this meant operator
+/// assignment nodes like `x += "a" \ "b"` inherited `ParentType::Def`, causing
+/// `always_indented?` to be true and suppressing the "Align parts" check.
+///
+/// **Fix:** Replaced the per-node-type visitor overrides with a stack-based
+/// approach using `visit_branch_node_enter`/`visit_branch_node_leave`. Every
+/// branch node defaults to `ParentType::Other`; only `DefNode`, `BlockNode`,
+/// `LambdaNode`, `BeginNode`, `IfNode`, and `UnlessNode` override to their
+/// specific types. `StatementsNode` and `ElseNode` pass through the parent type.
+/// In `check_dstr`, the parent type is read from the stack (the value saved
+/// before entering the InterpolatedStringNode), ensuring it reflects the true
+/// immediate parent.
+///
+/// **LambdaNode:** In RuboCop's Parser gem, lambdas produce `:block` nodes, so
+/// `always_indented?` is true for lambda bodies. Added `LambdaNode` → `Block`.
 pub struct LineEndStringConcatenationIndentation;
 
 impl Cop for LineEndStringConcatenationIndentation {
@@ -31,6 +55,7 @@ impl Cop for LineEndStringConcatenationIndentation {
             style,
             indent_width,
             direct_parent_type: ParentType::TopLevel,
+            parent_type_stack: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -46,9 +71,12 @@ struct ConcatVisitor<'a> {
     indent_width: usize,
     /// The type of the direct parent of the current node.
     /// RuboCop's `always_indented?` checks if the dstr's immediate parent is
-    /// one of [nil, :block, :begin, :def, :defs, :if]. We track this instead
-    /// of propagating through ancestors to match RuboCop's behavior.
+    /// one of [nil, :block, :begin, :def, :defs, :if]. We track this via a
+    /// stack: `visit_branch_node_enter` pushes the current type and defaults
+    /// to Other; specific visitors override to the correct type.
     direct_parent_type: ParentType,
+    /// Stack of saved parent types, pushed/popped by enter/leave hooks.
+    parent_type_stack: Vec<ParentType>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -111,8 +139,16 @@ impl ConcatVisitor<'_> {
         // RuboCop's `always_indented?` checks the DIRECT parent type.
         // Only these parent types force indented mode:
         //   nil (top-level), :block, :begin, :def, :defs, :if
+        // Read the parent type from the stack — the value saved by
+        // visit_branch_node_enter when entering this InterpolatedStringNode,
+        // which is the type of this dstr's actual parent node.
+        let parent_type = self
+            .parent_type_stack
+            .last()
+            .copied()
+            .unwrap_or(ParentType::TopLevel);
         let always_indented = matches!(
-            self.direct_parent_type,
+            parent_type,
             ParentType::TopLevel
                 | ParentType::Block
                 | ParentType::Begin
@@ -206,141 +242,86 @@ impl ConcatVisitor<'_> {
 }
 
 impl<'pr> Visit<'pr> for ConcatVisitor<'_> {
+    // --- Stack-based parent type tracking ---
+    // visit_branch_node_enter/leave are called by the Visit trait dispatch
+    // for EVERY branch node. We use them to default all nodes to Other,
+    // then specific visitor overrides set the correct type.
+
+    fn visit_branch_node_enter(&mut self, _node: ruby_prism::Node<'pr>) {
+        self.parent_type_stack.push(self.direct_parent_type);
+        self.direct_parent_type = ParentType::Other;
+    }
+
+    fn visit_branch_node_leave(&mut self) {
+        self.direct_parent_type = self.parent_type_stack.pop().unwrap_or(ParentType::TopLevel);
+    }
+
     fn visit_interpolated_string_node(&mut self, node: &ruby_prism::InterpolatedStringNode<'pr>) {
         self.check_dstr(node);
         // Don't recurse into children — we handle the whole dstr at once
     }
 
-    // Track direct parent type for always_indented? logic.
-    // Each visitor sets the parent type for its children, then restores it.
+    // --- "Always indented" parent types ---
+    // These correspond to RuboCop's PARENT_TYPES_FOR_INDENTED:
+    //   [nil, :block, :begin, :def, :defs, :if]
+    // visit_branch_node_enter already pushed and set Other;
+    // we override to the correct type before recursing.
 
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
-        let was = self.direct_parent_type;
         self.direct_parent_type = ParentType::Def;
         ruby_prism::visit_def_node(self, node);
-        self.direct_parent_type = was;
     }
 
     fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
-        let was = self.direct_parent_type;
         self.direct_parent_type = ParentType::Block;
         ruby_prism::visit_block_node(self, node);
-        self.direct_parent_type = was;
+    }
+
+    fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
+        // In RuboCop's Parser gem, lambdas produce :block nodes.
+        self.direct_parent_type = ParentType::Block;
+        ruby_prism::visit_lambda_node(self, node);
     }
 
     fn visit_begin_node(&mut self, node: &ruby_prism::BeginNode<'pr>) {
-        let was = self.direct_parent_type;
         self.direct_parent_type = ParentType::Begin;
         ruby_prism::visit_begin_node(self, node);
-        self.direct_parent_type = was;
     }
 
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
-        let was = self.direct_parent_type;
         self.direct_parent_type = ParentType::If;
         ruby_prism::visit_if_node(self, node);
-        self.direct_parent_type = was;
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
-        let was = self.direct_parent_type;
         self.direct_parent_type = ParentType::If;
         ruby_prism::visit_unless_node(self, node);
-        self.direct_parent_type = was;
     }
 
-    // All other node types → Other (not always indented)
-    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_call_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_local_variable_write_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_instance_variable_write_node(
-        &mut self,
-        node: &ruby_prism::InstanceVariableWriteNode<'pr>,
-    ) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_instance_variable_write_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_constant_write_node(&mut self, node: &ruby_prism::ConstantWriteNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_constant_write_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_hash_node(&mut self, node: &ruby_prism::HashNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_hash_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_keyword_hash_node(&mut self, node: &ruby_prism::KeywordHashNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_keyword_hash_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_case_node(&mut self, node: &ruby_prism::CaseNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_case_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_when_node(&mut self, node: &ruby_prism::WhenNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_when_node(self, node);
-        self.direct_parent_type = was;
-    }
+    // --- Pass-through nodes ---
+    // These Prism wrappers are transparent in RuboCop's Parser gem.
+    // Restore the parent type from before visit_branch_node_enter changed it.
 
     fn visit_else_node(&mut self, node: &ruby_prism::ElseNode<'pr>) {
         // In RuboCop's Parser gem, `else` is part of the `:if` node,
         // so `dstr.parent.type` inside an else branch is `:if`.
-        // We pass through the parent type (which will be If from visit_if_node).
+        self.direct_parent_type = self
+            .parent_type_stack
+            .last()
+            .copied()
+            .unwrap_or(ParentType::TopLevel);
         ruby_prism::visit_else_node(self, node);
     }
 
     fn visit_statements_node(&mut self, node: &ruby_prism::StatementsNode<'pr>) {
-        // StatementsNode is Prism's wrapper; don't change parent type
-        // (pass through the parent type from the enclosing node)
+        // StatementsNode is Prism's wrapper; pass through the parent type
+        // from the enclosing node.
+        self.direct_parent_type = self
+            .parent_type_stack
+            .last()
+            .copied()
+            .unwrap_or(ParentType::TopLevel);
         ruby_prism::visit_statements_node(self, node);
-    }
-
-    fn visit_return_node(&mut self, node: &ruby_prism::ReturnNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_return_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_array_node(&mut self, node: &ruby_prism::ArrayNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_array_node(self, node);
-        self.direct_parent_type = was;
-    }
-
-    fn visit_assoc_node(&mut self, node: &ruby_prism::AssocNode<'pr>) {
-        let was = self.direct_parent_type;
-        self.direct_parent_type = ParentType::Other;
-        ruby_prism::visit_assoc_node(self, node);
-        self.direct_parent_type = was;
     }
 }
 

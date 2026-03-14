@@ -47,3 +47,25 @@ def message
     'after the preceding left parenthesis.'
   end
 end
+
+# Properly indented in lambda body (always_indented context, like block)
+x = ->(obj) {
+  "line one" \
+    "line two" \
+    "line three"
+}
+
+# Aligned operator assignment inside def (not always-indented)
+def update_record
+  msg = "initial"
+  msg +=
+    "first part " \
+    "second part"
+end
+
+# Aligned index operator write inside def
+def process_errors
+  errors[:detail] +=
+    "a valid item " \
+    "description"
+end
