@@ -199,15 +199,14 @@ class WithDelegate
   delegate :process, to: :bar
 end
 
-# Struct.new assigned to different constants are separate scopes
+# Struct.new blocks are not recognized as scope by RuboCop (only Class/Module)
+# Duplicates inside are ignored since parent_module_name returns nil for blocks
 Alpha = Struct.new(:x) do
   def call; 1; end
-end
-Beta = Struct.new(:y) do
   def call; 2; end
 end
 
-# Local Struct.new isolates scope
+# Local Struct.new also not a scope
 a = Struct.new(:x) do
   def call; 1; end
 end
@@ -215,12 +214,47 @@ b = Struct.new(:y) do
   def call; 2; end
 end
 
-# case/when method definitions are suppressed
-class CaseVariant
-  case RUBY_VERSION
-  when '3.0'
-    def bar; 1; end
-  when '2.7'
-    def bar; 2; end
+# module_eval is not recognized as scope-creating by RuboCop (only class_eval)
+Klass.module_eval do
+  def helper; 1; end
+  def helper; 2; end
+end
+
+# implicit class_eval (no receiver) inside module - different methods are fine
+module TransparentClassEval
+  class_eval do
+    def helper; 1; end
   end
+  def other_helper; 1; end
+end
+
+# self.alias_method should be ignored (RuboCop only matches nil receiver)
+alias_method :foo, :bar
+self.alias_method :foo, :baz
+
+# self.attr_reader / self.attr_writer / self.attr_accessor should be ignored
+attr_reader :item
+self.attr_reader :item
+
+attr_writer :record
+self.attr_writer :record
+
+attr_accessor :entry
+self.attr_accessor :entry
+
+# Method calls on objects named attr should not match Ruby's attr method
+class Parser
+  def extract
+    doc.attr('content')
+    doc.attr('content')
+    doc.attr('content')
+  end
+end
+
+# def_delegators with non-symbol/string first arg should be ignored
+class WithConstDelegators
+  extend Forwardable
+  def_delegators SomeModule, :run, :stop
+
+  def run; end
 end

@@ -30,9 +30,6 @@ use ruby_prism::Visit;
 ///
 /// ### Round 2 (FP=16, FN=40)
 /// Root causes of FN:
-/// - `Struct.new do ... end` not recognized as scope-creating (only Class.new/Module.new
-///   were handled). Fixed by adding Struct to scope_creating_call_name and
-///   visit_constant_write_node.
 /// - `def ConstName.method` where ConstName is an outer scope (not innermost). The old
 ///   `scope_matches_const` only checked innermost scope. Fixed by implementing
 ///   `lookup_constant` that traverses the full scope stack, matching RuboCop behavior.
@@ -43,6 +40,35 @@ use ruby_prism::Visit;
 ///   as global sets — first redefinition across ALL rescue blocks is forgiven, second is
 ///   offense. Fixed by replacing `rescue_ensure_stack: Vec<Vec<String>>` with global
 ///   `rescue_forgiven` and `ensure_forgiven` sets plus a type stack.
+///
+/// ### Round 3 (FP=17, FN=37)
+/// Root causes of FP:
+/// - `alias_method`, `attr_*`, `def_delegator*`, `def_delegators` calls with explicit
+///   receiver (e.g., `self.alias_method`, `self.attr_reader`, `doc.attr('content')`) were
+///   being processed. RuboCop uses `(send nil? ...)` which requires no receiver. Fixed by
+///   adding a `node.receiver().is_some()` early return in `process_call`.
+/// - `def_delegators` / `def_delegator` with a constant as first arg (e.g.,
+///   `def_delegators SomeModule, :run, :stop`) was registering methods. RuboCop's pattern
+///   requires `{sym str}` as first arg. Fixed by checking `extract_symbol_or_string` on
+///   `args[0]`.
+/// - `Struct.new do ... end` was treated as scope-creating (like Class.new/Module.new).
+///   RuboCop's `defined_module0` NodePattern only matches `Class` and `Module` in casgn
+///   context, not `Struct`. Defs inside Struct.new blocks have parent_module_name return
+///   nil (block is not recognized), so they are ignored. Fixed by removing Struct from
+///   scope_creating_call_name and visit_constant_write_node.
+/// - `module_eval` blocks were treated as scope-creating like class_eval. RuboCop's
+///   `parent_module_name_for_block` only checks `ancestor.method?(:class_eval)`, not
+///   module_eval. Fixed by removing module_eval from scope_creating_call_name.
+/// - Implicit `class_eval` (no receiver) was pushing a new scope entry, causing
+///   double-nesting (e.g., `A::A` inside `module A`). RuboCop's class_eval without
+///   receiver returns nil from parent_module_name_for_block, making it transparent.
+///   Fixed by visiting the block body without scope changes for implicit class_eval.
+///
+/// Root causes of FN:
+/// - `case`/`case_match` nodes were suppressing duplicate detection (treated like `if`).
+///   RuboCop's `node.each_ancestor.any?(&:if_type?)` only matches `if`/`unless` nodes,
+///   NOT `case`/`when`. Fixed by removing `visit_case_node` and `visit_case_match_node`
+///   overrides that incremented `if_depth`.
 ///
 /// Remaining items not implemented (likely not significant for corpus):
 /// - `delegate :foo, to: :bar` (ActiveSupport) — only active when
@@ -103,7 +129,7 @@ struct DupMethodVisitor<'a, 'src> {
     scope_stack: Vec<ScopeEntry>,
     /// Stack of enclosing def method names (for method_key scoping of nested defs)
     def_stack: Vec<String>,
-    /// Depth inside if/unless/case nodes — skip definitions when > 0
+    /// Depth inside if/unless nodes — skip definitions when > 0
     if_depth: usize,
     /// Depth inside non-scope blocks (DSL blocks, describe blocks, etc.)
     /// Methods inside these are ignored per RuboCop (parent_module_name returns nil).
@@ -316,8 +342,16 @@ impl DupMethodVisitor<'_, '_> {
     }
 
     /// Process a call node for alias_method, attr_*, def_delegator*, etc.
+    /// RuboCop only matches these as `(send nil? :method_name ...)`, meaning
+    /// they must have no explicit receiver. Calls like `self.attr_reader` or
+    /// `doc.attr('content')` are ignored.
     fn process_call(&mut self, node: &ruby_prism::CallNode<'_>) {
         if self.if_depth > 0 || self.plain_block_depth > 0 {
+            return;
+        }
+
+        // Only match bare calls (no receiver), matching RuboCop's `(send nil? ...)` pattern
+        if node.receiver().is_some() {
             return;
         }
 
@@ -435,6 +469,11 @@ impl DupMethodVisitor<'_, '_> {
         if args.len() < 2 {
             return;
         }
+        // RuboCop requires the first arg to be a symbol or string (the target).
+        // If it's a constant or other expression, skip entirely.
+        if extract_symbol_or_string(&args[0]).is_none() {
+            return;
+        }
         let is_singleton = self.in_singleton_scope();
         let (def_line, _) = self
             .source
@@ -457,6 +496,11 @@ impl DupMethodVisitor<'_, '_> {
         args: &[ruby_prism::Node<'_>],
     ) {
         if args.len() < 2 {
+            return;
+        }
+        // RuboCop requires the first arg to be a symbol or string (the target).
+        // If it's a constant or other expression, skip entirely.
+        if extract_symbol_or_string(&args[0]).is_none() {
             return;
         }
         let is_singleton = self.in_singleton_scope();
@@ -489,12 +533,13 @@ fn extract_symbol_or_string(node: &ruby_prism::Node<'_>) -> Option<String> {
 }
 
 /// Check if a call node is a scope-creating pattern like `Class.new do`, `Module.new do`,
-/// `class_eval do`, etc. Returns the scope name if so.
+/// `Const.class_eval do`, or implicit `class_eval do`. Returns the scope name if so.
+/// Note: Struct.new and module_eval are NOT scope-creating per RuboCop.
 fn scope_creating_call_name(node: &ruby_prism::CallNode<'_>) -> Option<String> {
     let method_name = std::str::from_utf8(node.name().as_slice()).unwrap_or("");
 
-    // class_eval / module_eval with block
-    if matches!(method_name, "class_eval" | "module_eval") && node.block().is_some() {
+    // class_eval with block (RuboCop only handles class_eval, not module_eval)
+    if method_name == "class_eval" && node.block().is_some() {
         if let Some(recv) = node.receiver() {
             if let Some(const_read) = recv.as_constant_read_node() {
                 let name = std::str::from_utf8(const_read.name().as_slice()).unwrap_or("");
@@ -515,7 +560,7 @@ fn scope_creating_call_name(node: &ruby_prism::CallNode<'_>) -> Option<String> {
         if let Some(recv) = node.receiver() {
             if let Some(const_read) = recv.as_constant_read_node() {
                 let name = std::str::from_utf8(const_read.name().as_slice()).unwrap_or("");
-                if name == "Class" || name == "Module" || name == "Struct" {
+                if name == "Class" || name == "Module" {
                     return Some("__dynamic_class_new__".to_string());
                 }
             }
@@ -670,9 +715,16 @@ impl<'pr> Visit<'pr> for DupMethodVisitor<'_, '_> {
 
         // Check for scope-creating calls (Class.new, class_eval, etc.)
         if let Some(scope_name) = scope_creating_call_name(node) {
-            let effective_name = if scope_name == "__implicit_class_eval__" {
-                self.current_scope_name()
-            } else if scope_name == "__dynamic_class_new__" {
+            if scope_name == "__implicit_class_eval__" {
+                // Implicit class_eval (no receiver) is transparent — stay in current scope.
+                // In RuboCop, parent_module_name skips the block and finds the enclosing
+                // class/module. So we just visit the block body without scope changes.
+                if let Some(block) = node.block() {
+                    self.visit(&block);
+                }
+                return;
+            }
+            let effective_name = if scope_name == "__dynamic_class_new__" {
                 // Local variable assignment -- isolated scope per assignment
                 // Constant assignment is handled by visit_constant_write_node.
                 if let Some(block) = node.block() {
@@ -734,7 +786,7 @@ impl<'pr> Visit<'pr> for DupMethodVisitor<'_, '_> {
                     if let Some(const_read) = recv.as_constant_read_node() {
                         let recv_name =
                             std::str::from_utf8(const_read.name().as_slice()).unwrap_or("");
-                        if recv_name == "Class" || recv_name == "Module" || recv_name == "Struct" {
+                        if recv_name == "Class" || recv_name == "Module" {
                             let const_name =
                                 std::str::from_utf8(node.name().as_slice()).unwrap_or("");
                             self.scope_stack.push(ScopeEntry {
@@ -767,17 +819,9 @@ impl<'pr> Visit<'pr> for DupMethodVisitor<'_, '_> {
         self.if_depth -= 1;
     }
 
-    fn visit_case_node(&mut self, node: &ruby_prism::CaseNode<'pr>) {
-        self.if_depth += 1;
-        ruby_prism::visit_case_node(self, node);
-        self.if_depth -= 1;
-    }
-
-    fn visit_case_match_node(&mut self, node: &ruby_prism::CaseMatchNode<'pr>) {
-        self.if_depth += 1;
-        ruby_prism::visit_case_match_node(self, node);
-        self.if_depth -= 1;
-    }
+    // NOTE: case/case_match nodes do NOT suppress duplicate detection.
+    // RuboCop's `node.each_ancestor.any?(&:if_type?)` only matches if/unless,
+    // not case/when. So methods inside case/when ARE checked for duplicates.
 
     fn visit_rescue_node(&mut self, node: &ruby_prism::RescueNode<'pr>) {
         let was = self.in_rescue_or_ensure;
@@ -834,11 +878,13 @@ mod tests {
     }
 
     #[test]
-    fn test_struct_new_as_scope() {
-        // Struct.new do ... end assigned to constant should create a scope
+    fn test_struct_new_not_scope() {
+        // Struct.new blocks are NOT recognized as scope-creating by RuboCop
+        // (only Class.new and Module.new are). Defs inside are ignored since
+        // parent_module_name returns nil for unrecognized blocks.
         let n =
             count_offenses(b"A = Struct.new(:x) do\n  def foo; 1; end\n  def foo; 2; end\nend\n");
-        assert_eq!(n, 1, "Struct.new should create scope and detect duplicates");
+        assert_eq!(n, 0, "Struct.new blocks should be ignored (no scope)");
     }
 
     #[test]
@@ -851,12 +897,13 @@ mod tests {
     }
 
     #[test]
-    fn test_module_eval_scope() {
-        // module_eval should work same as class_eval
+    fn test_module_eval_not_scope() {
+        // module_eval is NOT recognized as scope-creating by RuboCop (only class_eval is).
+        // Defs inside module_eval blocks are ignored since parent_module_name returns nil.
         let n = count_offenses(b"Foo.module_eval do\n  def bar; 1; end\n  def bar; 2; end\nend\n");
         assert_eq!(
-            n, 1,
-            "module_eval should create scope and detect duplicates"
+            n, 0,
+            "module_eval blocks should be ignored (not scope-creating)"
         );
     }
 
@@ -939,17 +986,28 @@ mod tests {
     }
 
     #[test]
-    fn test_reopened_struct_new_detects_dup() {
-        // Same constant Struct.new opened twice should detect dup
+    fn test_reopened_struct_new_no_scope() {
+        // Struct.new blocks are not scope-creating, so no dups detected
         let n = count_offenses(b"A = Struct.new(:x) do\n  def foo; 1; end\nend\nA = Struct.new(:y) do\n  def foo; 2; end\nend\n");
-        assert_eq!(n, 1, "reopened Struct.new constant should detect dup");
+        assert_eq!(n, 0, "Struct.new blocks are not scope-creating");
     }
 
     #[test]
-    fn test_case_should_suppress() {
-        // Methods inside case/when should be suppressed (like if/unless)
+    fn test_case_does_not_suppress() {
+        // RuboCop only suppresses if/unless ancestors, NOT case/when.
+        // Methods inside case/when ARE checked for duplicates.
         let n = count_offenses(b"class Foo\n  case RUBY_VERSION\n  when '3.0'\n    def bar; 1; end\n  when '2.7'\n    def bar; 2; end\n  end\nend\n");
-        assert_eq!(n, 0, "case/when should suppress duplicate detection");
+        assert_eq!(n, 1, "case/when should NOT suppress duplicate detection");
+    }
+
+    #[test]
+    fn test_implicit_class_eval_transparent() {
+        // class_eval with no receiver inside a module is transparent — defs
+        // are scoped to the enclosing module, not a nested "A::A" scope.
+        let n = count_offenses(
+            b"module A\n  class_eval do\n    def foo; 1; end\n    def foo; 2; end\n  end\nend\n",
+        );
+        assert_eq!(n, 1, "implicit class_eval should use enclosing scope");
     }
 
     #[test]
@@ -975,7 +1033,7 @@ mod tests {
     #[test]
     fn test_constant_write_with_non_new_method() {
         // A = SomeThing.build do...end should NOT create scope
-        // Only Class.new/Module.new/Struct.new create scopes
+        // Only Class.new/Module.new create scopes
         let n =
             count_offenses(b"A = SomeThing.build do\n  def foo; 1; end\n  def foo; 2; end\nend\n");
         // This is a plain block — methods inside should be ignored

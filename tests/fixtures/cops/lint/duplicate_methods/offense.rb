@@ -155,23 +155,12 @@ class WithDelegators
   ^^^^^^^ Lint/DuplicateMethods: Method `WithDelegators#run` is defined at both test.rb:137 and test.rb:139.
 end
 
-# Struct.new with constant assignment
-StructKlass = Struct.new(:name) do
-  def greet
-    1
-  end
-  def greet
-  ^^^^^^^^^ Lint/DuplicateMethods: Method `StructKlass#greet` is defined at both test.rb:144 and test.rb:147.
-    2
-  end
-end
-
 # def ConstName.method resolving to outer scope
 module Container
   class Child
     def Container.helper; 1; end
     def Container.helper; 2; end
-    ^^^^^^^^^^^^^^^^^^^^^^^^ Lint/DuplicateMethods: Method `Container.helper` is defined at both test.rb:155 and test.rb:156.
+    ^^^^^^^^^^^^^^^^^^^^^^^^ Lint/DuplicateMethods: Method `Container.helper` is defined at both test.rb:145 and test.rb:146.
   end
 end
 
@@ -179,5 +168,16 @@ end
 class Unified
   def Unified.compute; 1; end
   def self.compute; 2; end
-  ^^^^^^^^^^^^^^^^ Lint/DuplicateMethods: Method `Unified.compute` is defined at both test.rb:162 and test.rb:163.
+  ^^^^^^^^^^^^^^^^ Lint/DuplicateMethods: Method `Unified.compute` is defined at both test.rb:152 and test.rb:153.
+end
+
+# case/when does NOT suppress duplicate detection (only if/unless does)
+class CaseVariant
+  case RUBY_VERSION
+  when '3.0'
+    def bar; 1; end
+  when '2.7'
+    def bar; 2; end
+    ^^^^^^^^^^^^^^^ Lint/DuplicateMethods: Method `CaseVariant#bar` is defined at both test.rb:160 and test.rb:162.
+  end
 end
