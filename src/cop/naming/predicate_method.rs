@@ -52,6 +52,23 @@ use crate::parse::source::SourceFile;
 /// `if/elsif/end` chains, making all-boolean branches an offense.
 /// Fix: iterate through if/elsif chain instead of recursing, push nil only
 /// when top-level if has no subsequent.
+///
+/// ## Corpus investigation (2026-03-14) — batch 2
+///
+/// Corpus oracle reported FP=5, FN=5.
+///
+/// FP=5: Multi-statement methods with parenthesized comparisons as last
+/// statement (e.g., `def foo; log(); (x > y); end`). Root cause:
+/// `collect_implicit_return` unwrapped ParenthesesNode at all levels,
+/// but RuboCop's `last_value` only unwraps one level of `:begin`. In
+/// multi-statement bodies, the parens-`:begin` is the second level and
+/// is NOT unwrapped. Fix: only unwrap ParenthesesNode when it's the sole
+/// child of a StatementsNode (matching Parser gem single-statement behavior).
+///
+/// FN=5: Predicate methods with yield and implicit nil return. Root cause:
+/// YieldNode was classified as Unknown (triggering conservative skip), but
+/// RuboCop's call_type? = send_type? || csend_type? does NOT include :yield.
+/// Fix: classify YieldNode as Opaque instead of Unknown.
 pub struct PredicateMethod;
 
 const MSG_PREDICATE: &str = "Predicate method names should end with `?`.";
@@ -382,6 +399,23 @@ fn collect_implicit_return(
     if let Some(stmts) = node.as_statements_node() {
         let body: Vec<_> = stmts.body().iter().collect();
         if let Some(last) = body.last() {
+            // When the body has exactly one statement and it's a ParenthesesNode,
+            // unwrap it. This matches Parser gem where single-statement method
+            // bodies are NOT wrapped in an outer :begin — the parens-:begin IS
+            // the body, and RuboCop's last_value unwraps it.
+            // For multi-statement bodies, ParenthesesNode as the last statement
+            // falls through to classify_node → Opaque, matching RuboCop's
+            // behavior where last_value only unwraps the outer :begin.
+            if body.len() == 1 {
+                if let Some(paren) = last.as_parentheses_node() {
+                    if let Some(inner) = paren.body() {
+                        collect_implicit_return(&inner, returns, wayward);
+                    } else {
+                        returns.push(ReturnType::NonBooleanLiteral);
+                    }
+                    return;
+                }
+            }
             collect_implicit_return(last, returns, wayward);
         } else {
             returns.push(ReturnType::NonBooleanLiteral);
@@ -393,21 +427,6 @@ fn collect_implicit_return(
     // logic whose return type shouldn't make the method a predicate candidate.
     if node.as_begin_node().is_some() {
         returns.push(ReturnType::Opaque);
-        return;
-    }
-
-    // ParenthesesNode -- unwrap and recurse into body. In Parser gem,
-    // parenthesized expressions become :begin nodes. RuboCop's `return_values`
-    // and `last_value` check `begin_type?` and take the last child, effectively
-    // unwrapping the parentheses at method-body level. Note: in `collect_and_or_leaves`
-    // and `classify_node`, ParenthesesNode is still treated as Opaque because
-    // RuboCop's `extract_and_or_clauses` and `boolean_return?` do NOT unwrap :begin.
-    if let Some(paren) = node.as_parentheses_node() {
-        if let Some(body) = paren.body() {
-            collect_implicit_return(&body, returns, wayward);
-        } else {
-            returns.push(ReturnType::NonBooleanLiteral); // empty parens = nil
-        }
         return;
     }
 
@@ -787,11 +806,13 @@ fn classify_node(node: &ruby_prism::Node<'_>, wayward: &[String]) -> ReturnType 
         return ReturnType::Opaque;
     }
 
-    // YieldNode — yield IS call_type? in RuboCop (CALL_TYPES includes :yield),
-    // so it triggers the conservative-mode acceptable? check. Classify as Unknown
-    // to match RuboCop behavior.
+    // YieldNode — yield is NOT call_type? in RuboCop (call_type? = send_type? ||
+    // csend_type?, does NOT include :yield). So yield does NOT trigger the
+    // conservative-mode acceptable? skip. Classify as Opaque (not Unknown) so
+    // it doesn't trigger conservative skip, but also doesn't count as boolean
+    // or non-boolean literal.
     if node.as_yield_node().is_some() {
-        return ReturnType::Unknown;
+        return ReturnType::Opaque;
     }
 
     // Everything else (variables, constants, etc.)
@@ -829,9 +850,15 @@ mod tests {
 
     #[test]
     fn yield_in_conservative_mode_is_acceptable() {
-        // yield is call_type? in RuboCop, so conservative mode treats it as acceptable
+        // yield is NOT call_type? in RuboCop, so conservative mode doesn't skip.
+        // But the method has no nil return (if/elsif chain doesn't push nil),
+        // so neither all-boolean nor potential-non-predicate triggers.
         let code = b"def read_node?(node, block_pass)\n  if block_pass.any?\n    yield(node)\n  elsif file_open_read?(node.parent)\n    yield(node.parent)\n  end\nend\n";
         let diags = crate::testutil::run_cop_full(&PredicateMethod, code);
-        assert_eq!(diags.len(), 0, "yield should trigger conservative skip");
+        assert_eq!(
+            diags.len(),
+            0,
+            "yield with no nil return should not be flagged"
+        );
     }
 }

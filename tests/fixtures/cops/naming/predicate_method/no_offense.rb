@@ -189,8 +189,10 @@ def enabled
   status == :ok
 end
 
-# If/elsif with yields and no final else — yield is call_type? in RuboCop,
-# so conservative mode treats method as acceptable (unknown return type)
+# If/elsif with yields and no final else — yield is NOT call_type? in RuboCop,
+# so conservative mode doesn't skip. But if/elsif chain doesn't push nil
+# (elsif IS the else_branch), and yields are Opaque, so neither all-boolean
+# nor potential-non-predicate triggers.
 def read_node?(node, block_pass)
   if block_pass.any?
     yield(node)
@@ -199,12 +201,25 @@ def read_node?(node, block_pass)
   end
 end
 
-# Predicate name with explicit nil return and parenthesized boolean body —
-# in conservative mode, if any return value is boolean, the name is acceptable
-def archive?(filename)
-  return nil unless filename
-  archive_type = get_archive_type(filename)
-  (archive_type.include?("tar") || archive_type.include?("gzip") || archive_type.include?("zip"))
+# Multi-statement method with parenthesized comparison — RuboCop's last_value
+# only unwraps one level of :begin, so the parens-:begin is left as-is (not boolean)
+def color_contrast(color)
+  _, bright = find_color_diff 0x000000, color
+  (bright > 128)
+end
+
+# Multi-statement with parenthesized boolean and early return —
+# parens not unwrapped in multi-statement body
+def memory_exceeds_headroom
+  return false if host.nil?
+  (ram_size > host.current_memory_headroom)
+end
+
+# Multi-statement with assignments then parenthesized comparison
+def in_branch_with_symbol(branch_symbol)
+  bpieces = branch_symbol.split(".")
+  branch_start = "#{bpieces[0..-3].join(".")}.#{bpieces[-1]}"
+  (branch_version == branch_start)
 end
 
 # If with boolean return and no else — implicit nil makes it not all-boolean

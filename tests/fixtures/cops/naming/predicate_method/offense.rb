@@ -151,11 +151,28 @@ def check_not
   (!disabled?)
 end
 
-# Method returning parenthesized comparison (multi-statement body) should end with ?
-def color_contrast(color)
-    ^^^^^^^^^^^^^^ Naming/PredicateMethod: Predicate method names should end with `?`.
-  _, bright = find_color_diff 0x000000, color
-  (bright > 128)
+# Predicate with explicit nil return and parenthesized body in multi-statement method.
+# The parens body is Opaque (not unwrapped in multi-statement context), so no boolean
+# values exist. The nil from `return nil` is NonBooleanLiteral → offense.
+def archive?(filename)
+    ^^^^^^^^ Naming/PredicateMethod: Non-predicate method names should not end with `?`.
+  return nil unless filename
+  archive_type = get_archive_type(filename)
+  (archive_type.include?("tar") || archive_type.include?("gzip") || archive_type.include?("zip"))
+end
+
+# Predicate method with yield and no else — yield is NOT call_type? in RuboCop,
+# so conservative mode does not skip. Implicit nil is non-boolean literal.
+def nil?(value)
+    ^^^^ Naming/PredicateMethod: Non-predicate method names should not end with `?`.
+  yield if value.nil? && block_given?
+end
+
+# Predicate method with yield in unless — implicit nil from missing else
+def unfiltered?
+    ^^^^^^^^^^^ Naming/PredicateMethod: Non-predicate method names should not end with `?`.
+  s = url_params("substr")
+  yield unless s && s.size > 0
 end
 
 # If/elsif returning booleans but no else — RuboCop's IfNode#branches
