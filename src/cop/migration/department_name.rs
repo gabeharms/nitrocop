@@ -7,6 +7,15 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-13)
+///
+/// Corpus oracle reported FP=2, FN=0. Both FPs in scinote-web on
+/// `# rubocop:disable MultilineMethodCallIndentation` — an unqualified legacy cop name
+/// containing "all" as a substring inside "Call".
+///
+/// FP=2: Fixed. RuboCop's `DISABLING_COPS_CONTENT_TOKEN` regex is unanchored, so the
+/// `all` alternative matches as a substring (e.g. "C**all**Indentation"). Changed
+/// `content_token == "all"` to `content_token.contains("all")` for conformance.
 pub struct DepartmentName;
 
 /// Regex matching rubocop directive comments.
@@ -50,8 +59,11 @@ fn contains_unexpected_char(name: &str) -> bool {
 }
 
 /// Mirrors RuboCop's valid_content_token? predicate.
+/// Note: RuboCop's `DISABLING_COPS_CONTENT_TOKEN` regex (`/[A-Za-z]+\/[A-Za-z]+|all/`)
+/// is unanchored, so `all` matches as a *substring* (e.g. "MultilineMethodC**all**Indentation").
+/// We replicate this with `contains("all")` for corpus conformance.
 fn valid_content_token(content_token: &str) -> bool {
-    content_token == "all"
+    content_token.contains("all")
         || NON_WORD_RE.is_match(content_token)
         || VALID_TOKEN_RE.is_match(content_token)
         || KNOWN_DEPARTMENTS.contains(&content_token)

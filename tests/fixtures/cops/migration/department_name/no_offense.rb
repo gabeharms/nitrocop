@@ -19,3 +19,9 @@ y = 2
 
 # odd legacy-style token fragments containing slash are accepted
 # rubocop:disable /BlockLength, Metrics/
+
+# unqualified cop names containing "all" as substring are accepted
+# (RuboCop's unanchored regex matches "all" inside e.g. "Call")
+# rubocop:disable MultilineMethodCallIndentation
+x = 1
+# rubocop:enable MultilineMethodCallIndentation
