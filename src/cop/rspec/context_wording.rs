@@ -84,7 +84,7 @@ impl Cop for ContextWording {
 
         // RuboCop uses on_block: requires an actual BlockNode (do...end or { }).
         // &(proc do end) stores a BlockArgumentNode, not a BlockNode — skip it.
-        if call.block().map_or(true, |b| b.as_block_node().is_none()) {
+        if call.block().is_none_or(|b| b.as_block_node().is_none()) {
             return;
         }
 

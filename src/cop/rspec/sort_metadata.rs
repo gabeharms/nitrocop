@@ -54,7 +54,7 @@ impl Cop for SortMetadata {
         }
 
         // Must have a BlockNode (do...end or { }), not BlockArgumentNode (&proc)
-        if call.block().map_or(true, |b| b.as_block_node().is_none()) {
+        if call.block().is_none_or(|b| b.as_block_node().is_none()) {
             return;
         }
 

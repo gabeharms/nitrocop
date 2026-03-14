@@ -146,6 +146,24 @@ use std::collections::HashMap;
 ///    `number` attribute. Fix: emit `number()` as little-endian bytes.
 /// 4. **XString nodes** (backtick strings): `XStringNode` has `unescaped()` content but the
 ///    default visitor is a no-op. Fix: emit `unescaped()`.
+///
+/// **Investigation (2026-03-14, round 4):** 168 FPs remaining.
+///
+/// FP root cause 1: `ParametersNode` children are visited by the default generated visitor
+/// which calls `self.visit(child)` without emitting each child's type tag. This means
+/// `OptionalKeywordParameterNode(b:)` (from `-> *a, b: {}`) and `KeywordRestParameterNode(b)`
+/// (from `-> *a, **b {}`) both emit just "b" bytes — they're indistinguishable.
+/// Fix: added `visit_parameters_node` that emits a type tag for each parameter before
+/// visiting it, matching the approach used in `visit_statements_node`.
+///
+/// FP root cause 2: Several `||=` and `&&=` write node types were missing custom visitors
+/// that emit the variable/constant name. `ClassVariableOrWriteNode`, `ClassVariableAndWriteNode`,
+/// `ConstantOrWriteNode`, `ConstantAndWriteNode`, `ConstantOperatorWriteNode`,
+/// `GlobalVariableOrWriteNode`, `GlobalVariableAndWriteNode` all have `name: constant` as
+/// an attribute (not a child node), but the default visitor only visits `value`. This caused
+/// structurally different expressions like `defined?(@@a ||= true)` and `defined?(A ||= true)`
+/// to produce identical fingerprints — both emitted only the right-hand side.
+/// Fix: added custom visitors for all missing write node types to emit the variable name.
 pub struct RepeatedExample;
 
 impl Cop for RepeatedExample {
@@ -779,6 +797,49 @@ impl<'pr> Visit<'pr> for AstFingerprinter {
         }
     }
 
+    // ParametersNode contains multiple typed children (requireds, optionals, rest,
+    // keywords, keyword_rest, etc.). The default visitor visits each child but does NOT
+    // emit the child's type tag — so `OptionalKeywordParameterNode(b:)` (from `b:`) and
+    // `KeywordRestParameterNode(b)` (from `**b`) both produce just "b" bytes, making
+    // `-> *a, b: {}` and `-> *a, **b {}` appear identical.
+    // Fix: emit a type tag for each child, like visit_statements_node does.
+    fn visit_parameters_node(&mut self, node: &ruby_prism::ParametersNode<'pr>) {
+        macro_rules! visit_list {
+            ($list:expr) => {
+                for child in $list.iter() {
+                    self.buf.push(crate::cop::node_type::node_type_tag(&child));
+                    self.visit(&child);
+                }
+            };
+        }
+        macro_rules! visit_opt_node {
+            ($opt:expr) => {
+                if let Some(ref child) = $opt {
+                    self.buf.push(crate::cop::node_type::node_type_tag(child));
+                    self.visit(child);
+                }
+            };
+        }
+        // node.block() returns Option<BlockParameterNode>, not Option<Node> — use as_node()
+        macro_rules! visit_opt_concrete {
+            ($opt:expr) => {
+                if let Some(child) = $opt {
+                    let as_node = child.as_node();
+                    self.buf
+                        .push(crate::cop::node_type::node_type_tag(&as_node));
+                    self.visit(&as_node);
+                }
+            };
+        }
+        visit_list!(node.requireds());
+        visit_list!(node.optionals());
+        visit_opt_node!(node.rest());
+        visit_list!(node.posts());
+        visit_list!(node.keywords());
+        visit_opt_node!(node.keyword_rest());
+        visit_opt_concrete!(node.block());
+    }
+
     // For pattern matching nodes, the default visitors call `visitor.visit(&node.pattern())`
     // without emitting the pattern's type tag. For empty patterns ([] vs {}), this means
     // ArrayPatternNode (empty) and HashPatternNode (empty) both produce zero bytes — they
@@ -1017,9 +1078,60 @@ impl<'pr> Visit<'pr> for AstFingerprinter {
         ruby_prism::visit_global_variable_write_node(self, node);
     }
 
+    fn visit_global_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::GlobalVariableOrWriteNode<'pr>,
+    ) {
+        self.emit_bytes(node.name().as_slice());
+        ruby_prism::visit_global_variable_or_write_node(self, node);
+    }
+
+    fn visit_global_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::GlobalVariableAndWriteNode<'pr>,
+    ) {
+        self.emit_bytes(node.name().as_slice());
+        ruby_prism::visit_global_variable_and_write_node(self, node);
+    }
+
+    fn visit_class_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::ClassVariableOrWriteNode<'pr>,
+    ) {
+        self.emit_bytes(node.name().as_slice());
+        ruby_prism::visit_class_variable_or_write_node(self, node);
+    }
+
+    fn visit_class_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::ClassVariableAndWriteNode<'pr>,
+    ) {
+        self.emit_bytes(node.name().as_slice());
+        ruby_prism::visit_class_variable_and_write_node(self, node);
+    }
+
     fn visit_constant_write_node(&mut self, node: &ruby_prism::ConstantWriteNode<'pr>) {
         self.emit_bytes(node.name().as_slice());
         ruby_prism::visit_constant_write_node(self, node);
+    }
+
+    fn visit_constant_or_write_node(&mut self, node: &ruby_prism::ConstantOrWriteNode<'pr>) {
+        self.emit_bytes(node.name().as_slice());
+        ruby_prism::visit_constant_or_write_node(self, node);
+    }
+
+    fn visit_constant_and_write_node(&mut self, node: &ruby_prism::ConstantAndWriteNode<'pr>) {
+        self.emit_bytes(node.name().as_slice());
+        ruby_prism::visit_constant_and_write_node(self, node);
+    }
+
+    fn visit_constant_operator_write_node(
+        &mut self,
+        node: &ruby_prism::ConstantOperatorWriteNode<'pr>,
+    ) {
+        self.emit_bytes(node.name().as_slice());
+        self.emit_bytes(node.binary_operator().as_slice());
+        ruby_prism::visit_constant_operator_write_node(self, node);
     }
 
     fn visit_instance_variable_target_node(

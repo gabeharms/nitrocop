@@ -265,3 +265,29 @@ describe 'pattern matching empty array vs hash' do
   end
 end
 
+# Constant or-write vs class variable or-write are NOT duplicates
+# ConstantOrWriteNode (A ||= true) and ClassVariableOrWriteNode (@@a ||= true)
+# are structurally different — they must produce different fingerprints
+describe "different variable kinds in defined?" do
+  it "class variable or-write" do
+    defined?(@@a ||= true).should == "assignment"
+  end
+
+  it "constant or-write" do
+    defined?(A ||= true).should == "assignment"
+  end
+end
+
+# Lambda params: optional keyword param vs keyword splat are NOT duplicates
+# OptionalKeywordParameterNode (b:) vs KeywordRestParameterNode (**b) differ structurally
+describe "lambda keyword param vs keyword splat" do
+  it "keyword param" do
+    f = -> *a, b: { }
+    -> { f.ruby2_keywords }.should complain(/Skipping set/)
+  end
+
+  it "keyword splat" do
+    f = -> *a, **b { }
+    -> { f.ruby2_keywords }.should complain(/Skipping set/)
+  end
+end
