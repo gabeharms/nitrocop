@@ -16,3 +16,27 @@ def outer
     42
   end
 end
+
+# def self.method inside another def IS an offense (self is not an allowed receiver)
+class Foo
+  def self.x
+    def self.y
+    ^^^^^^^^^^ Lint/NestedMethodDefinition: Method definitions must not be nested. Use `lambda` instead.
+    end
+  end
+end
+
+# def inside a lambda block is still an offense
+def foo
+  bar = -> { def baz; puts; end }
+             ^^^^^^^^^^^^^^^^^^ Lint/NestedMethodDefinition: Method definitions must not be nested. Use `lambda` instead.
+end
+
+# def inside a random block is still an offense
+def do_something
+  items.each do
+    def process_item
+    ^^^^^^^^^^^^^^^^ Lint/NestedMethodDefinition: Method definitions must not be nested. Use `lambda` instead.
+    end
+  end
+end

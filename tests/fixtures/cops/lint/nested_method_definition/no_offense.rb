@@ -18,13 +18,163 @@ def with_qualified_scope
   end
 end
 
-# Singleton method definitions (def obj.method) are allowed
-def setup
-  def @controller.new_method
-    something
-  end
+# Singleton method definitions with allowed receiver types
 
-  def self.class_method
-    something
+# def on local variable receiver
+class Foo
+  def x(obj)
+    def obj.y
+    end
+  end
+end
+
+# def on instance variable receiver
+class Foo
+  def x
+    def @obj.y
+    end
+  end
+end
+
+# def on class variable receiver
+class Foo
+  def x
+    def @@obj.y
+    end
+  end
+end
+
+# def on global variable receiver
+class Foo
+  def x
+    def $obj.y
+    end
+  end
+end
+
+# def on constant receiver
+class Foo
+  def x
+    def Const.y
+    end
+  end
+end
+
+# def on method call receiver
+class Foo
+  def x
+    def do_something.y
+    end
+  end
+end
+
+# def on safe-navigation parenthesized receiver
+class Foo
+  def x
+    def (do_something&.y).z
+    end
+  end
+end
+
+# Scope-creating calls suppress offense
+def foo
+  self.class.class_eval do
+    def bar
+    end
+  end
+end
+
+def foo
+  mod.module_eval do
+    def bar
+    end
+  end
+end
+
+def foo
+  obj.instance_eval do
+    def bar
+    end
+  end
+end
+
+def foo
+  klass.class_exec do
+    def bar
+    end
+  end
+end
+
+def foo
+  mod.module_exec do
+    def bar
+    end
+  end
+end
+
+def foo
+  obj.instance_exec do
+    def bar
+    end
+  end
+end
+
+# Class.new / Module.new / Struct.new blocks
+def self.define
+  Class.new do
+    def y
+    end
+  end
+end
+
+def self.define
+  Module.new do
+    def y
+    end
+  end
+end
+
+def self.define
+  Struct.new(:name) do
+    def y
+    end
+  end
+end
+
+def self.define
+  ::Struct.new do
+    def y
+    end
+  end
+end
+
+# Data.define (Ruby 3.2+)
+def self.define
+  Data.define(:name) do
+    def y
+    end
+  end
+end
+
+def self.define
+  ::Data.define(:name) do
+    def y
+    end
+  end
+end
+
+# class << self (singleton class) inside def
+def bar
+  class << self
+    def baz
+    end
+  end
+end
+
+# define_method is a scope-creating call
+def foo
+  define_method(:bar) do
+    def helper
+    end
   end
 end
