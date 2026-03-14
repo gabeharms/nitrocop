@@ -16,3 +16,10 @@ described_class.add attributes_for :item, name: 'attribute'
 if condition
   create :item, name: 'test'
 end
+
+# Factory call as sole statement in else body (ambiguous in Parser: parent is :if)
+if condition
+  something_else
+else
+  create :organization
+end

@@ -24,6 +24,16 @@ use crate::parse::source::SourceFile;
 /// Single-statement if bodies with a CallNode as the sole statement are treated
 /// as ambiguous (matching Parser's direct-child behavior), but when the statement
 /// is something else (lvasgn, etc.), the body is non-ambiguous.
+///
+/// ## Corpus investigation (2026-03-13)
+///
+/// Corpus oracle reported FP=1, FN=0. FP in decidim/decidim:
+/// `create :organization` as sole statement in an `else` branch.
+///
+/// FP fix: `visit_if_node` subsequent (else) handling set `parent_is_ambiguous = false`
+/// unconditionally. In Parser AST, else-branch content is a direct child of `if`
+/// (ambiguous), same as the then-branch. Applied same single-statement-CallNode
+/// ambiguity logic to the else branch via `as_else_node()` check.
 pub struct ConsistentParenthesesStyle;
 
 impl Cop for ConsistentParenthesesStyle {
@@ -276,12 +286,30 @@ impl<'pr> Visit<'pr> for ParenStyleVisitor<'_> {
             }
         }
 
-        // Subsequent (elsif/else): same treatment — single-statement else
-        // bodies with a call node as the sole statement are ambiguous in Parser.
+        // Subsequent (elsif/else): same treatment as the body.
+        // In Parser, else-branch content is a direct child of `if`, so a sole
+        // CallNode statement in the else body has parent `if` (ambiguous).
         if let Some(sub) = node.subsequent() {
-            self.parent_is_ambiguous = false;
-            self.ambiguity_kind = None;
-            self.visit(&sub);
+            if let Some(else_node) = sub.as_else_node() {
+                if let Some(stmts) = else_node.statements() {
+                    let body: Vec<_> = stmts.body().iter().collect();
+                    if body.len() == 1 && body[0].as_call_node().is_some() {
+                        self.parent_is_ambiguous = true;
+                        self.ambiguity_kind = Some(AmbiguityKind::If);
+                    } else {
+                        self.parent_is_ambiguous = false;
+                        self.ambiguity_kind = None;
+                    }
+                    for stmt in &body {
+                        self.visit(stmt);
+                    }
+                }
+            } else {
+                // elsif — handled recursively by visit_if_node
+                self.parent_is_ambiguous = false;
+                self.ambiguity_kind = None;
+                self.visit(&sub);
+            }
         }
 
         self.parent_is_ambiguous = saved;
