@@ -1,11 +1,18 @@
 use crate::cop::node_type::{
-    BLOCK_NODE, BLOCK_PARAMETERS_NODE, CALL_NODE, LOCAL_VARIABLE_READ_NODE,
-    REQUIRED_PARAMETER_NODE, STATEMENTS_NODE,
+    BLOCK_NODE, BLOCK_PARAMETERS_NODE, CALL_NODE, IT_LOCAL_VARIABLE_READ_NODE, IT_PARAMETERS_NODE,
+    LOCAL_VARIABLE_READ_NODE, NUMBERED_PARAMETERS_NODE, REQUIRED_PARAMETER_NODE, STATEMENTS_NODE,
 };
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-14)
+///
+/// Corpus oracle reported FP=0, FN=4.
+///
+/// FN=4: Missing numbered parameter `_1` (Ruby 2.7+) and `it` keyword
+/// (Ruby 3.4+) patterns in sort_by blocks. Fixed by adding checks for
+/// NumberedParametersNode and ItParametersNode block parameters.
 pub struct RedundantSortBy;
 
 impl Cop for RedundantSortBy {
@@ -18,7 +25,10 @@ impl Cop for RedundantSortBy {
             BLOCK_NODE,
             BLOCK_PARAMETERS_NODE,
             CALL_NODE,
+            IT_LOCAL_VARIABLE_READ_NODE,
+            IT_PARAMETERS_NODE,
             LOCAL_VARIABLE_READ_NODE,
+            NUMBERED_PARAMETERS_NODE,
             REQUIRED_PARAMETER_NODE,
             STATEMENTS_NODE,
         ]
@@ -59,111 +69,96 @@ impl Cop for RedundantSortBy {
             None => return,
         };
 
-        // Block must have exactly one parameter and body is just that parameter
+        // Block must have parameters and body that just returns the parameter
         let params = match block_node.parameters() {
             Some(p) => p,
             None => return,
         };
 
-        let bp = match params.as_block_parameters_node() {
-            Some(bp) => bp,
-            None => return,
-        };
-
-        let inner_params = match bp.parameters() {
-            Some(p) => p,
-            None => return,
-        };
-
-        // Must have exactly one required parameter
-        let requireds: Vec<_> = inner_params.requireds().iter().collect();
-        if requireds.len() != 1 {
-            return;
-        }
-
-        // No other params
-        if !inner_params.optionals().is_empty()
-            || inner_params.rest().is_some()
-            || !inner_params.posts().is_empty()
-            || !inner_params.keywords().is_empty()
-            || inner_params.keyword_rest().is_some()
-            || inner_params.block().is_some()
-        {
-            return;
-        }
-
-        // Get the param name
-        let param_node = &requireds[0];
-        let param_name = match param_node.as_required_parameter_node() {
-            Some(p) => p.name(),
-            None => return,
-        };
-
-        // Body must be a single statement that is a local variable read of the same name
+        // Body must be a single statement
         let body = match block_node.body() {
             Some(b) => b,
             None => return,
         };
 
-        let stmts = match body.as_statements_node() {
-            Some(s) => s,
-            None => {
-                // Try direct local variable read
-                if let Some(lvar) = body.as_local_variable_read_node() {
-                    if lvar.name().as_slice() != param_name.as_slice() {
-                        return;
-                    }
-                } else {
-                    return;
-                }
-                // The body is just the variable - this is a match
-                let msg_loc = call_node
-                    .message_loc()
-                    .unwrap_or_else(|| call_node.location());
-                let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-                let var_name = std::str::from_utf8(param_name.as_slice()).unwrap_or("x");
-                diagnostics.push(self.diagnostic(
-                    source,
-                    line,
-                    column,
-                    format!(
-                        "Use `sort` instead of `sort_by {{ |{}| {} }}`.",
-                        var_name, var_name
-                    ),
-                ));
+        // Get the single body expression (either wrapped in StatementsNode or direct)
+        let body_expr = if let Some(stmts) = body.as_statements_node() {
+            let stmts_body: Vec<_> = stmts.body().iter().collect();
+            if stmts_body.len() != 1 {
                 return;
             }
+            stmts_body.into_iter().next().unwrap()
+        } else {
+            body
         };
 
-        let stmts_body: Vec<_> = stmts.body().iter().collect();
-        if stmts_body.len() != 1 {
-            return;
-        }
+        // Determine the message based on parameter style
+        let message = if let Some(bp) = params.as_block_parameters_node() {
+            // Regular block: { |x| x }
+            let inner_params = match bp.parameters() {
+                Some(p) => p,
+                None => return,
+            };
 
-        let body_node = &stmts_body[0];
-        let lvar = match body_node.as_local_variable_read_node() {
-            Some(l) => l,
-            None => return,
+            let requireds: Vec<_> = inner_params.requireds().iter().collect();
+            if requireds.len() != 1 {
+                return;
+            }
+
+            if !inner_params.optionals().is_empty()
+                || inner_params.rest().is_some()
+                || !inner_params.posts().is_empty()
+                || !inner_params.keywords().is_empty()
+                || inner_params.keyword_rest().is_some()
+                || inner_params.block().is_some()
+            {
+                return;
+            }
+
+            let param_name = match requireds[0].as_required_parameter_node() {
+                Some(p) => p.name(),
+                None => return,
+            };
+
+            let lvar = match body_expr.as_local_variable_read_node() {
+                Some(l) => l,
+                None => return,
+            };
+
+            if lvar.name().as_slice() != param_name.as_slice() {
+                return;
+            }
+
+            let var_name = std::str::from_utf8(param_name.as_slice()).unwrap_or("x");
+            format!(
+                "Use `sort` instead of `sort_by {{ |{}| {} }}`.",
+                var_name, var_name
+            )
+        } else if params.as_numbered_parameters_node().is_some() {
+            // Numbered params (Ruby 2.7+): { _1 }
+            let lvar = match body_expr.as_local_variable_read_node() {
+                Some(l) => l,
+                None => return,
+            };
+            if lvar.name().as_slice() != b"_1" {
+                return;
+            }
+            "Use `sort` instead of `sort_by { _1 }`.".to_string()
+        } else if params.as_it_parameters_node().is_some() {
+            // Ruby 3.4+ `it` implicit parameter: { it }
+            if body_expr.as_it_local_variable_read_node().is_none() {
+                return;
+            }
+            "Use `sort` instead of `sort_by { it }`.".to_string()
+        } else {
+            return;
         };
-
-        if lvar.name().as_slice() != param_name.as_slice() {
-            return;
-        }
 
         let msg_loc = call_node
             .message_loc()
             .unwrap_or_else(|| call_node.location());
         let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-        let var_name = std::str::from_utf8(param_name.as_slice()).unwrap_or("x");
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            column,
-            format!(
-                "Use `sort` instead of `sort_by {{ |{}| {} }}`.",
-                var_name, var_name
-            ),
-        ));
+        diagnostics.push(self.diagnostic(source, line, column, message));
     }
 }
 
