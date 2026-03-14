@@ -23,6 +23,14 @@ use crate::parse::source::SourceFile;
 /// Reverted. A correct fix needs to identify the explicit singleton-class false
 /// positive without suppressing the ordinary `def ClassName.method` shapes that
 /// the original visitor already catches across the corpus.
+///
+/// Attempt #4 (2026-03-14): Track `in_singleton_class_self` flag in the visitor.
+/// When inside `class << self`, skip `visit_def_node` entirely — any `def X.method`
+/// inside a singleton class is already on the eigenclass, so the cop should not
+/// suggest `self.method`. Nested class/module nodes reset the flag so that defs
+/// inside nested bodies are still checked. This is narrower than attempts 1-3
+/// because it only suppresses defs that are direct descendants of `class << self`
+/// (not nested class/module bodies), matching RuboCop's behavior.
 pub struct ClassMethods;
 
 impl Cop for ClassMethods {
@@ -44,6 +52,7 @@ impl Cop for ClassMethods {
             source,
             diagnostics: Vec::new(),
             class_names: Vec::new(),
+            in_singleton_class_self: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -55,28 +64,50 @@ struct ClassMethodsVisitor<'a, 'src> {
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
     class_names: Vec<Vec<u8>>,
+    in_singleton_class_self: bool,
 }
 
 impl<'pr> Visit<'pr> for ClassMethodsVisitor<'_, '_> {
     fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
         let name = node.constant_path().location().as_slice().to_vec();
         self.class_names.push(name);
+        let prev = self.in_singleton_class_self;
+        self.in_singleton_class_self = false;
         if let Some(body) = node.body() {
             self.visit(&body);
         }
+        self.in_singleton_class_self = prev;
         self.class_names.pop();
     }
 
     fn visit_module_node(&mut self, node: &ruby_prism::ModuleNode<'pr>) {
         let name = node.constant_path().location().as_slice().to_vec();
         self.class_names.push(name);
+        let prev = self.in_singleton_class_self;
+        self.in_singleton_class_self = false;
         if let Some(body) = node.body() {
             self.visit(&body);
         }
+        self.in_singleton_class_self = prev;
         self.class_names.pop();
     }
 
+    fn visit_singleton_class_node(&mut self, node: &ruby_prism::SingletonClassNode<'pr>) {
+        let is_self = node.expression().as_self_node().is_some();
+        let prev = self.in_singleton_class_self;
+        if is_self {
+            self.in_singleton_class_self = true;
+        }
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+        self.in_singleton_class_self = prev;
+    }
+
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+        if self.in_singleton_class_self {
+            return;
+        }
         let receiver = match node.receiver() {
             Some(r) => r,
             None => return,
