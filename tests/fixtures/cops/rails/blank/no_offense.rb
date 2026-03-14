@@ -21,3 +21,11 @@ end
 !foo || foo.empty?
 !record || record.empty?
 !@item || @item.empty?
+
+# present? called with argument (class method style) should NOT be flagged
+# RuboCop's NodePattern `(send (send $_ :present?) :!)` requires present? with no arguments
+!Helpers.present?(value)
+!Vagrant::Util::Presence.present?(directory)
+unless Helpers.present?(value)
+  do_something
+end

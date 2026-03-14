@@ -33,6 +33,15 @@ use ruby_prism::Visit;
 ///
 /// **Fix:** Removed the `!` method name branch from `nil_check_receiver`. Only `nil?`,
 /// `== nil`, and `nil == foo` are valid nil-check patterns for the NilOrEmpty check.
+///
+/// ## Investigation (2026-03-14)
+///
+/// **FP root cause (34 FP, third batch):** `present?` called WITH arguments was flagged.
+/// RuboCop's NodePattern `(send (send $_ :present?) :!)` only matches when `present?` has
+/// NO arguments. Calls like `!Helpers.present?(value)` or `unless Helpers.present?(value)`
+/// use `present?` as a class method with an argument — RuboCop skips these.
+///
+/// Fix: Added argument count check in `check_not_present` and `check_unless_present`.
 pub struct Blank;
 
 /// Extract the receiver source text from a CallNode, returning None if absent.
@@ -180,6 +189,15 @@ impl<'pr> BlankVisitor<'_, '_> {
             return;
         }
 
+        // RuboCop's NodePattern `(send (send $_ :present?) :!)` only matches present? with
+        // NO arguments. `!Helpers.present?(value)` (class method style) must not be flagged.
+        if inner_call
+            .arguments()
+            .is_some_and(|a| !a.arguments().is_empty())
+        {
+            return;
+        }
+
         // Skip !present? inside def blank? (defining blank? in terms of present?)
         if self.inside_def_blank {
             return;
@@ -210,6 +228,14 @@ impl<'pr> BlankVisitor<'_, '_> {
         };
 
         if pred_call.name().as_slice() != b"present?" {
+            return;
+        }
+
+        // RuboCop's NodePattern `(send $_ :present?)` only matches present? with NO arguments.
+        if pred_call
+            .arguments()
+            .is_some_and(|a| !a.arguments().is_empty())
+        {
             return;
         }
 
