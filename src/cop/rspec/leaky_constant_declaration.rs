@@ -35,6 +35,11 @@ use ruby_prism::Visit;
 /// describe blocks inside module/class declarations (at depth 0) had their inner
 /// describe blocks completely skipped. Fix: always recurse into module/class bodies,
 /// only emit module/class offenses when depth > 0.
+///
+/// **Root cause of FN=23 (round 4):** Constant assignments used as arguments to `describe`
+/// calls (e.g., `describe MyConst = SomeModule::SomeClass do`) were not visited because
+/// only the block body was traversed at incremented depth, not the call arguments.
+/// Fix: also visit the call's arguments after incrementing `example_group_depth`.
 pub struct LeakyConstantDeclaration;
 
 impl Cop for LeakyConstantDeclaration {
@@ -96,6 +101,14 @@ impl Visit<'_> for LeakyVisitor<'_> {
             if let Some(block) = node.block() {
                 if let Some(block_node) = block.as_block_node() {
                     self.example_group_depth += 1;
+                    // Visit arguments with incremented depth — constant writes
+                    // in describe arguments (e.g., `describe MyConst = Foo do`)
+                    // are leaky too.
+                    if let Some(args) = node.arguments() {
+                        for arg in args.arguments().iter() {
+                            self.visit(&arg);
+                        }
+                    }
                     // Visit block body with incremented depth.
                     if let Some(body) = block_node.body() {
                         self.visit(&body);

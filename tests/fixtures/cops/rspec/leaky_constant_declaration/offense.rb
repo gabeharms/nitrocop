@@ -121,3 +121,8 @@ module AnotherWrapper
     end
   end
 end
+
+# Constant assignment as argument to describe
+describe MyConst = SomeModule::SomeClass do
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyConstantDeclaration: Stub constant instead of declaring explicitly.
+end
