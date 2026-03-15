@@ -25,3 +25,25 @@ if provider == 'whatsapp_cloud'
   # The callback is for manual setup flow; embedded signup handles it
   default_config = {}
 end
+
+# Multi-line if with semicolon after condition (body on next line)
+if true;
+  do_something
+end
+
+# Nested multi-line if with semicolons after conditions
+if true;
+  if true;
+    if true;
+      do_something
+    else
+    end
+  else
+  end
+else
+end
+
+# Unless with semicolon, multi-line
+unless done;
+  process
+end
