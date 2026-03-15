@@ -56,6 +56,18 @@ use crate::parse::source::SourceFile;
 /// newlines than RuboCop, may report "Final newline missing" when RuboCop
 /// reports "Trailing blank line") or FN (nitrocop undercounts blank lines).
 /// Fixed by adding `\x0b` and `\x0c` to the whitespace match set.
+///
+/// Remaining known location gap: CRLF files with trailing blank lines were
+/// reported on the code line's `\r` byte rather than the first trailing blank
+/// line. RuboCop reports the first blank line. Fixed by advancing past the
+/// terminating line ending of the last code line before converting the report
+/// offset to line/column.
+///
+/// Remaining CI FP on `simplecov` was another already-known encoding case:
+/// non-UTF-8 source without a magic `coding:`/`encoding:` comment. RuboCop only
+/// reports the encoding syntax error there, so line-based cops should skip the
+/// file entirely. Fixed by reusing the same guard pattern already applied to
+/// `Layout/LeadingEmptyLines` and `Naming/FileName`.
 pub struct TrailingEmptyLines;
 
 /// Check if the source contains `__END__` (with optional leading whitespace).
@@ -85,6 +97,37 @@ fn trailing_whitespace_info(bytes: &[u8]) -> (usize, usize) {
     (ws_len, newline_count)
 }
 
+fn first_trailing_blank_line_offset(bytes: &[u8], trailing_start: usize) -> usize {
+    let mut offset = trailing_start;
+    if bytes.get(offset) == Some(&b'\r') {
+        offset += 1;
+    }
+    if bytes.get(offset) == Some(&b'\n') {
+        offset += 1;
+    }
+    offset.min(bytes.len().saturating_sub(1))
+}
+
+fn skip_for_invalid_utf8_without_magic_encoding(source: &SourceFile) -> bool {
+    if std::str::from_utf8(source.as_bytes()).is_ok() {
+        return false;
+    }
+    !has_magic_encoding_comment(source.as_bytes())
+}
+
+fn has_magic_encoding_comment(source: &[u8]) -> bool {
+    for line in source.split(|&b| b == b'\n').take(2) {
+        let lower = String::from_utf8_lossy(line).to_ascii_lowercase();
+        if lower.contains("coding:") || lower.contains("coding=") {
+            return true;
+        }
+        if lower.contains("encoding:") || lower.contains("encoding=") {
+            return true;
+        }
+    }
+    false
+}
+
 impl Cop for TrailingEmptyLines {
     fn name(&self) -> &'static str {
         "Layout/TrailingEmptyLines"
@@ -101,6 +144,10 @@ impl Cop for TrailingEmptyLines {
         diagnostics: &mut Vec<Diagnostic>,
         mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        if skip_for_invalid_utf8_without_magic_encoding(source) {
+            return;
+        }
+
         let style = config.get_str("EnforcedStyle", "final_newline");
         let bytes = source.as_bytes();
         if bytes.is_empty() {
@@ -145,7 +192,13 @@ impl Cop for TrailingEmptyLines {
         // trailing whitespace is empty), which is the first byte after the
         // last non-whitespace content.
         let begin_pos = bytes.len() - ws_len;
-        let report_pos = if ws_len > 0 { begin_pos + 1 } else { begin_pos };
+        let report_pos = if blank_lines > 0 {
+            first_trailing_blank_line_offset(bytes, begin_pos)
+        } else if ws_len > 0 {
+            begin_pos + 1
+        } else {
+            begin_pos
+        };
         let (report_line, report_col) = source.offset_to_line_col(report_pos);
 
         let mut diag = self.diagnostic(source, report_line, report_col, message);
@@ -210,6 +263,42 @@ mod tests {
         TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].location.line, 2);
+        assert_eq!(diags[0].message, "Trailing blank line detected.");
+    }
+
+    #[test]
+    fn trailing_blank_lines_with_crlf_report_first_blank_line() {
+        let source = SourceFile::from_bytes("test.rb", b"x = 1\r\n\r\n\r\n".to_vec());
+        let mut diags = Vec::new();
+        TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].location.line, 2);
+        assert_eq!(diags[0].location.column, 0);
+        assert_eq!(diags[0].message, "2 trailing blank lines detected.");
+    }
+
+    #[test]
+    fn ignores_non_utf8_source_without_magic_encoding() {
+        let source =
+            SourceFile::from_bytes("test.rb", b"\n# localized to Espa\xf1ol thus:\n\n".to_vec());
+        let mut diags = Vec::new();
+        TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert!(
+            diags.is_empty(),
+            "non-UTF8 source without magic encoding should be ignored"
+        );
+    }
+
+    #[test]
+    fn non_utf8_source_with_magic_encoding_still_registers_offense() {
+        let source = SourceFile::from_bytes(
+            "test.rb",
+            b"\n# encoding: iso-8859-1\n# localized to Espa\xf1ol thus:\n\n".to_vec(),
+        );
+        let mut diags = Vec::new();
+        TrailingEmptyLines.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].location.line, 4);
         assert_eq!(diags[0].message, "Trailing blank line detected.");
     }
 
