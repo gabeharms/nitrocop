@@ -1,6 +1,6 @@
 # Synthetic Corpus
 
-Handcrafted Ruby files that exercise cops with zero activity in the 1,000-repo corpus oracle. These cops target niche patterns (Rails migrations, specific API usage, edge-case lint rules) that don't appear in real-world repos.
+Handcrafted Ruby files that exercise cops with zero or very low activity in the 1,000-repo corpus oracle. Covers cops with zero corpus data (synthetic-only validation) and cops with ≤5 total corpus occurrences (safety net against corpus churn). These cops target niche patterns (Rails migrations, specific API usage, edge-case lint rules) that rarely or never appear in real-world repos.
 
 ## Usage
 
@@ -32,7 +32,9 @@ bench/synthetic/
     db/schema.rb       # required by UniqueValidationWithoutIndex, UnusedIgnoredColumns
     lib/               # Lint, Style, Security cops
     spec/              # RSpec cops
+    spec/factories/    # FactoryBot cops
     test/              # ActionController test cops
+    config/            # Routes (Rails/MultipleRoutePaths)
 ```
 
 ## Cops Not Covered

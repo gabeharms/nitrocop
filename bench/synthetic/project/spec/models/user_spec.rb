@@ -55,4 +55,77 @@ RSpec.describe User, :aggregate_failures, :aggregate_failures do
       end
     end
   end
+
+  # EmptyMetadata
+  describe "with empty metadata", {} do
+    it "is redundant" do
+      expect(true).to be true
+    end
+  end
+
+  context "empty context metadata", {} do
+    it "is also redundant" do
+      expect(1).to eq(1)
+    end
+  end
+
+  it "empty it metadata", {} do
+    expect(nil).to be_nil
+  end
+
+  # IsExpectedSpecify
+  describe "#active?" do
+    subject { User.new }
+    specify { is_expected.to be_truthy }
+    specify { is_expected.to respond_to(:name) }
+    specify { is_expected.not_to be_nil }
+  end
+
+  # RedundantAround
+  describe "#save" do
+    around do |example|
+      example.run
+    end
+
+    around(&:run)
+
+    around do |ex|
+      ex.run
+    end
+
+    it "works" do
+      expect(true).to be true
+    end
+  end
+
+  # AroundBlock
+  describe "#delete" do
+    around do
+      do_something
+    end
+
+    around(:each) do
+      do_something
+    end
+
+    around do |test|
+      do_something
+    end
+
+    it "deletes" do
+      expect(true).to be true
+    end
+  end
+
+  # RepeatedIncludeExample
+  describe "#permissions" do
+    include_examples "a validatable"
+    include_examples "something else"
+    include_examples "a validatable"
+  end
+
+  describe "#roles" do
+    it_behaves_like "an auditable"
+    it_behaves_like "an auditable"
+  end
 end

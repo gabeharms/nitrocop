@@ -19,6 +19,11 @@ class User < ActiveRecord::Base
   # DelegateAllowBlank
   delegate :name, to: :organization, allow_blank: true
 
+  # RedundantAllowNil
+  validates :username, length: { is: 5 }, allow_nil: true, allow_blank: true
+  validates :bio, length: { maximum: 500 }, allow_nil: false, allow_blank: false
+  validates :phone, format: { with: /\d+/ }, allow_nil: false, allow_blank: true
+
   # UnusedIgnoredColumns
   self.ignored_columns = [:legacy_field]
 

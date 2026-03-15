@@ -54,6 +54,19 @@ class Utils
       puts "critical"
     end
   end
+  # RedundantSortBlock
+  def sort_items(items)
+    items.sort { |a, b| a <=> b }
+  end
+
+  def sort_numbers(nums)
+    nums.sort { |x, y| x <=> y }
+  end
+
+  def sort_values(vals)
+    vals.sort { _1 <=> _2 }
+  end
+
   # ReverseFind
   def find_last_match(items)
     items.reverse.find { |i| i.valid? }
