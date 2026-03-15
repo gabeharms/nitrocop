@@ -243,7 +243,6 @@ fn is_break_statement(node: &ruby_prism::Node<'_>) -> bool {
     false
 }
 
-
 struct ContinueKeywordFinder {
     found: bool,
 }
