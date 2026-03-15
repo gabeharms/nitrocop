@@ -26,6 +26,26 @@ use crate::parse::source::SourceFile;
 ///   closing paren of arguments, so `foo(Time.now).utc` correctly sees `)` (not
 ///   `.utc`) after `Time.now`. Edge cases with complex nesting may still diverge.
 ///
+/// ## Investigation (2026-03-15): FP=7, FN=59
+///
+/// Two fixes:
+///
+/// **1. Nested `Time.now`/`Time.local` inside outer call with safe chain (FP fix, 7 FPs):**
+/// `Time.to_mongo(Time.local(...)).zone` — the inner `Time.local(...)` was flagged because
+/// `enclosing_call_is_safe` only checked whether the immediate enclosing method was safe
+/// (e.g., `to_mongo` — not safe) but didn't scan the chain AFTER the outer call's closing
+/// `)`. Also, it only checked the first argument position (`(`), not later arguments
+/// (`Time.parse(x, Time.now).iso8601`). Fix: replaced direct `(` check with
+/// `find_enclosing_open_paren()` that scans backward through balanced parens to find the
+/// containing `(` regardless of argument position. Added `find_matching_close_paren()` to
+/// locate the outer call's closing `)`, then `chain_contains_tz_safe_method()` checks the
+/// chain continuing after it.
+///
+/// **2. `String#to_time` detection in strict mode (FN fix, 59 FNs):**
+/// RuboCop's `check_to_time` flags any `.to_time` call but only in strict mode (returns
+/// early if `style == :flexible`). Added detection: when method is `to_time` and
+/// `EnforcedStyle` is `strict`, emit "Do not use `String#to_time` without zone."
+///
 /// ## Investigation (2026-03-15): FP=17, FN=82
 ///
 /// Two fixes:
@@ -91,6 +111,27 @@ impl Cop for TimeZone {
         };
 
         let method = call.name().as_slice();
+
+        // String#to_time detection — only in strict mode.
+        // RuboCop's check_to_time: flags any `.to_time` call unless style is flexible.
+        // MSG_TO_TIME: "Do not use `String#to_time` without zone. Use `Time.zone.parse` instead."
+        if method == b"to_time" {
+            let style = config.get_str("EnforcedStyle", "flexible");
+            if style == "strict" {
+                let loc = call.message_loc().unwrap_or(call.location());
+                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                diagnostics.push(
+                    self.diagnostic(
+                        source,
+                        line,
+                        column,
+                        "Do not use `String#to_time` without zone. Use `Time.zone.parse` instead."
+                            .to_string(),
+                    ),
+                );
+            }
+            return;
+        }
 
         // Methods that are timezone-unsafe on Time (matches RuboCop's DANGEROUS_METHODS)
         // Note: utc, gm, mktime are NOT dangerous — they already produce UTC times
@@ -324,22 +365,20 @@ fn enclosing_call_is_safe(bytes: &[u8], start: usize) -> bool {
     if start == 0 {
         return false;
     }
-    let mut i = start.saturating_sub(1);
 
-    // Skip whitespace before Time.now
-    while i > 0 && bytes[i].is_ascii_whitespace() {
-        i -= 1;
-    }
+    // Find the opening `(` of the enclosing call by scanning backward.
+    // Time.now may be the first argument (preceded by `(`) or a later argument
+    // (preceded by `, ` or similar). We scan backward, tracking parenthesis depth,
+    // to find the matching opening `(`.
+    let paren_pos = match find_enclosing_open_paren(bytes, start) {
+        Some(p) => p,
+        None => return false,
+    };
 
-    // Must be directly preceded by `(` (argument position)
-    if bytes[i] != b'(' {
+    if paren_pos == 0 {
         return false;
     }
-    let paren_pos = i;
-    if i == 0 {
-        return false;
-    }
-    i -= 1;
+    let mut i = paren_pos - 1;
 
     // Skip whitespace before `(`
     while i > 0 && bytes[i].is_ascii_whitespace() {
@@ -380,7 +419,91 @@ fn enclosing_call_is_safe(bytes: &[u8], start: usize) -> bool {
         return true;
     }
 
+    // The enclosing function itself isn't safe, but check if the CHAIN AFTER
+    // the enclosing call's closing `)` contains a safe method.
+    // E.g., `Time.to_mongo(Time.local(...)).zone` — `to_mongo` is not safe,
+    // but `.zone` after `Time.to_mongo(...)` IS safe.
+    // Find the closing `)` that matches the `(` at paren_pos, then scan forward.
+    let closing_paren = find_matching_close_paren(bytes, paren_pos);
+    if let Some(close_pos) = closing_paren {
+        if chain_contains_tz_safe_method(bytes, close_pos + 1) {
+            return true;
+        }
+    }
+
     false
+}
+
+/// Find the opening `(` that encloses the position `pos` in the source.
+/// Scans backward, tracking nested parens/brackets/braces, to find the
+/// unmatched `(` that contains this position as an argument.
+fn find_enclosing_open_paren(bytes: &[u8], pos: usize) -> Option<usize> {
+    let mut i = pos.saturating_sub(1);
+    let mut depth = 0u32; // tracks nested closers we need to skip
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' if depth == 0 => return Some(i),
+            b'(' => depth -= 1,
+            b')' => depth += 1,
+            b'\'' | b'"' => {
+                // Skip backward past string literals
+                if i == 0 {
+                    return None;
+                }
+                let quote = bytes[i];
+                i -= 1;
+                while i > 0 && bytes[i] != quote {
+                    // Handle escaped quotes: if we see the quote preceded by \, keep going
+                    if bytes[i] == quote && i > 0 && bytes[i - 1] == b'\\' {
+                        i -= 1;
+                    }
+                    i -= 1;
+                }
+                // i is now at the opening quote
+            }
+            _ => {}
+        }
+        if i == 0 {
+            // Check the byte at position 0
+            if bytes[0] == b'(' && depth == 0 {
+                return Some(0);
+            }
+            return None;
+        }
+        i -= 1;
+    }
+    None
+}
+
+/// Find the position of the closing `)` that matches the opening `(` at `open_pos`.
+fn find_matching_close_paren(bytes: &[u8], open_pos: usize) -> Option<usize> {
+    let mut pos = open_pos + 1;
+    let mut depth = 1u32;
+    while pos < bytes.len() && depth > 0 {
+        match bytes[pos] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(pos);
+                }
+            }
+            b'\'' | b'"' => {
+                let quote = bytes[pos];
+                pos += 1;
+                while pos < bytes.len() && bytes[pos] != quote {
+                    if bytes[pos] == b'\\' {
+                        pos += 1;
+                    }
+                    pos += 1;
+                }
+            }
+            _ => {}
+        }
+        pos += 1;
+    }
+    None
 }
 
 /// Check if the parenthesized argument list starting at `paren_pos` contains
@@ -542,4 +665,30 @@ fn chain_contains_tz_safe_method(bytes: &[u8], start: usize) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(TimeZone, "cops/rails/time_zone");
+
+    #[test]
+    fn to_time_flagged_in_strict_mode() {
+        use crate::cop::CopConfig;
+        use std::collections::HashMap;
+        let mut options = HashMap::new();
+        options.insert(
+            "EnforcedStyle".to_string(),
+            serde_yml::Value::String("strict".to_string()),
+        );
+        let config = CopConfig {
+            options,
+            ..CopConfig::default()
+        };
+        let fixture = b"\"2005-02-27 23:50\".to_time\n                   ^^^^^^^ Rails/TimeZone: Do not use `String#to_time` without zone. Use `Time.zone.parse` instead.\n\"2005-02-27 23:50\".to_time(:utc)\n                   ^^^^^^^ Rails/TimeZone: Do not use `String#to_time` without zone. Use `Time.zone.parse` instead.\ndate_str.to_time\n         ^^^^^^^ Rails/TimeZone: Do not use `String#to_time` without zone. Use `Time.zone.parse` instead.\n";
+        crate::testutil::assert_cop_offenses_full_with_config(&TimeZone, fixture, config);
+    }
+
+    #[test]
+    fn to_time_allowed_in_flexible_mode() {
+        let source = br#""2005-02-27 23:50".to_time
+"2005-02-27 23:50".to_time(:utc)
+date_str.to_time
+"#;
+        crate::testutil::assert_cop_no_offenses_full(&TimeZone, source);
+    }
 }

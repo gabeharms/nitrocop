@@ -49,3 +49,11 @@ Time.at(Time.now, in: '-00:00')
 # .localtime WITH arguments is safe
 Time.now.localtime("+09:00")
 Time.at(time).localtime("+05:30")
+
+# Time.now/local nested inside outer call with safe chain after closing paren
+Time.to_mongo(Time.local(2009, 8, 15, 0, 0, 0)).zone
+Time.parse(date.to_s, Time.now).iso8601
+Time.at(Time.now + (60 * 60 * 24 * 7)).utc
+foo(Time.now).in_time_zone
+bar(Time.local(2023, 1, 1)).to_i
+wrap(Time.now).zone
