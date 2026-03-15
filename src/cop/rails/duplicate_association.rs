@@ -6,7 +6,24 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Rails/DuplicateAssociation
+///
+/// Detects two kinds of duplicate associations in ActiveRecord models:
+/// 1. Same association name used multiple times (any association type)
+/// 2. Same `class_name:` option used in multiple `has_many`/`has_one`/`has_and_belongs_to_many`
+///    associations that have no other options (excludes `belongs_to`)
+///
+/// Supports all four association methods: `has_many`, `has_one`, `belongs_to`,
+/// `has_and_belongs_to_many`. Accepts both symbol and string first arguments.
 pub struct DuplicateAssociation;
+
+/// Association method names we track.
+const ASSOCIATION_METHODS: &[&[u8]] = &[
+    b"has_many",
+    b"has_one",
+    b"belongs_to",
+    b"has_and_belongs_to_many",
+];
 
 /// Check if the parent class looks like an ActiveRecord base class.
 fn is_active_record_parent(parent: &[u8]) -> bool {
@@ -53,20 +70,15 @@ impl Cop for DuplicateAssociation {
 
         let calls = class_body_calls(&class);
 
-        // Map from association name -> first occurrence line
+        // --- Pass 1: Duplicate association names ---
         let mut seen: HashMap<Vec<u8>, usize> = HashMap::new();
 
         for call in &calls {
-            let is_assoc = is_dsl_call(call, b"has_many")
-                || is_dsl_call(call, b"has_one")
-                || is_dsl_call(call, b"belongs_to");
-
-            if !is_assoc {
+            if !is_association_call(call) {
                 continue;
             }
 
-            // Get the first symbol argument (association name)
-            let name = match extract_first_symbol_arg(call) {
+            let name = match extract_first_name_arg(call) {
                 Some(n) => n,
                 None => continue,
             };
@@ -88,14 +100,100 @@ impl Cop for DuplicateAssociation {
                 }
             }
         }
+
+        // --- Pass 2: Duplicate class_name (has_* only, not belongs_to) ---
+        // Only flag when the hash argument has exactly one pair: `class_name: 'X'`
+        // RuboCop flags ALL members of a duplicate group, not just subsequent ones.
+        let mut class_name_groups: HashMap<Vec<u8>, Vec<usize>> = HashMap::new();
+
+        for (idx, call) in calls.iter().enumerate() {
+            // Skip belongs_to — RuboCop excludes it from class_name duplicate check
+            if !is_association_call(call) || is_dsl_call(call, b"belongs_to") {
+                continue;
+            }
+
+            if let Some(cn_source) = extract_sole_class_name(source, call) {
+                class_name_groups.entry(cn_source).or_default().push(idx);
+            }
+        }
+
+        for (cn_source, indices) in &class_name_groups {
+            if indices.len() <= 1 {
+                continue;
+            }
+            let cn_str = String::from_utf8_lossy(cn_source);
+            for &idx in indices {
+                let call = &calls[idx];
+                let loc = call.location();
+                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                diagnostics.push(self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    format!(
+                        "Association `class_name: {cn_str}` is defined multiple times. Don't repeat associations."
+                    ),
+                ));
+            }
+        }
     }
 }
 
-fn extract_first_symbol_arg(call: &ruby_prism::CallNode<'_>) -> Option<Vec<u8>> {
+/// Check if the call is one of the four association methods.
+fn is_association_call(call: &ruby_prism::CallNode<'_>) -> bool {
+    ASSOCIATION_METHODS.iter().any(|m| is_dsl_call(call, m))
+}
+
+/// Extract the first argument (association name) as either a symbol or string.
+fn extract_first_name_arg(call: &ruby_prism::CallNode<'_>) -> Option<Vec<u8>> {
     let args = call.arguments()?;
     let first_arg = args.arguments().iter().next()?;
-    let sym = first_arg.as_symbol_node()?;
-    Some(sym.unescaped().to_vec())
+    if let Some(sym) = first_arg.as_symbol_node() {
+        return Some(sym.unescaped().to_vec());
+    }
+    if let Some(s) = first_arg.as_string_node() {
+        return Some(s.unescaped().to_vec());
+    }
+    None
+}
+
+/// If the call has exactly one extra argument beyond the name, and that argument
+/// is a keyword hash with exactly one pair `class_name: <value>`, return the
+/// source text of the value (e.g., `'Foo'`).
+///
+/// This matches RuboCop's `class_name` node pattern: `(hash (pair (sym :class_name) $_))`
+/// combined with the `arguments.one?` guard.
+fn extract_sole_class_name(
+    source: &SourceFile,
+    call: &ruby_prism::CallNode<'_>,
+) -> Option<Vec<u8>> {
+    let args = call.arguments()?;
+    let arg_list: Vec<_> = args.arguments().iter().collect();
+
+    // Must have exactly 2 arguments: name + hash (arguments.one? in RuboCop
+    // refers to the rest-args after the name capture, so 1 extra arg)
+    if arg_list.len() != 2 {
+        return None;
+    }
+
+    // The second arg should be a keyword hash with exactly one pair
+    let hash_node = arg_list[1].as_keyword_hash_node()?;
+    let elements: Vec<_> = hash_node.elements().iter().collect();
+    if elements.len() != 1 {
+        return None;
+    }
+
+    let assoc = elements[0].as_assoc_node()?;
+    let key_sym = assoc.key().as_symbol_node()?;
+    if key_sym.unescaped() != b"class_name" {
+        return None;
+    }
+
+    // Return the source text of the value node (e.g., 'Foo' or "Foo")
+    let value = assoc.value();
+    let start = value.location().start_offset();
+    let end = value.location().end_offset();
+    Some(source.as_bytes()[start..end].to_vec())
 }
 
 #[cfg(test)]
