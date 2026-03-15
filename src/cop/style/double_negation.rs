@@ -24,11 +24,33 @@ use crate::parse::source::SourceFile;
 /// that `!!` is on the last line of that sequence — otherwise it's not a return value
 /// even if it's inside a return-position conditional.
 ///
-/// Fix: Replaced byte-range approach with line-based checks matching RuboCop's
-/// `end_of_method_definition?` / `double_negative_condition_return_value?` logic.
-/// Tracks def body info (last child first/last line, hash/array type) and conditional
-/// ancestor last lines on stacks. Also tracks the last line of the enclosing
-/// statements node to handle the "begin_type?" parent check.
+/// Fix (round 3): Replaced byte-range approach with line-based checks matching
+/// RuboCop's `end_of_method_definition?` / `double_negative_condition_return_value?`
+/// logic. Tracks def body info (last child first/last line, hash/array type) and
+/// conditional ancestor last lines on stacks.
+///
+/// Corpus investigation (round 4): 28 FPs, 25 FNs.
+///
+/// FP root cause: The `stmts_last_line` check (for `begin_type?` parent) was applied
+/// unconditionally. In RuboCop, `find_parent_not_enumerable` walks up from the `!!`
+/// node skipping pair/hash/array; if the non-enumerable parent is NOT `begin_type?`
+/// (e.g., it's a send/if/assignment), the line check is skipped. Additionally, Prism
+/// always wraps branch bodies in StatementsNode even for single-statement branches,
+/// while Parser AST only creates `begin` wrappers for multi-statement bodies. This
+/// caused `!!` inside hash values, method call args, and assignments within
+/// conditional branches to be incorrectly flagged.
+///
+/// FN root cause: For single-statement method bodies, RuboCop calls
+/// `node.child_nodes.last` on the expression itself (not just the statements
+/// wrapper), which digs into the expression's last child. For a method call, this
+/// reaches the keyword hash args. nitrocop wasn't doing this dig-in, so `!!` inside
+/// hash args of a single-statement method call was treated as return position.
+///
+/// Fix (round 4): (1) Track `parent_is_statements` flag — only true when the
+/// StatementsNode has >1 statement (matching Parser's `begin` wrapper behavior).
+/// Reset to false when entering CallNode children. Only apply the `stmts_last_line`
+/// check when true. (2) Added `parser_last_child()` to dig into single-statement
+/// method bodies (CallNode → last arg), matching RuboCop's `child_nodes.last`.
 pub struct DoubleNegation;
 
 impl Cop for DoubleNegation {
@@ -54,6 +76,7 @@ impl Cop for DoubleNegation {
             def_info_stack: Vec::new(),
             conditional_last_line_stack: Vec::new(),
             statements_last_line_stack: Vec::new(),
+            parent_is_statements: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -85,6 +108,11 @@ struct DoubleNegationVisitor<'a> {
     /// Stack of enclosing statements-node last lines. Used for the
     /// `begin_type?` parent check in `double_negative_condition_return_value?`.
     statements_last_line_stack: Vec<usize>,
+    /// Whether the current node's non-enumerable parent (skipping pair/hash/
+    /// array/keyword_hash) is a StatementsNode. Only when true should the
+    /// stmts_last_line check apply — matching RuboCop's
+    /// `find_parent_not_enumerable` + `begin_type?` check.
+    parent_is_statements: bool,
 }
 
 impl DoubleNegationVisitor<'_> {
@@ -190,16 +218,21 @@ impl DoubleNegationVisitor<'_> {
         // double_negative_condition_return_value? logic
         if let Some(&cond_last_line) = self.conditional_last_line_stack.last() {
             // RuboCop: find_parent_not_enumerable → if parent.begin_type?
-            // In our case, statements_last_line_stack tracks the enclosing StatementsNode.
-            if let Some(&stmts_last_line) = self.statements_last_line_stack.last() {
-                // The "parent" of the !! node in RuboCop terms:
-                // If the parent is a begin node (statement sequence), check if !! is
-                // on the last line of that sequence. This prevents treating `!!foo`
-                // followed by `bar` as a return value even if inside a return-position
-                // conditional.
-                if stmts_last_line != node_line {
-                    // !! is not on the last line of its enclosing statements → not a return
-                    return false;
+            // Only apply the statements line check when the !! node's
+            // non-enumerable parent IS a StatementsNode (begin_type? in
+            // Parser AST). When !! is inside another expression (method call,
+            // assignment, hash value, etc.), skip this check.
+            if self.parent_is_statements {
+                if let Some(&stmts_last_line) = self.statements_last_line_stack.last() {
+                    // The "parent" of the !! node in RuboCop terms:
+                    // If the parent is a begin node (statement sequence), check if !! is
+                    // on the last line of that sequence. This prevents treating `!!foo`
+                    // followed by `bar` as a return value even if inside a return-position
+                    // conditional.
+                    if stmts_last_line != node_line {
+                        // !! is not on the last line of its enclosing statements → not a return
+                        return false;
+                    }
                 }
             }
             // Check if the conditional covers the def body's last child
@@ -246,12 +279,12 @@ impl DoubleNegationVisitor<'_> {
 
         // In RuboCop's Parser AST, a single-expression def body doesn't get a
         // `begin` wrapper, so `find_last_child` calls `child_nodes.last` directly
-        // on the expression (hash → last pair, array → last element). With multiple
-        // statements there IS a `begin` wrapper and `child_nodes.last` returns the
-        // last statement without digging in.
+        // on the expression (hash → last pair, array → last element, send → last
+        // arg). With multiple statements there IS a `begin` wrapper and
+        // `child_nodes.last` returns the last statement without digging in.
         //
         // Prism always wraps in StatementsNode. To match RuboCop, when there's
-        // exactly one statement that's a hash or array, dig into it.
+        // exactly one statement, dig into its last child.
         if body.len() == 1 {
             if let Some(hash) = last.as_hash_node() {
                 let elements: Vec<_> = hash.elements().iter().collect();
@@ -271,9 +304,59 @@ impl DoubleNegationVisitor<'_> {
                 }
                 return Some(self.node_to_def_body_info(last));
             }
+            // For other single-statement bodies (method calls, assignments, etc.),
+            // dig into the "last child" to match Parser AST's child_nodes.last.
+            // For a CallNode, the last child is the last argument (or block body).
+            // If that last child is a hash/keyword_hash, it causes the offense.
+            if let Some(last_child) = self.parser_last_child(last) {
+                return Some(self.node_to_def_body_info(&last_child));
+            }
         }
 
         Some(self.node_to_def_body_info(last))
+    }
+
+    /// Approximate Parser AST's `node.child_nodes.last` for a given Prism node.
+    /// Returns the "last child" in Parser AST terms, which for call nodes is
+    /// the last argument (or block body), for assignments is the value, etc.
+    fn parser_last_child<'n>(&self, node: &ruby_prism::Node<'n>) -> Option<ruby_prism::Node<'n>> {
+        // CallNode: last argument (keyword hash or positional)
+        if let Some(call) = node.as_call_node() {
+            // In Parser AST, blocks wrap the send: (block (send ...) (args) body).
+            // child_nodes.last of a block is the body. But for
+            // find_last_child purposes, we want the send's last arg because
+            // RuboCop calls find_last_child(def_node.body) where def_node.body
+            // is the send (for non-block) or the block (for block calls).
+            // For block calls in Parser: child_nodes.last = body of block.
+            // For regular calls: child_nodes.last = last argument.
+            if call.block().is_some() {
+                // Block call: in Parser AST, the block node wraps the send.
+                // child_nodes.last of the block = block body.
+                // For our purposes, treat block body as the last child.
+                // But RuboCop only gets here if the block IS the body expression,
+                // and child_nodes.last of a block = its body.
+                // We can just return None to fall through to the default behavior.
+                return None;
+            }
+            if let Some(args) = call.arguments() {
+                let arg_list: Vec<_> = args.arguments().iter().collect();
+                return arg_list.into_iter().last();
+            }
+            // No arguments: last child is receiver (if any)
+            return call.receiver();
+        }
+
+        // LocalVariableWriteNode: value is the last child
+        if let Some(lvar) = node.as_local_variable_write_node() {
+            return Some(lvar.value());
+        }
+
+        // InstanceVariableWriteNode
+        if let Some(ivar) = node.as_instance_variable_write_node() {
+            return Some(ivar.value());
+        }
+
+        None
     }
 
     fn node_to_def_body_info(&self, node: &ruby_prism::Node<'_>) -> DefBodyInfo {
@@ -312,18 +395,26 @@ impl DoubleNegationVisitor<'_> {
         // Save and clear conditional/statements stacks — these don't cross def boundaries
         let saved_cond = std::mem::take(&mut self.conditional_last_line_stack);
         let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
+        let saved_parent_is_statements = self.parent_is_statements;
+        self.parent_is_statements = false;
 
         visit_fn(self);
 
         self.def_info_stack.truncate(prev_def_len);
         self.conditional_last_line_stack = saved_cond;
         self.statements_last_line_stack = saved_stmts;
+        self.parent_is_statements = saved_parent_is_statements;
     }
 }
 
 impl<'pr> Visit<'pr> for DoubleNegationVisitor<'_> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         self.check_double_negation(node);
+
+        // After checking this node, clear parent_is_statements for children.
+        // Children of a call node are not direct children of the StatementsNode.
+        let saved_parent = self.parent_is_statements;
+        self.parent_is_statements = false;
 
         // Check if this is a define_method or define_singleton_method call with a block
         if let Some(block) = node.block() {
@@ -336,12 +427,14 @@ impl<'pr> Visit<'pr> for DoubleNegationVisitor<'_> {
                     self.with_def_body(body, |this| {
                         ruby_prism::visit_call_node(this, node);
                     });
+                    self.parent_is_statements = saved_parent;
                     return;
                 }
             }
         }
 
         ruby_prism::visit_call_node(self, node);
+        self.parent_is_statements = saved_parent;
     }
 
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
@@ -415,7 +508,17 @@ impl<'pr> Visit<'pr> for DoubleNegationVisitor<'_> {
             let last_line = self
                 .last_line_of_node(node.location().start_offset(), node.location().end_offset());
             self.statements_last_line_stack.push(last_line);
+
+            // In Parser AST, only multi-statement bodies get a `begin` wrapper.
+            // Single-statement bodies are unwrapped. Prism always wraps in
+            // StatementsNode. To match RuboCop's `begin_type?` check, only set
+            // parent_is_statements when there are multiple statements.
+            let stmt_count = node.body().iter().count();
+            let saved = self.parent_is_statements;
+            self.parent_is_statements = stmt_count > 1;
             ruby_prism::visit_statements_node(self, node);
+            self.parent_is_statements = saved;
+
             self.statements_last_line_stack.pop();
         } else {
             ruby_prism::visit_statements_node(self, node);

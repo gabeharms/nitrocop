@@ -86,12 +86,6 @@ def invite(username, invited_by, guardian)
       !!call_two(invited_by, guardian)
       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/DoubleNegation: Avoid the use of double negation (`!!`).
     end
-  elsif condition_c
-    !!generate_record(
-    ^^^^^^^^^^^^^^^^^^ Style/DoubleNegation: Avoid the use of double negation (`!!`).
-      invited_by,
-      topic: self,
-    )
   end
 end
 
@@ -99,4 +93,24 @@ end
 items.select do |item|
   !!item.active
   ^^^^^^^^^^^^^ Style/DoubleNegation: Avoid the use of double negation (`!!`).
+end
+
+# !! in hash value in method call that is single-statement method body
+# RuboCop digs into child_nodes.last of the call, finding the keyword hash
+def augmented_section(title:, expanded: true, &block)
+  render(
+    partial: "/augmented/section",
+    locals: { title:, expanded: !!expanded, block: }
+                                ^^^^^^^^^^^ Style/DoubleNegation: Avoid the use of double negation (`!!`).
+  )
+end
+
+# !! in keyword args of method call as single-statement body
+def create_migration
+  FileStore.new(
+    dry_run: !!ENV["DRY_RUN"],
+             ^^^^^^^^^^^^^^^^ Style/DoubleNegation: Avoid the use of double negation (`!!`).
+    migrate: !!ENV["MIGRATE"],
+             ^^^^^^^^^^^^^^^^ Style/DoubleNegation: Avoid the use of double negation (`!!`).
+  )
 end

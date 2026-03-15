@@ -214,3 +214,97 @@ def is_block?(line)
   !!line.match(/^pattern_one/) \
   || !!line.match(/^pattern_two/)
 end
+
+# !! in elsif branch at return position (single-stmt elsif body, conditional
+# covers def body's last child)
+def invite(username, invited_by, guardian)
+  if condition_a
+    call_one(invited_by, guardian)
+  elsif condition_c
+    !!generate_record(
+      invited_by,
+      topic: self,
+    )
+  end
+end
+
+# !! inside hash value in if branch where if is last statement
+def configuration_for_custom_finder(finder_name)
+  if finder_name.to_s.match(/^find_(all_)?by_(.*?)(!)?$/)
+    {
+      all: !!$1,
+      bang: !!$3,
+      fields: $2.split('_and_')
+    }
+  end
+end
+
+# !! in assignment inside block inside conditional at last statement
+def root_dir
+  existing_paths = root_paths.select { |path| File.exist?(path) }
+  if existing_paths.size > 0
+    MultiplexedDir.new(existing_paths.map do |path|
+      dir = FileSystemEntry.new(name, parent, path)
+      dir.write_pretty_json = !!write_pretty_json
+      dir
+    end)
+  end
+end
+
+# !! inside hash value in method call args inside respond_to block inside conditional
+def show
+  if current_user.can?(:show, resource)
+    respond_to do |format|
+      format.html do
+        render Views::Show.new(
+          record: @record, export: !!params[:export], bot: browser.bot?
+        )
+      end
+    end
+  else
+    respond_with_error(403)
+  end
+end
+
+# !! in hash value in method call inside map block at last statement
+def run_actions
+  items.map do |item|
+    skipped = seen_items[item.name]
+    { type: "recipe", name: item.name, skipped: !!skipped }
+  end
+end
+
+# !! inside boolean expression at last statement inside if branch
+def filter_data(data, transient)
+  if (!!data[:transient]) == transient
+    defs << {
+      name: data[:name],
+      automount: !!data[:automount]
+    }
+  end
+end
+
+# !! in method call keyword arg inside conditional branch (multi-line call)
+def start_server
+  if @extract_enabled && @extract_tag_key
+    server_create(:in_tcp, @port, bind: @bind, resolve_name: !!@source_hostname_key) do |data, conn|
+      process(data)
+    end
+  else
+    server_create(:in_tcp_batch, @port, bind: @bind, resolve_name: !!@source_hostname_key) do |data, conn|
+      process(data)
+    end
+  end
+end
+
+# !! in assignment expression at last statement inside else branch
+def process_result
+  if block_given?
+    result = yield
+    actions.each { |action| results[action] = result }
+    !!result
+  else
+    actions.compact.each { |action| results[action] = object.send(action) }
+    results.values.all?
+  end
+end
