@@ -1,5 +1,16 @@
-foo.each { |item| puts item }
-bar.map { |x| x.to_s }
-[1, 2].select { |n| n > 0 }
-foo.each { |element| process(element) }
-bar.map(&:to_s)
+# Single-line implicit `it` block is OK with allow_single_line
+block { do_something(it) }
+items.map { it.to_s }
+records.select { it > 0 }
+# Named block parameters are fine
+block { |arg| do_something(arg) }
+items.each { |item| puts item }
+# Named `it` parameter is fine (not the same as implicit `it`)
+foo.each { |it| puts it }
+# Multiple numbered parameters are fine (not single _1)
+block { do_something(_1, _2) }
+# Single _2 is fine (not _1)
+block { do_something(_2) }
+# Multi-line method chain with single-line it block is fine
+collection.each
+          .foo { puts it }
