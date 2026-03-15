@@ -341,6 +341,43 @@ impl<'pr> Visit<'pr> for VarRefFinder {
         }
     }
 
+    // Operator-assign (x += 1, x -= 1, etc.) implicitly reads the variable
+    fn visit_local_variable_operator_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
+    ) {
+        let name = node.name().as_slice();
+        if !self.shadowed.iter().any(|s| s.as_slice() == name) {
+            self.names.push(name.to_vec());
+        }
+        // Also visit the value expression (RHS) for any variable reads
+        self.visit(&node.value());
+    }
+
+    // Or-assign (x ||= val) implicitly reads the variable
+    fn visit_local_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableOrWriteNode<'pr>,
+    ) {
+        let name = node.name().as_slice();
+        if !self.shadowed.iter().any(|s| s.as_slice() == name) {
+            self.names.push(name.to_vec());
+        }
+        self.visit(&node.value());
+    }
+
+    // And-assign (x &&= val) implicitly reads the variable
+    fn visit_local_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
+    ) {
+        let name = node.name().as_slice();
+        if !self.shadowed.iter().any(|s| s.as_slice() == name) {
+            self.names.push(name.to_vec());
+        }
+        self.visit(&node.value());
+    }
+
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         // Detect bare `binding` calls (no arguments, no receiver)
         if node.receiver().is_none() && node.name().as_slice() == b"binding" {

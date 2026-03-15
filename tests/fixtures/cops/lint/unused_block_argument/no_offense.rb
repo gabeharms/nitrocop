@@ -55,3 +55,19 @@ items.each do |item|
     [item, result]
   end
 end
+
+# Operator-assign counts as a read (x += 1 means x = x + 1)
+counters.each do |key, value|
+  value += 1
+  puts key
+end
+
+# Or-assign counts as a read (x ||= val means x = x || val)
+items.each do |item|
+  item ||= default_item
+end
+
+# And-assign counts as a read (x &&= val means x = x && val)
+records.each do |record|
+  record &&= nil
+end
