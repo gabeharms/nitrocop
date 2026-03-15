@@ -782,17 +782,87 @@ fn descendants_max_end_line(source: &SourceFile, node: &ruby_prism::Node<'_>) ->
 }
 
 fn is_single_heredoc_expression(source: &SourceFile, body: &ruby_prism::Node<'_>) -> bool {
-    if is_heredoc_node(source, body) {
-        return true;
+    // Find the single heredoc node in the body (either directly or unwrapped
+    // from a StatementsNode).
+    let node = if is_heredoc_node(source, body) {
+        body
+    } else if let Some(stmts) = body.as_statements_node() {
+        let mut iter = stmts.body().iter();
+        match (iter.next(), iter.next()) {
+            (Some(first), None) if is_heredoc_node(source, &first) => {
+                // A bare heredoc body counts as 1 line in RuboCop — unless the
+                // heredoc contains nested heredocs in its interpolation blocks.
+                // In that case, RuboCop's `body_has_heredoc?` finds the nested
+                // heredoc descendants and switches to
+                // `source_from_node_with_heredoc` which counts actual lines.
+                return !has_nested_heredoc_in_node(source, &first);
+            }
+            _ => return false,
+        }
+    } else {
+        return false;
+    };
+
+    !has_nested_heredoc_in_node(source, node)
+}
+
+/// Check if an interpolated heredoc node contains nested heredoc nodes
+/// in its interpolation parts.
+fn has_nested_heredoc_in_node(source: &SourceFile, node: &ruby_prism::Node<'_>) -> bool {
+    use ruby_prism::Visit;
+
+    let Some(interp) = node.as_interpolated_string_node() else {
+        // Non-interpolated heredocs can't contain nested heredocs.
+        return false;
+    };
+
+    struct NestedHeredocDetector<'a> {
+        source: &'a SourceFile,
+        found: bool,
     }
 
-    if let Some(stmts) = body.as_statements_node() {
-        let mut iter = stmts.body().iter();
-        if let Some(first) = iter.next() {
-            return iter.next().is_none() && is_heredoc_node(source, &first);
+    impl<'pr> Visit<'pr> for NestedHeredocDetector<'_> {
+        fn visit_string_node(&mut self, node: &ruby_prism::StringNode<'pr>) {
+            if !self.found {
+                if let Some(o) = node.opening_loc() {
+                    let bytes = &self.source.as_bytes()[o.start_offset()..o.end_offset()];
+                    if bytes.starts_with(b"<<") {
+                        self.found = true;
+                    }
+                }
+            }
+        }
+
+        fn visit_interpolated_string_node(
+            &mut self,
+            node: &ruby_prism::InterpolatedStringNode<'pr>,
+        ) {
+            if !self.found {
+                if let Some(o) = node.opening_loc() {
+                    let bytes = &self.source.as_bytes()[o.start_offset()..o.end_offset()];
+                    if bytes.starts_with(b"<<") {
+                        self.found = true;
+                        return;
+                    }
+                }
+            }
+            if !self.found {
+                ruby_prism::visit_interpolated_string_node(self, node);
+            }
         }
     }
 
+    let mut detector = NestedHeredocDetector {
+        source,
+        found: false,
+    };
+    // Visit only the parts (children), not the outer heredoc node itself.
+    for part in interp.parts().iter() {
+        detector.visit(&part);
+        if detector.found {
+            return true;
+        }
+    }
     false
 }
 
@@ -829,6 +899,25 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Method with heredoc in block should not fire (10 body lines per RuboCop)"
+        );
+    }
+
+    #[test]
+    fn heredoc_with_nested_heredocs_counts_lines() {
+        use crate::testutil::run_cop_full;
+        // When a bare heredoc body contains nested heredocs in interpolation,
+        // RuboCop uses source_from_node_with_heredoc and counts actual lines
+        // instead of treating the whole thing as 1 line.
+        let source = b"def wrapper_script\n  <<~OUTER\n    start\n#{if true\n    <<~INNER1\n      line1\n      line2\n      line3\n    INNER1\n  else\n    <<~INNER2\n      alt1\n      alt2\n      alt3\n    INNER2\n  end}\n    middle\n#{if true\n    <<~INNER3\n      more1\n      more2\n      more3\n    INNER3\n  else\n    <<~INNER4\n      other1\n      other2\n      other3\n    INNER4\n  end}\n    end_content\n  OUTER\nend\n";
+        let diags = run_cop_full(&MethodLength, source);
+        assert!(
+            !diags.is_empty(),
+            "Method with heredoc containing nested heredocs should fire (29 lines per RuboCop)"
+        );
+        assert!(
+            diags[0].message.contains("[29/10]"),
+            "Expected [29/10] but got: {}",
+            diags[0].message
         );
     }
 
