@@ -25,3 +25,22 @@ class Person < ApplicationRecord
            lambda { order(:ordering) },
            inverse_of: :person
 end
+
+# Dynamic options (double splat) -- should not flag because **options may contain inverse_of
+class Item < ApplicationRecord
+  def define_association(**options)
+    has_many :entries, conditions: -> { where(active: true) }, **options
+  end
+end
+
+# with_options providing inverse_of
+class Article < ApplicationRecord
+  with_options inverse_of: false do
+    has_one :header, -> { where(active: true) }
+  end
+end
+
+# foreign_key: nil does not require inverse_of
+class Record < ApplicationRecord
+  has_many :items, foreign_key: nil
+end

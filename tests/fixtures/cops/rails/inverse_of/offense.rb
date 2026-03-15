@@ -35,3 +35,9 @@ module Concern
     ^^^^^^^^ Rails/InverseOf: Specify an `:inverse_of` option.
   end
 end
+
+# inverse_of: nil should flag with a different message
+class Account < ApplicationRecord
+  has_many :entries, -> { order(:date) }, inverse_of: nil
+  ^^^^^^^^ Rails/InverseOf: You specified `inverse_of: nil`, you probably meant to use `inverse_of: false`.
+end
