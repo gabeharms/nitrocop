@@ -3,33 +3,28 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Checks for uses of if/unless modifiers with multiple-line bodies.
+///
+/// ## Investigation findings (2026-03-15)
+///
+/// **Root cause of FNs (12):** The previous implementation used a
+/// `lines_joined_by_backslash` function to exempt backslash-continued lines.
+/// This was too broad — it exempted cases where the body itself spans multiple
+/// physical lines joined by `\` (e.g., `raise "msg" \ "more" if cond`).
+/// RuboCop flags these because `node.body.multiline?` checks if the body AST
+/// node's first_line != last_line, regardless of `\` continuation.
+///
+/// **Root cause of FPs (44):** Primarily config-related (project-level
+/// `.rubocop_todo.yml` excludes or file-level disables), not cop logic bugs.
+/// RuboCop does flag patterns like `begin...end if cond`, `def...end if cond`,
+/// and `block do...end if cond`.
+///
+/// **Fix:** Replaced the `body_start_line < if_kw_line` + backslash exemption
+/// approach with a direct check: `body_start_line != body_end_line` (whether
+/// the body AST node itself spans multiple lines). This matches RuboCop's
+/// `node.body.multiline?` semantics and eliminates the need for backslash
+/// continuation handling entirely.
 pub struct MultilineIfModifier;
-
-/// Check if all physical lines from `from_line` to `to_line - 1` (1-indexed)
-/// end with a backslash continuation character. If so, the expression is a
-/// single logical line and should not be considered multiline.
-fn lines_joined_by_backslash(source: &SourceFile, from_line: usize, to_line: usize) -> bool {
-    if from_line >= to_line {
-        return false;
-    }
-    let lines: Vec<&[u8]> = source.lines().collect();
-    for line_num in from_line..to_line {
-        // line_num is 1-indexed, lines vec is 0-indexed
-        let idx = line_num - 1;
-        if idx >= lines.len() {
-            return false;
-        }
-        let line = lines[idx];
-        let trimmed = line
-            .iter()
-            .rposition(|&b| b != b' ' && b != b'\t' && b != b'\r');
-        match trimmed {
-            Some(pos) if line[pos] == b'\\' => {}
-            _ => return false,
-        }
-    }
-    true
-}
 
 impl Cop for MultilineIfModifier {
     fn name(&self) -> &'static str {
@@ -72,18 +67,16 @@ impl Cop for MultilineIfModifier {
                     return;
                 }
 
-                let body_start_line = source
-                    .offset_to_line_col(body_nodes[0].location().start_offset())
+                let first = &body_nodes[0];
+                let last = &body_nodes[body_nodes.len() - 1];
+                let body_start_line = source.offset_to_line_col(first.location().start_offset()).0;
+                let body_end_line = source
+                    .offset_to_line_col(last.location().end_offset().saturating_sub(1))
                     .0;
-                let if_kw_line = source.offset_to_line_col(if_kw_loc.start_offset()).0;
 
-                if body_start_line < if_kw_line {
-                    // Skip if lines are joined by backslash continuation (single logical line)
-                    if lines_joined_by_backslash(source, body_start_line, if_kw_line) {
-                        return;
-                    }
-                    // Body starts before the `if` keyword - it's multiline
-                    let body_start = body_nodes[0].location().start_offset();
+                // Body is multiline if it spans more than one line
+                if body_start_line < body_end_line {
+                    let body_start = first.location().start_offset();
                     let (line, column) = source.offset_to_line_col(body_start);
                     diagnostics.push(self.diagnostic(
                         source,
@@ -117,17 +110,16 @@ impl Cop for MultilineIfModifier {
                     return;
                 }
 
-                let body_start_line = source
-                    .offset_to_line_col(body_nodes[0].location().start_offset())
+                let first = &body_nodes[0];
+                let last = &body_nodes[body_nodes.len() - 1];
+                let body_start_line = source.offset_to_line_col(first.location().start_offset()).0;
+                let body_end_line = source
+                    .offset_to_line_col(last.location().end_offset().saturating_sub(1))
                     .0;
-                let kw_line = source.offset_to_line_col(kw_loc.start_offset()).0;
 
-                if body_start_line < kw_line {
-                    // Skip if lines are joined by backslash continuation (single logical line)
-                    if lines_joined_by_backslash(source, body_start_line, kw_line) {
-                        return;
-                    }
-                    let body_start = body_nodes[0].location().start_offset();
+                // Body is multiline if it spans more than one line
+                if body_start_line < body_end_line {
+                    let body_start = first.location().start_offset();
                     let (line, column) = source.offset_to_line_col(body_start);
                     diagnostics.push(self.diagnostic(
                         source,
