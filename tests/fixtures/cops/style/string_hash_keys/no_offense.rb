@@ -38,3 +38,9 @@ EXAMPLE
 x = { <<~KEY => 'value' }
   multiline content
 KEY
+
+# String keys with invalid encoding (RuboCop skips via valid_encoding? check)
+h = { "\x80" => 1 }
+h = { "\xC0" => 2 }
+h = { "\xFF" => 3 }
+h = { "\251" => 4 }

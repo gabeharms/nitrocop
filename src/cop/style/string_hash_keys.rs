@@ -41,6 +41,19 @@ use ruby_prism::Visit;
 /// interpolation are `StringNode` with `opening_loc` starting with `<<`.
 ///
 /// Fix: Skip `StringNode` keys whose `opening_loc` starts with `<<`.
+///
+/// ## Investigation findings (2026-03-15, round 3)
+///
+/// Root cause of remaining 60 FPs: String keys with invalid UTF-8 encoding.
+/// RuboCop checks `key_content.valid_encoding?` and skips strings whose
+/// unescaped content is not valid in the file's encoding (typically UTF-8).
+/// Examples: `"\x80"`, `"\xC0"`, `"\xFF"`, `"\251"` — these escape sequences
+/// produce single bytes that are not valid UTF-8. Found in rails
+/// (multibyte_chars_test.rb, inflector_test_cases.rb), puppet (pson_spec.rb,
+/// evaluating_parser_spec.rb), rack, jruby, and others.
+///
+/// Fix: Check `std::str::from_utf8(str_node.unescaped())` and skip keys
+/// where the unescaped content is not valid UTF-8.
 pub struct StringHashKeys;
 
 impl Cop for StringHashKeys {
@@ -180,6 +193,13 @@ impl StringHashKeysVisitor<'_> {
                         .opening_loc()
                         .is_some_and(|o| o.as_slice().starts_with(b"<<"))
                     {
+                        continue;
+                    }
+                    // Skip strings with invalid encoding — RuboCop checks
+                    // `key_content.valid_encoding?` and skips them. Strings with
+                    // escape sequences like \x80, \xC0, \251 produce bytes that
+                    // are not valid UTF-8.
+                    if std::str::from_utf8(str_node.unescaped()).is_err() {
                         continue;
                     }
                     let loc = key.location();
