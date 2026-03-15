@@ -25,8 +25,20 @@ const PUBLIC_MODIFIERS: &[&[u8]] = &[b"module_function ", b"ruby2_keywords "];
 /// Fix: Added `has_retroactive_visibility()` which scans lines after the def for
 /// `private :sym` / `protected :sym` / `private "str"` patterns with matching method name.
 ///
-/// Remaining FN gap (453): likely from singleton methods (`def self.foo`, `def obj.bar`)
-/// which RuboCop handles via `on_defs` but nitrocop only handles `DefNode` (not singleton defs).
+/// **Investigation (2026-03-15):** 918 FPs, 508 FNs at 99.7% match rate.
+/// Root cause of remaining FPs: three patterns in `is_private_or_protected`:
+/// 1. Nested class/module at same indent as `private`/`def` incorrectly reset
+///    `in_private` state. E.g., `private; class Inner; end; def method` — the
+///    `class Inner` is a peer in the same scope, not a scope boundary. Fix: changed
+///    class/module reset from `indent <= def_col` to `indent < def_col` (strictly less).
+/// 2. Trailing whitespace on `private` line (e.g., `private \n`) was not matched by
+///    bare visibility keyword patterns. Fix: strip trailing whitespace from trimmed lines.
+/// 3. `private(def foo)` and `protected(def foo)` — parenthesized form not recognized
+///    as inline visibility modifier. Fix: added `private(` / `protected(` patterns to
+///    both `is_private_or_protected` and `has_unknown_inline_prefix`.
+///
+/// Remaining FN gap (508): singleton methods (`def self.foo`, `def obj.bar`) not handled.
+/// RuboCop uses `on_defs` (aliased from `on_def`), nitrocop only handles `DefNode`.
 pub struct DocumentationMethod;
 
 /// Detect if the line containing the def has a modifier prefix before the `def` keyword.
@@ -141,8 +153,11 @@ fn has_unknown_inline_prefix(source: &SourceFile, def_offset: usize) -> bool {
 
     // Known visibility keywords that is_private_or_protected already handles
     if trimmed.starts_with(b"private ")
+        || trimmed.starts_with(b"private(")
         || trimmed.starts_with(b"protected ")
+        || trimmed.starts_with(b"protected(")
         || trimmed.starts_with(b"public ")
+        || trimmed.starts_with(b"public(")
     {
         return false;
     }

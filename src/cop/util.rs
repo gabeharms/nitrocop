@@ -1413,7 +1413,9 @@ pub fn is_private_or_protected(source: &SourceFile, def_offset: usize) -> bool {
         .skip_while(|&b| b == b' ' || b == b'\t')
         .collect::<Vec<u8>>();
     if trimmed.starts_with(b"private ")
+        || trimmed.starts_with(b"private(")
         || trimmed.starts_with(b"protected ")
+        || trimmed.starts_with(b"protected(")
         || trimmed.starts_with(b"private_class_method ")
     {
         return true;
@@ -1430,20 +1432,26 @@ pub fn is_private_or_protected(source: &SourceFile, def_offset: usize) -> bool {
             .iter()
             .take_while(|&&b| b == b' ' || b == b'\t')
             .count();
-        let trimmed: Vec<u8> = line[indent..].to_vec();
+        let raw_trimmed = &line[indent..];
+        // Strip trailing whitespace (spaces, tabs, carriage returns) so that
+        // `private ` (with trailing space) is correctly matched as a bare
+        // visibility keyword.
+        let end_pos = raw_trimmed
+            .iter()
+            .rposition(|&b| b != b' ' && b != b'\t' && b != b'\r')
+            .map_or(0, |p| p + 1);
+        let trimmed: &[u8] = &raw_trimmed[..end_pos];
 
-        // Scope boundary: class/module at same or lower indent resets private state.
-        // `end` only resets at STRICTLY lower indent — method `end` keywords share
-        // the same indent as `private`/`def` and must not reset the state.
-        if indent <= def_col && (trimmed.starts_with(b"class ") || trimmed.starts_with(b"module "))
-        {
+        // Scope boundary: class/module at STRICTLY lower indent resets private state.
+        // A nested class/module at the same indent is a peer within the current scope
+        // and does NOT reset visibility — e.g., `private` followed by `class Inner` then
+        // `def method` at the same indent level keeps the method private.
+        // `end` also resets only at strictly lower indent.
+        if indent < def_col && (trimmed.starts_with(b"class ") || trimmed.starts_with(b"module ")) {
             in_private = false;
         }
         if indent < def_col
-            && (trimmed == b"end"
-                || trimmed.starts_with(b"end ")
-                || trimmed.starts_with(b"end\n")
-                || trimmed.starts_with(b"end\r"))
+            && (trimmed == b"end" || trimmed.starts_with(b"end ") || trimmed.starts_with(b"end;"))
         {
             in_private = false;
         }
@@ -1452,30 +1460,15 @@ pub fn is_private_or_protected(source: &SourceFile, def_offset: usize) -> bool {
         // within the same scope. Ruby allows `private` at a lower indent than
         // the methods it affects (e.g., `private` + indented `def`). Scope
         // boundaries (class/module/end) already reset `in_private` above.
+        // Note: trailing whitespace is already stripped from `trimmed`.
         if indent <= def_col {
             if trimmed == b"private"
-                || trimmed.starts_with(b"private\n")
-                || trimmed.starts_with(b"private\r")
                 || trimmed.starts_with(b"private #")
-                || (trimmed.starts_with(b"private ")
-                    && trimmed[b"private ".len()..]
-                        .iter()
-                        .all(|&b| b == b' ' || b == b'\t'))
                 || trimmed == b"protected"
-                || trimmed.starts_with(b"protected\n")
-                || trimmed.starts_with(b"protected\r")
                 || trimmed.starts_with(b"protected #")
-                || (trimmed.starts_with(b"protected ")
-                    && trimmed[b"protected ".len()..]
-                        .iter()
-                        .all(|&b| b == b' ' || b == b'\t'))
             {
                 in_private = true;
-            } else if trimmed == b"public"
-                || trimmed.starts_with(b"public\n")
-                || trimmed.starts_with(b"public\r")
-                || trimmed.starts_with(b"public #")
-            {
+            } else if trimmed == b"public" || trimmed.starts_with(b"public #") {
                 in_private = false;
             }
         }

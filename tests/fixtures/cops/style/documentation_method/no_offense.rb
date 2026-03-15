@@ -137,3 +137,50 @@ class PublicAfterPrivate
     42
   end
 end
+
+# Nested class between private and def should not reset visibility
+class NestedClassAfterPrivate
+  private
+
+  class Inner
+    # Documented inner method
+    def inner_method
+      42
+    end
+  end
+
+  def still_private_method
+    42
+  end
+end
+
+# Nested module between private and def should not reset visibility
+class NestedModuleAfterPrivate
+  private
+
+  module Helper
+  end
+
+  def also_private_method
+    42
+  end
+end
+
+# Private with trailing whitespace on the private line
+class TrailingWhitespacePrivate
+  private
+
+  def trailing_ws_method
+    42
+  end
+end
+
+# private(def ...) makes the method private
+private(def paren_private_method
+  42
+end)
+
+# protected(def ...) makes the method protected
+protected(def paren_protected_method
+  42
+end)
