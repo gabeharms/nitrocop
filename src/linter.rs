@@ -423,6 +423,17 @@ fn lint_file(
             .fetch_add(io_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
+    // Skip files with invalid UTF-8 that lack an encoding magic comment.
+    // RuboCop treats such files as a fatal Lint/Syntax error ("Invalid byte
+    // sequence in utf-8") and runs no cops. Files WITH an encoding magic
+    // comment (e.g., `# encoding: iso-8859-1`) are processed normally by
+    // RuboCop, so we only skip when no such comment is present.
+    if std::str::from_utf8(source.as_bytes()).is_err()
+        && !has_encoding_magic_comment(source.as_bytes())
+    {
+        return Vec::new();
+    }
+
     // Tier 2: content hash check — file was read, mtime didn't match
     if cache.is_enabled() {
         if let CacheLookup::ContentHit(cached) = cache.get_by_content(path, source.as_bytes()) {
@@ -464,6 +475,49 @@ fn lint_file(
     }
 
     result
+}
+
+/// Check whether the first two lines of the file contain a Ruby encoding
+/// magic comment (e.g., `# encoding: iso-8859-1`, `# -*- coding: euc-jp -*-`,
+/// `# vim: fileencoding=shift_jis`). The check is byte-level (no UTF-8
+/// decoding required) and only looks at the first two lines (or three if
+/// the first line is a shebang).
+fn has_encoding_magic_comment(bytes: &[u8]) -> bool {
+    // Scan up to 3 lines (shebang + encoding comment + safety margin)
+    let mut start = 0;
+    for _line_idx in 0..3 {
+        let end = bytes[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|p| start + p)
+            .unwrap_or(bytes.len());
+        let line = &bytes[start..end];
+        // Trim leading whitespace and optional BOM on first line
+        let trimmed = line
+            .iter()
+            .copied()
+            .skip_while(|&b| b == b' ' || b == b'\t' || b == 0xEF || b == 0xBB || b == 0xBF)
+            .collect::<Vec<u8>>();
+        if trimmed.starts_with(b"#") {
+            let lower: Vec<u8> = trimmed.iter().map(|b| b.to_ascii_lowercase()).collect();
+            // Look for encoding/coding keywords in the comment
+            if contains_subsequence(&lower, b"encoding") || contains_subsequence(&lower, b"coding")
+            {
+                return true;
+            }
+        }
+        start = end + 1;
+        if start >= bytes.len() {
+            break;
+        }
+    }
+    false
+}
+
+fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// Name of the redundant cop disable directive cop.
@@ -1143,5 +1197,55 @@ renamed:
         // The LazyLock should parse the bundled snapshot on first access.
         assert!(!RENAMED_COPS.is_empty(), "RENAMED_COPS should not be empty");
         assert!(RENAMED_COPS.contains_key("Layout/Tab"));
+    }
+
+    // --- has_encoding_magic_comment ---
+
+    #[test]
+    fn encoding_comment_standard() {
+        assert!(has_encoding_magic_comment(
+            b"# encoding: iso-8859-1\nx = 1\n"
+        ));
+    }
+
+    #[test]
+    fn encoding_comment_coding() {
+        assert!(has_encoding_magic_comment(b"# coding: euc-jp\nx = 1\n"));
+    }
+
+    #[test]
+    fn encoding_comment_emacs_style() {
+        assert!(has_encoding_magic_comment(
+            b"# -*- encoding: iso-8859-9 -*-\nx = 1\n"
+        ));
+    }
+
+    #[test]
+    fn encoding_comment_vim_style() {
+        assert!(has_encoding_magic_comment(
+            b"# vim: fileencoding=shift_jis\nx = 1\n"
+        ));
+    }
+
+    #[test]
+    fn encoding_comment_after_shebang() {
+        assert!(has_encoding_magic_comment(
+            b"#!/usr/bin/env ruby\n# encoding: EUC-JP\nx = 1\n"
+        ));
+    }
+
+    #[test]
+    fn no_encoding_comment() {
+        assert!(!has_encoding_magic_comment(b"# A normal comment\nx = 1\n"));
+    }
+
+    #[test]
+    fn no_encoding_comment_empty_file() {
+        assert!(!has_encoding_magic_comment(b""));
+    }
+
+    #[test]
+    fn encoding_comment_utf8_still_detected() {
+        assert!(has_encoding_magic_comment(b"# encoding: utf-8\nx = 1\n"));
     }
 }
