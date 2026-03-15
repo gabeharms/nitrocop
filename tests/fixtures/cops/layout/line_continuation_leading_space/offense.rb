@@ -29,3 +29,23 @@ msg = "expected #{resource} to have " \
 hint = "Use #{method_name} instead of " \
   "  calling directly"
    ^^ Layout/LineContinuationLeadingSpace: Move leading spaces to the end of the previous line.
+
+message = %Q{expected "#{resource}" to have parameters:} \
+  "\n\n" \
+  "  " + unmatched.collect { |p, h| p }
+   ^^ Layout/LineContinuationLeadingSpace: Move leading spaces to the end of the previous line.
+
+raise SpoofError, "IP spoofing attack?! " \
+  "HTTP_CLIENT_IP=#{req.client_ip} " \
+  "HTTP_X_FORWARDED_FOR=#{req.forwarded_for}" \
+  " HTTP_FORWARDED=" + req.forwarded.map { "for=#{_1}" }.join(", ")
+   ^ Layout/LineContinuationLeadingSpace: Move leading spaces to the end of the previous line.
+
+message = %Q{expected "#{resource}[#{identity}]"} \
+  " with action :#{action} to be present." \
+   ^ Layout/LineContinuationLeadingSpace: Move leading spaces to the end of the previous line.
+  " Other resources:" \
+   ^ Layout/LineContinuationLeadingSpace: Move leading spaces to the end of the previous line.
+  "\n\n" \
+  "  " + similar_resources.join("\n  ") + "\n "
+   ^^ Layout/LineContinuationLeadingSpace: Move leading spaces to the end of the previous line.

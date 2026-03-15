@@ -38,6 +38,21 @@ use crate::parse::source::SourceFile;
 /// Two-part cases (the FN pattern) are now checked normally. Three-or-more-part
 /// chains (long interpolated message builders like `chefspec`/`overcommit`) are
 /// still skipped to avoid the FP regression seen in attempted fix 1.
+///
+/// ## Fix (2026-03-15)
+///
+/// Remaining FN=2: dstr nodes that are receivers of `+` were unconditionally
+/// skipped via `in_plus_receiver` flag. RuboCop's `on_dstr` has no such skip —
+/// it processes all dstr nodes regardless of whether they're `+` receivers.
+///
+/// Examples: `%Q{...#{x}...} \ "\n\n" \ "  " + items.join(...)` (chefspec)
+/// and `"..." \ "..." \ " HTTP_FORWARDED=" + req.forwarded...` (rails).
+///
+/// Fix: removed the `in_plus_receiver` mechanism entirely. The
+/// `should_skip_trailing_style` heuristic (interpolated head + 3+ plain tails
+/// with trailing whitespace) still prevents FPs on long message builder chains.
+/// Moved the former no_offense `+`-receiver test case to offense since RuboCop
+/// does flag leading spaces in dstr nodes even when they're `+` receivers.
 pub struct LineContinuationLeadingSpace;
 
 impl Cop for LineContinuationLeadingSpace {
@@ -59,7 +74,6 @@ impl Cop for LineContinuationLeadingSpace {
             source,
             lines: source.lines().collect(),
             enforced_style: config.get_str("EnforcedStyle", "trailing"),
-            in_plus_receiver: false,
             diagnostics: Vec::new(),
         };
         visitor.visit(&parse_result.node());
@@ -72,15 +86,11 @@ struct LineContinuationVisitor<'a> {
     source: &'a SourceFile,
     lines: Vec<&'a [u8]>,
     enforced_style: &'a str,
-    in_plus_receiver: bool,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl LineContinuationVisitor<'_> {
     fn check_dstr(&mut self, node: &ruby_prism::InterpolatedStringNode<'_>) {
-        if self.in_plus_receiver {
-            return;
-        }
         if node
             .opening_loc()
             .is_some_and(|opening| opening.as_slice().starts_with(b"<<"))
@@ -196,33 +206,6 @@ impl LineContinuationVisitor<'_> {
 }
 
 impl<'pr> Visit<'pr> for LineContinuationVisitor<'_> {
-    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
-        let is_plus = node.name().as_slice() == b"+";
-
-        if let Some(recv) = node.receiver() {
-            let was = self.in_plus_receiver;
-            self.in_plus_receiver = is_plus;
-            self.visit(&recv);
-            self.in_plus_receiver = was;
-        }
-
-        if let Some(args) = node.arguments() {
-            let was = self.in_plus_receiver;
-            self.in_plus_receiver = false;
-            for arg in args.arguments().iter() {
-                self.visit(&arg);
-            }
-            self.in_plus_receiver = was;
-        }
-
-        if let Some(block) = node.block() {
-            let was = self.in_plus_receiver;
-            self.in_plus_receiver = false;
-            self.visit(&block);
-            self.in_plus_receiver = was;
-        }
-    }
-
     fn visit_interpolated_string_node(&mut self, node: &ruby_prism::InterpolatedStringNode<'pr>) {
         self.check_dstr(node);
         ruby_prism::visit_interpolated_string_node(self, node);

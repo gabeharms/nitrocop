@@ -21,12 +21,9 @@ y = <<~SHELL
   world
 SHELL
 
-message = %Q{expected "#{resource}[#{identity}]"} \
-  " with action :#{action} to be present." \
-  " Other resources:" \
-  "\n\n" \
-  "  " + similar_resources.join("\n  ") + "\n "
-
 warning = "In #{resource_name} you exposed a `has_one` relationship "\
   " using the `belongs_to` class method. We think `has_one`" \
   " is more appropriate."
+
+result = "prefix " \
+  "continued" + extra_info
