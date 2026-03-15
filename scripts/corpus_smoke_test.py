@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 # Small repos pinned to exact SHAs from the corpus manifest.
 # Chosen for speed: each takes <30s to clone+lint.
@@ -32,16 +33,22 @@ SMOKE_REPOS = [
         "id": "multi_json__multi_json__c5fa9fc",
         "repo_url": "https://github.com/sferik/multi_json",
         "sha": "c5fa9fce50aec2d98c438f5d5e751b6f6980805c",
+        "min_match_rate": 95.0,
+        "min_nc_files": 118,
     },
     {
         "id": "bkeepers__dotenv__34156bf",
         "repo_url": "https://github.com/bkeepers/dotenv",
         "sha": "34156bf400cd67387fa6ed9f146778f6a2f5f743",
+        "min_match_rate": 93.0,
+        "min_nc_files": 34,
     },
     {
         "id": "doorkeeper__doorkeeper__b305358",
         "repo_url": "https://github.com/doorkeeper-gem/doorkeeper",
         "sha": "b30535805477bc4a2568d68968595484d6163b31",
+        "min_match_rate": 92.0,
+        "min_nc_files": 250,
     },
     {
         # Rufo has 121 .rb.spec files — catches file discovery regressions
@@ -49,6 +56,24 @@ SMOKE_REPOS = [
         "id": "ruby-formatter__rufo__a90e654",
         "repo_url": "https://github.com/ruby-formatter/rufo",
         "sha": "a90e6541b7b718a031145a0725e7491d98cee41f",
+        "min_match_rate": 86.0,
+        "min_nc_files": 145,
+    },
+    {
+        # Standard uses `.standard.yml` and version-aware config loading.
+        "id": "standardrb__standard__c886a57",
+        "repo_url": "https://github.com/standardrb/standard",
+        "sha": "c886a57812b1b15d596eac33712defe12443fbcf",
+        "min_match_rate": 95.0,
+        "min_nc_files": 104,
+    },
+    {
+        # rubocop-rspec exercises plugin discovery and plugin default config loading.
+        "id": "rubocop__rubocop-rspec__51dab28",
+        "repo_url": "https://github.com/rubocop/rubocop-rspec",
+        "sha": "51dab288f96fb7d571a5835a4eb5503ad9b733b0",
+        "min_match_rate": 83.0,
+        "min_nc_files": 278,
     },
 ]
 
@@ -93,11 +118,33 @@ def run_nitrocop(binary: str, repo_dir: str) -> dict:
     env = os.environ.copy()
     env["BUNDLE_GEMFILE"] = os.path.join(ROOT, "bench", "corpus", "Gemfile")
     env["BUNDLE_PATH"] = os.path.join(ROOT, "bench", "corpus", "vendor", "bundle")
-    result = subprocess.run(
-        [binary, "--preview", "--format", "json", "--no-cache", "--cache", "false",
-         "--config", BASELINE_CONFIG, repo_dir],
-        capture_output=True, text=True, env=env, timeout=300,
-    )
+    with tempfile.TemporaryDirectory(prefix="nitrocop-smoke-cache-") as cache_dir:
+        env["NITROCOP_CACHE_DIR"] = cache_dir
+        result = subprocess.run(
+            [
+                binary,
+                "--preview",
+                "--format",
+                "json",
+                "--no-cache",
+                "--cache",
+                "false",
+                "--config",
+                BASELINE_CONFIG,
+                repo_dir,
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=300,
+        )
+        cache_files = sorted(str(path.relative_to(cache_dir)) for path in Path(cache_dir).rglob("*")
+                             if path.is_file())
+        if cache_files:
+            raise RuntimeError(
+                "nitrocop smoke run wrote cache artifacts despite --no-cache/--cache false: "
+                + ", ".join(cache_files)
+            )
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -176,6 +223,7 @@ def run_all(binary: str) -> dict:
                 "matches": matches,
                 "fp": fp,
                 "fn": fn,
+                "rate": round(rate, 1),
             }
     return results
 
@@ -221,6 +269,26 @@ def check_regression(current: dict, baseline: dict) -> list[str]:
                     f"{repo_id}: file count divergence grew "
                     f"({base_file_diff} -> {file_diff})"
                 )
+
+    for repo in SMOKE_REPOS:
+        repo_id = repo["id"]
+        cur = current.get(repo_id)
+        if cur is None:
+            continue
+
+        min_match_rate = repo.get("min_match_rate")
+        if min_match_rate is not None and cur["rate"] < min_match_rate:
+            failures.append(
+                f"{repo_id}: match rate dropped below absolute floor "
+                f"({cur['rate']:.1f}% < {min_match_rate:.1f}%)"
+            )
+
+        min_nc_files = repo.get("min_nc_files")
+        if min_nc_files is not None and cur["nc_files"] < min_nc_files:
+            failures.append(
+                f"{repo_id}: nitrocop inspected files dropped below absolute floor "
+                f"({cur['nc_files']} < {min_nc_files})"
+            )
 
     return failures
 

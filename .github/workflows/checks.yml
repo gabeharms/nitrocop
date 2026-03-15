@@ -73,9 +73,9 @@ jobs:
       - name: Test
         run: cargo test --profile ci
 
-  # Corpus smoke test: run nitrocop + rubocop on 3 small repos to catch
-  # systemic regressions (file discovery, config, directives) before they
-  # reach the full 1000-repo corpus oracle.
+  # Corpus smoke test: run nitrocop + rubocop on a few cheap sentinel repos to
+  # catch systemic regressions (file discovery, config, plugin loading, directives)
+  # before they reach the full 1000-repo corpus oracle.
   corpus-smoke-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
