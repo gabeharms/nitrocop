@@ -34,6 +34,7 @@ TARGET_COPS = sorted([
     "Lint/ArrayLiteralInRegexp",
     "Lint/DuplicateRescueException",
     "Lint/PercentSymbolArray",
+    "Lint/RefinementImportMethods",
     "Lint/RegexpAsCondition",
     "Lint/TrailingCommaInAttributeDeclaration",
     "RSpec/DuplicatedMetadata",

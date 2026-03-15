@@ -68,6 +68,25 @@ class Utils
   end
 end
 
+# RefinementImportMethods (include/prepend inside refine is deprecated in Ruby 3.1+)
+module RefinementExample
+  refine String do
+    include Comparable
+  end
+end
+
+module RefinementExample2
+  refine Integer do
+    prepend Enumerable
+  end
+end
+
+module RefinementExample3
+  refine Array do
+    include Kernel
+  end
+end
+
 # RedundantConstantBase (at top level, :: prefix is redundant)
 TOP_TIME = ::Time.now
 TOP_DATE = ::Date.today
