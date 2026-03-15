@@ -26,7 +26,9 @@ use crate::parse::source::SourceFile;
 /// lives under a project config that explicitly sets
 /// `Style/TernaryParentheses: Enabled: false`, so that reported FP is attributable
 /// to config handling or stale oracle data rather than the ternary matcher itself.
-/// Post-fix quick corpus gate: expected=1726, actual=1725, excess=0, missing=1.
+/// After fixing the external-config nested-config path, the quick corpus gate is
+/// `expected=1726, actual=1724, excess=0, missing=2`, so the remaining
+/// divergence is now entirely on the missing-offense side.
 pub struct TernaryParentheses;
 
 /// Check if a parenthesized node contains a safe assignment (=) in ternary context.

@@ -184,6 +184,7 @@ pub fn run_linter(
     let cache_enabled = args.cache == "true"
         && args.stdin.is_none()
         && args.autocorrect_mode() == crate::cli::AutocorrectMode::Off;
+    let cache_enabled = cache_enabled && !has_dir_overrides;
     let cache = if cache_enabled {
         let c = ResultCache::new(env!("CARGO_PKG_VERSION"), &base_configs, args);
         if args.debug {
@@ -193,6 +194,8 @@ pub fn run_linter(
     } else {
         if args.debug && args.cache != "true" {
             eprintln!("debug: result cache disabled (--cache false)");
+        } else if args.debug && has_dir_overrides {
+            eprintln!("debug: result cache disabled (directory-specific configs)");
         }
         ResultCache::disabled()
     };

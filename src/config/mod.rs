@@ -462,34 +462,32 @@ fn discover_sub_config_dirs(root: &Path) -> Vec<PathBuf> {
 
 /// Load per-directory config layers from nested `.rubocop.yml` files.
 ///
-/// For each subdirectory containing a `.rubocop.yml`, parses the local config
-/// keys from that file. The returned layer is later merged on top of the root
-/// resolved config for files under that directory, so nested `Enabled`,
-/// `DisabledByDefault`, department settings, and path filters affect execution.
+/// For each subdirectory containing a `.rubocop.yml`, recursively resolves that
+/// config file with its own `inherit_from`, `inherit_gem`, and `require:`
+/// chain. The returned layer is later merged on top of the root resolved config
+/// for files under that directory, so nested `Enabled`, `DisabledByDefault`,
+/// department settings, and inherited path filters affect execution.
 /// Returns a list of (directory, config_layer) pairs sorted deepest-first.
-fn load_dir_overrides(root: &Path) -> Vec<(PathBuf, ConfigLayer)> {
+fn load_dir_overrides(
+    root: &Path,
+    gem_cache: Option<&HashMap<String, PathBuf>>,
+) -> Vec<(PathBuf, ConfigLayer)> {
     let sub_dirs = discover_sub_config_dirs(root);
     let mut overrides = Vec::new();
 
     for dir in sub_dirs {
         let config_path = dir.join(".rubocop.yml");
-        let contents = match std::fs::read_to_string(&config_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let contents = contents.replace("!ruby/regexp ", "");
-        let raw: Value = match serde_yml::from_str(&contents) {
-            Ok(v) => v,
+        let mut visited = HashSet::new();
+        let layer = match load_config_recursive(&config_path, root, &mut visited, gem_cache) {
+            Ok(layer) => layer,
             Err(e) => {
                 eprintln!(
-                    "warning: failed to parse nested config {}: {e}",
+                    "warning: failed to load nested config {}: {e:#}",
                     config_path.display()
                 );
                 continue;
             }
         };
-
-        let layer = parse_config_layer(&raw);
         let has_effect = !layer.cop_configs.is_empty()
             || !layer.department_configs.is_empty()
             || !layer.global_excludes.is_empty()
@@ -918,6 +916,16 @@ pub fn load_config(
     target_dir: Option<&Path>,
     gem_cache: Option<&HashMap<String, PathBuf>>,
 ) -> Result<ResolvedConfig> {
+    let start_dir = target_dir
+        .map(|p| {
+            if p.is_file() {
+                p.parent().unwrap_or(p).to_path_buf()
+            } else {
+                p.to_path_buf()
+            }
+        })
+        .or_else(|| std::env::current_dir().ok());
+
     let config_path = match path {
         Some(p) => {
             if p.exists() {
@@ -926,49 +934,56 @@ pub fn load_config(
                 return Ok(ResolvedConfig::empty());
             }
         }
-        None => {
-            let start = target_dir
-                .map(|p| {
-                    if p.is_file() {
-                        p.parent().unwrap_or(p).to_path_buf()
-                    } else {
-                        p.to_path_buf()
-                    }
-                })
-                .or_else(|| std::env::current_dir().ok());
-            match start {
-                Some(dir) => find_config(&dir),
-                None => None,
-            }
-        }
+        None => start_dir.as_ref().and_then(|dir| find_config(dir)),
     };
 
     let config_path = match config_path {
         Some(p) => p,
-        None => return Ok(ResolvedConfig::empty()),
+        None => {
+            let Some(config_dir) = start_dir else {
+                return Ok(ResolvedConfig::empty());
+            };
+            let base_dir = config_dir
+                .canonicalize()
+                .unwrap_or_else(|_| config_dir.clone());
+            return Ok(ResolvedConfig {
+                config_dir: Some(config_dir.clone()),
+                dir_overrides: load_dir_overrides(&config_dir, gem_cache),
+                base_dir: Some(base_dir),
+                ..ResolvedConfig::empty()
+            });
+        }
     };
 
-    let config_dir = config_path
+    let config_file_dir = config_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
+    let is_rubocop_dotfile = config_path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|name| name.starts_with(".rubocop"));
+
+    // External non-dotfile configs (e.g. `--config baseline_rubocop.yml`) still
+    // need nested `.rubocop.yml` discovery relative to the target project root.
+    let config_dir = if path.is_some() && !is_rubocop_dotfile {
+        start_dir.clone().unwrap_or_else(|| config_file_dir.clone())
+    } else {
+        config_file_dir.clone()
+    };
 
     // RuboCop's `base_dir_for_path_parameters`: config files named `.rubocop*`
     // resolve Include/Exclude patterns relative to the config file's directory.
     // All other config files (e.g., `baseline_rubocop.yml`) resolve relative to
     // the current working directory. This matters for `--config path/to/custom.yml`.
     let base_dir = {
-        let is_rubocop_dotfile = config_path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .is_some_and(|name| name.starts_with(".rubocop"));
         if is_rubocop_dotfile {
             // Canonicalize to absolute path (matching RuboCop's File.expand_path)
-            config_dir
+            config_file_dir
                 .canonicalize()
-                .unwrap_or_else(|_| config_dir.clone())
+                .unwrap_or_else(|_| config_file_dir.clone())
         } else {
-            std::env::current_dir().unwrap_or_else(|_| config_dir.clone())
+            std::env::current_dir().unwrap_or_else(|_| config_file_dir.clone())
         }
     };
 
@@ -1117,7 +1132,7 @@ pub fn load_config(
     }
 
     // Discover and parse nested .rubocop.yml files for per-directory config layers.
-    let dir_overrides = load_dir_overrides(&config_dir);
+    let dir_overrides = load_dir_overrides(&config_dir, gem_cache);
 
     Ok(ResolvedConfig {
         cop_configs: base.cop_configs,
@@ -2369,6 +2384,22 @@ impl ResolvedConfig {
         Some(effective)
     }
 
+    /// Re-root nested `.rubocop.yml` discovery to a specific target directory.
+    ///
+    /// Used when an external non-dotfile config (for example `--config
+    /// baseline_rubocop.yml`) should still honor nested project configs under a
+    /// target repo root.
+    pub fn retarget_dir_overrides(
+        &self,
+        root: &Path,
+        gem_cache: Option<&HashMap<String, PathBuf>>,
+    ) -> Self {
+        let mut retargeted = self.clone();
+        retargeted.config_dir = Some(root.to_path_buf());
+        retargeted.dir_overrides = load_dir_overrides(root, gem_cache);
+        retargeted
+    }
+
     /// Find the nearest directory-specific config layer, if any.
     /// Checks both the original file path and the path relativized to config_dir.
     fn find_dir_layer_for_file(&self, file_path: &Path) -> Option<&ConfigLayer> {
@@ -2617,12 +2648,21 @@ impl ResolvedConfig {
             })
             .collect();
 
-        // Discover sub-directory .rubocop.yml files for per-directory path relativity
-        let sub_config_dirs = self
-            .config_dir
-            .as_ref()
-            .map(|cd| discover_sub_config_dirs(cd))
-            .unwrap_or_default();
+        // Discover sub-directory .rubocop.yml files for per-directory path relativity.
+        // When load_config() already resolved directory overrides from an external
+        // `--config` target root, reuse those exact directories instead of
+        // rediscovering under config_dir.
+        let sub_config_dirs = if self.dir_overrides.is_empty() {
+            self.config_dir
+                .as_ref()
+                .map(|cd| discover_sub_config_dirs(cd))
+                .unwrap_or_default()
+        } else {
+            self.dir_overrides
+                .iter()
+                .map(|(dir, _)| dir.clone())
+                .collect()
+        };
 
         // Pre-compute universal vs pattern cop index lists.
         // Universal cops (enabled, no Include/Exclude) skip per-file glob matching.

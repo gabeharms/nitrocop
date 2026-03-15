@@ -17,8 +17,10 @@ use crate::parse::source::SourceFile;
 /// corpus FPs were later traced to config handling outside this cop:
 /// `spec/ruby/.rubocop.yml` sets `AllCops.DisabledByDefault: true`, so
 /// `Style/ModuleFunction` should not run on those fixture files unless explicitly
-/// enabled. The 2026-03-14 fix landed in the config layer rather than here.
-/// Post-fix quick corpus gate: expected=508, actual=507, excess=0, missing=1.
+/// enabled. The 2026-03-14 fix landed in the config layer rather than here and
+/// cleared the jruby nested-config false positive, but the current quick corpus
+/// gate is still `expected=508, actual=503, excess=0, missing=5`, so the
+/// remaining divergence is not attributable to this cop's matcher alone.
 pub struct ModuleFunction;
 
 impl Cop for ModuleFunction {
