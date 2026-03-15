@@ -92,6 +92,36 @@ use crate::parse::source::SourceFile;
 /// `ForNode` was handled in `collect_assignments_in_scope` but not in
 /// `node_references_var`, so variable references inside for-loop bodies
 /// were invisible.
+///
+/// ## Investigation (FP=53, FN=64, 2026-03-14)
+///
+/// No example locations available in corpus data. Investigated by comparing
+/// implementations and vendor spec.
+///
+/// **FP fix: file-level variable shadowed by group-level reassignment**
+/// `check_var_used_in_describe_blocks` (used by `check_source` for file-level
+/// variables) was using `check_var_used_in_example_scopes` to detect if a
+/// file-level variable is referenced inside a describe block's example scopes.
+/// It was NOT checking whether the variable was unconditionally reassigned at
+/// the describe group's scope level before any example reference. This caused
+/// false positives when a file-level variable was reassigned at the group scope
+/// (making the file-level value dead), but the group-level assignment's value
+/// was then used in examples.
+///
+/// Fix: added a `var_reassigned_before_example_ref_in_stmts` check at the top
+/// of the describe block's statement traversal in `check_var_used_in_describe_blocks`.
+/// If the variable is unconditionally reassigned at the group's top-level scope
+/// before any example scope reference, the file-level assignment is considered
+/// dead and no offense is reported for it. The group-level reassignment would
+/// itself be detected and reported separately by `check_node` / `check_scope_for_leaky_vars`.
+///
+/// **Remaining gaps:**
+/// - Any FPs from the prior investigation cycle that stemmed from complex
+///   VariableForce flow analysis (e.g., conditional assignments, `begin/rescue`
+///   paths) are not addressed without implementing a full VariableForce equivalent.
+/// - The 64 FNs likely stem from the same root cause: RuboCop's VariableForce
+///   tracks variable lifetime across all Ruby scope boundaries, while our
+///   AST-walking approach uses heuristics for common patterns.
 pub struct LeakyLocalVariable;
 
 impl Cop for LeakyLocalVariable {
