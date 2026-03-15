@@ -518,6 +518,42 @@ mod tests {
     }
 
     #[test]
+    fn keyword_style_flags_lvar_assignment_end_at_variable_col() {
+        // Pattern: `payload = if ...` where `end` is at the variable's column
+        // With keyword style, end must align with `if`, not the variable
+        let source = b"    payload = if auth_header
+      auth_header[7..]
+    elsif auth_header
+      auth_header[6..]
+    end
+";
+        let diags = run_cop_full(&EndAlignment, source);
+        // `if` is at col 14, `end` is at col 4 — should flag
+        assert!(
+            diags.iter().any(|d| d.message.contains("`if`")),
+            "keyword style: end at var col should flag when if is at different col: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn keyword_style_flags_token_assignment_rhs() {
+        let source = b"    token = if payload
+      payload[6..]
+    else
+      payload
+    end
+";
+        let diags = run_cop_full(&EndAlignment, source);
+        // `if` is at col 12, `end` is at col 4 — should flag
+        assert!(
+            diags.iter().any(|d| d.message.contains("`if`")),
+            "keyword style: token = if ... end at col 4 should flag: {:?}",
+            diags
+        );
+    }
+
+    #[test]
     fn variable_style_no_assignment_flags_misaligned() {
         use crate::testutil::run_cop_full_with_config;
         use std::collections::HashMap;
