@@ -69,6 +69,29 @@ use crate::parse::source::SourceFile;
 /// (e.g., `vendor/**/*` default exclusion, project `AllowInHeredoc: true`
 /// with heredoc patterns the heuristic still misses). These are
 /// config-resolution gaps, not cop-logic bugs.
+///
+/// ## Corpus investigation (2026-03-15)
+///
+/// CI baseline reported FP=87, FN=4.
+///
+/// `verify-cop-locations.py` confirms all 87 FPs are already FIXED by
+/// prior patches (CRLF `__END__`, heredoc detection, shift operator fixes).
+/// The corpus oracle has not yet been re-run to reflect these fixes.
+///
+/// FN=4 remain (3 in activemerchant sage.rb:149/155/168, 1 in axlsx
+/// header_footer.rb:8). Without corpus repos cloned locally, root cause
+/// cannot be determined. Investigated possible causes:
+/// - Heredoc false detection: ruled out (AllowInHeredoc defaults to false,
+///   and heredoc tracking has no effect on detection when false).
+/// - `__END__` early termination: ruled out (FN lines are mid-file).
+/// - `\r`-only line endings (classic Mac): plausible but unlikely for
+///   modern Ruby files. Would cause nitrocop to treat entire file as one
+///   line, missing mid-file trailing whitespace.
+/// - File encoding issues: possible if the file can't be read or has
+///   unusual encoding that prevents line splitting.
+/// These 4 FNs (0.005% of 73,562 total offenses) are likely file-level
+/// artifacts rather than cop logic bugs. Deferring until corpus repos
+/// can be cloned for direct investigation.
 pub struct TrailingWhitespace;
 
 fn strip_line_ending_carriage_return(line: &[u8]) -> &[u8] {
