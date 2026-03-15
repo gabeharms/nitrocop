@@ -24,3 +24,7 @@ foo&.bar && foo + 1
 foo&.bar && foo - 1
 foo&.bar && foo << 1
 x.foo.bar && y.foo&.baz
+
+# Separate && branches within an || chain should not be merged together
+(foo&.a && x) || (foo&.b && y) || (foo&.c && z)
+foo&.a || foo&.b || (foo&.c && flag) || foo&.d

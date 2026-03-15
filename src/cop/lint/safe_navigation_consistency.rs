@@ -32,6 +32,23 @@ const DEFAULT_ALLOWED_METHODS: &[&str] = &["present?", "blank?", "presence", "tr
 ///
 /// Verified by reading vendor RuboCop source — the cop logic matches exactly
 /// (same find_consistent_parts algorithm). No cop logic bugs.
+///
+/// ## Corpus investigation (2026-03-15)
+///
+/// The remaining FP=3 were not config issues. The corpus oracle uses the shared
+/// baseline config, so repo-local disables do not apply.
+///
+/// Root cause:
+/// - The simplified operand collector merged safe-navigation calls from
+///   separate `&&` branches inside a larger `||` expression, treating them as a
+///   single `and` group for the same receiver. That produced false positives for
+///   shapes like `(foo&.a && x) || (foo&.b && y) || (foo&.c && z)` and
+///   `foo&.a || foo&.b || (foo&.c && flag) || foo&.d`.
+///
+/// Fix:
+/// - Track the nearest `&&` group for each operand and suppress the "all csend
+///   in and-context" heuristic when the grouped operands come from distinct
+///   `&&` branches and no regular send establishes a baseline.
 pub struct SafeNavigationConsistency;
 
 impl Cop for SafeNavigationConsistency {
@@ -76,8 +93,13 @@ impl Cop for SafeNavigationConsistency {
 
         // Collect all operands by flattening nested and/or chains
         let mut operands = Vec::new();
-        collect_operands_from_node(&left, is_and, &mut operands);
-        collect_operands_from_node(&right, is_and, &mut operands);
+        let root_and_group = if is_and {
+            Some((node.location().start_offset(), node.location().end_offset()))
+        } else {
+            None
+        };
+        collect_operands_from_node(&left, is_and, root_and_group, &mut operands);
+        collect_operands_from_node(&right, is_and, root_and_group, &mut operands);
 
         // Group operands by receiver name
         let mut groups: std::collections::HashMap<String, Vec<&OperandInfo>> =
@@ -135,6 +157,7 @@ struct OperandInfo {
     method_name: String,
     is_safe_nav: bool,
     is_in_and: bool,
+    and_group_key: Option<(usize, usize)>,
     is_operator_method: bool,
     call_operator_offset: usize,
     receiver_offset: usize,
@@ -144,29 +167,45 @@ struct OperandInfo {
 fn collect_operands_from_node<'a>(
     node: &ruby_prism::Node<'a>,
     parent_is_and: bool,
+    and_group_key: Option<(usize, usize)>,
     operands: &mut Vec<OperandInfo>,
 ) {
     if let Some(and_node) = node.as_and_node() {
-        collect_operands_from_node(&and_node.left(), true, operands);
-        collect_operands_from_node(&and_node.right(), true, operands);
+        let group_key = if parent_is_and {
+            and_group_key.or(Some((
+                and_node.location().start_offset(),
+                and_node.location().end_offset(),
+            )))
+        } else {
+            Some((
+                and_node.location().start_offset(),
+                and_node.location().end_offset(),
+            ))
+        };
+        collect_operands_from_node(&and_node.left(), true, group_key, operands);
+        collect_operands_from_node(&and_node.right(), true, group_key, operands);
     } else if let Some(or_node) = node.as_or_node() {
-        collect_operands_from_node(&or_node.left(), false, operands);
-        collect_operands_from_node(&or_node.right(), false, operands);
+        collect_operands_from_node(&or_node.left(), false, None, operands);
+        collect_operands_from_node(&or_node.right(), false, None, operands);
     } else if let Some(paren) = node.as_parentheses_node() {
         // Recurse into parenthesized expressions
         if let Some(body) = paren.body() {
             if let Some(stmts) = body.as_statements_node() {
                 for stmt in stmts.body().iter() {
-                    collect_operands_from_node(&stmt, parent_is_and, operands);
+                    collect_operands_from_node(&stmt, parent_is_and, and_group_key, operands);
                 }
             }
         }
-    } else if let Some(info) = extract_operand_info(node, parent_is_and) {
+    } else if let Some(info) = extract_operand_info(node, parent_is_and, and_group_key) {
         operands.push(info);
     }
 }
 
-fn extract_operand_info(node: &ruby_prism::Node<'_>, is_in_and: bool) -> Option<OperandInfo> {
+fn extract_operand_info(
+    node: &ruby_prism::Node<'_>,
+    is_in_and: bool,
+    and_group_key: Option<(usize, usize)>,
+) -> Option<OperandInfo> {
     let call = node.as_call_node()?;
     let recv = call.receiver()?;
 
@@ -196,6 +235,7 @@ fn extract_operand_info(node: &ruby_prism::Node<'_>, is_in_and: bool) -> Option<
         method_name,
         is_safe_nav,
         is_in_and,
+        and_group_key,
         is_operator_method,
         call_operator_offset,
         receiver_offset,
@@ -343,6 +383,18 @@ fn find_consistent_parts(
         }
         if !op.is_in_and && !is_nilable(op, allowed_methods) && send_in_or.is_none() {
             send_in_or = Some(i);
+        }
+    }
+
+    if send_in_and.is_none() && send_in_or.is_none() {
+        let and_groups = grouped
+            .iter()
+            .filter(|op| op.is_in_and && op.is_safe_nav)
+            .filter_map(|op| op.and_group_key)
+            .collect::<std::collections::HashSet<_>>();
+
+        if (csend_in_and.is_some() && csend_in_or.is_some()) || and_groups.len() > 1 {
+            return None;
         }
     }
 
