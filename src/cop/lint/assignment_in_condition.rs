@@ -14,6 +14,10 @@ use crate::parse::source::SourceFile;
 /// ## Root causes of FPs (4):
 /// - Message format differed from RuboCop
 /// - Offense location was on entire assignment instead of just the `=` operator
+/// - `begin..end while/until cond` (while_post/until_post in parser gem) should not
+///   be flagged — RuboCop's `on_while` alias only fires for regular `while`, not
+///   `while_post`. In Prism both are `WhileNode` but distinguished by
+///   `is_begin_modifier()`. Fix: skip when `is_begin_modifier()` is true.
 ///
 /// ## Fix:
 /// Rewrote to use recursive condition traversal matching RuboCop's `traverse_node`:
@@ -52,8 +56,17 @@ impl Cop for AssignmentInCondition {
         let predicate = if let Some(if_node) = node.as_if_node() {
             Some(if_node.predicate())
         } else if let Some(while_node) = node.as_while_node() {
+            // begin..end while cond is while_post in parser gem — RuboCop's
+            // on_while doesn't fire for it, so skip to avoid false positives.
+            if while_node.is_begin_modifier() {
+                return;
+            }
             Some(while_node.predicate())
         } else if let Some(until_node) = node.as_until_node() {
+            // Same for begin..end until cond (until_post in parser gem).
+            if until_node.is_begin_modifier() {
+                return;
+            }
             Some(until_node.predicate())
         } else {
             node.as_unless_node()

@@ -55,3 +55,17 @@ end
 
 # assignment inside method call arguments is not flagged
 return unless %i[asc desc].include?(order = params[:order])
+
+# begin..end while/until with assignment in condition is not flagged
+# (while_post / until_post in parser gem — RuboCop's on_while doesn't fire for these)
+begin
+  buffer += data
+end while data = read_next
+
+begin
+  buffer += parts
+end until parts = fetch_data
+
+begin
+  line.concat(c)
+end while c = getc
