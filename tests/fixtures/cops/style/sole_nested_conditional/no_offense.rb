@@ -38,3 +38,8 @@ def with_locale_param(url_hash)
   end
   url_hash
 end
+
+# Variable assigned in outer condition via destructuring - used in inner modifier
+if options && (value, = options["value"])
+  result.value = value.lines.map(&:chomp).reject(&:empty?).join("\n") if value
+end

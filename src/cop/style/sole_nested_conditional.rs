@@ -3,11 +3,46 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+fn collect_assigned_target_variables(node: &ruby_prism::Node<'_>, names: &mut Vec<Vec<u8>>) {
+    if let Some(target) = node.as_local_variable_target_node() {
+        names.push(target.name().as_slice().to_vec());
+    } else if let Some(targets) = node.as_multi_target_node() {
+        for target in targets.lefts().iter() {
+            collect_assigned_target_variables(&target, names);
+        }
+        if let Some(rest) = targets.rest() {
+            if let Some(splat) = rest.as_splat_node() {
+                if let Some(expr) = splat.expression() {
+                    collect_assigned_target_variables(&expr, names);
+                }
+            }
+        }
+        for target in targets.rights().iter() {
+            collect_assigned_target_variables(&target, names);
+        }
+    }
+}
+
 /// Collect local variable names assigned in a condition node (recursively).
-/// Handles `AndNode`, `OrNode`, `ParenthesesNode`, and direct `LocalVariableWriteNode`.
+/// Handles boolean operators, parentheses, direct local writes, and destructuring
+/// assignments that introduce local targets inside the condition.
 fn collect_assigned_variables(node: &ruby_prism::Node<'_>, names: &mut Vec<Vec<u8>>) {
     if let Some(write) = node.as_local_variable_write_node() {
         names.push(write.name().as_slice().to_vec());
+    } else if let Some(multi_write) = node.as_multi_write_node() {
+        for target in multi_write.lefts().iter() {
+            collect_assigned_target_variables(&target, names);
+        }
+        if let Some(rest) = multi_write.rest() {
+            if let Some(splat) = rest.as_splat_node() {
+                if let Some(expr) = splat.expression() {
+                    collect_assigned_target_variables(&expr, names);
+                }
+            }
+        }
+        for target in multi_write.rights().iter() {
+            collect_assigned_target_variables(&target, names);
+        }
     } else if let Some(and_node) = node.as_and_node() {
         collect_assigned_variables(&and_node.left(), names);
         collect_assigned_variables(&and_node.right(), names);
@@ -49,8 +84,14 @@ fn collect_assigned_variables(node: &ruby_prism::Node<'_>, names: &mut Vec<Vec<u
 /// Second attempt (2026-03-14): targeted fix — added `CallNode` descent to
 /// `collect_assigned_variables` so patterns like `(locale = foo) != bar` are
 /// recognized. This fixes the refinery/refinerycms FP without the broad visitor
-/// that caused the previous FN regression. The rdoc example (multi-write
-/// destructuring) is not a real FP per RuboCop behavior, so left unfixed.
+/// that caused the previous FN regression.
+///
+/// Third attempt (2026-03-14): added `MultiWriteNode` / `MultiTargetNode`
+/// target collection so destructuring assignments in the outer condition also
+/// suppress the offense when the inner conditional reads that assigned local.
+/// This fixes the remaining `ruby/rdoc` FP pattern
+/// `if options && (value, = options['value']); ... if value`.
+/// Post-fix quick corpus gate: expected=1904, actual=1911, excess=7, missing=0.
 pub struct SoleNestedConditional;
 
 /// Check if the inner branch's condition references a variable assigned in the outer condition.
