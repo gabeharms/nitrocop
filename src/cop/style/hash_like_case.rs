@@ -88,9 +88,13 @@ impl HashLikeCaseVisitor<'_, '_> {
                 .iter()
                 .all(|el| Self::is_recursive_basic_literal(&el));
         }
-        // Hash of literals
-        if let Some(hash) = node.as_hash_node() {
-            return hash.elements().iter().all(|el| {
+        // Hash of literals (HashNode for `{}`, KeywordHashNode for keyword args)
+        let hash_elements = node
+            .as_hash_node()
+            .map(|h| h.elements())
+            .or_else(|| node.as_keyword_hash_node().map(|kh| kh.elements()));
+        if let Some(elements) = hash_elements {
+            return elements.iter().all(|el| {
                 if let Some(assoc) = el.as_assoc_node() {
                     Self::is_recursive_basic_literal(&assoc.key())
                         && Self::is_recursive_basic_literal(&assoc.value())
@@ -131,7 +135,7 @@ impl HashLikeCaseVisitor<'_, '_> {
             7
         } else if node.as_array_node().is_some() {
             8
-        } else if node.as_hash_node().is_some() {
+        } else if node.as_hash_node().is_some() || node.as_keyword_hash_node().is_some() {
             9
         } else {
             0
