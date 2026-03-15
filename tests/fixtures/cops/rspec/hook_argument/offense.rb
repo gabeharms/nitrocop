@@ -4,3 +4,19 @@ after(:each) { true }
 ^^^^^^^^^^^^ RSpec/HookArgument: Omit the default `:each` argument for RSpec hooks.
 around(:example) { true }
 ^^^^^^^^^^^^^^^^ RSpec/HookArgument: Omit the default `:example` argument for RSpec hooks.
+prepend_before(:each) { true }
+^^^^^^^^^^^^^^^^^^^^^ RSpec/HookArgument: Omit the default `:each` argument for RSpec hooks.
+prepend_after(:each) { true }
+^^^^^^^^^^^^^^^^^^^^ RSpec/HookArgument: Omit the default `:each` argument for RSpec hooks.
+append_before(:each) { true }
+^^^^^^^^^^^^^^^^^^^^ RSpec/HookArgument: Omit the default `:each` argument for RSpec hooks.
+append_after(:each) { true }
+^^^^^^^^^^^^^^^^^^^ RSpec/HookArgument: Omit the default `:each` argument for RSpec hooks.
+config.after(:each, type: :system) do
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/HookArgument: Omit the default `:each` argument for RSpec hooks.
+  true
+end
+config.before(:example, js: true) do
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/HookArgument: Omit the default `:example` argument for RSpec hooks.
+  true
+end

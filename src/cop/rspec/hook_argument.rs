@@ -20,10 +20,27 @@ use crate::parse::source::SourceFile;
 /// - Actual: 12,029
 /// - Excess: 0
 /// - Missing: 11 (remaining FN work deferred)
+///
+/// ## FN fix (2026-03-15)
+///
+/// 9 FNs from two root causes:
+/// 1. `prepend_before`/`prepend_after`/`append_before`/`append_after` not in HOOK_METHODS (3 FN).
+/// 2. Multi-argument hooks (`after(:each, type: :system)`) skipped by `arg_list.len() > 1` guard (6 FN).
+///    RuboCop checks the first argument regardless of additional keyword args.
+///
+/// Fix: added all prepend/append hook variants to HOOK_METHODS, removed the multi-arg guard.
 pub struct HookArgument;
 
 /// Hook methods to check.
-const HOOK_METHODS: &[&[u8]] = &[b"before", b"after", b"around"];
+const HOOK_METHODS: &[&[u8]] = &[
+    b"before",
+    b"after",
+    b"around",
+    b"prepend_before",
+    b"prepend_after",
+    b"append_before",
+    b"append_after",
+];
 
 /// Scope args that mean "suite" or "context" — not flagged.
 const NON_EXAMPLE_SCOPES: &[&[u8]] = &[b"suite", b"context", b"all"];
@@ -134,11 +151,6 @@ impl Cop for HookArgument {
 
         // Default: "implicit" style — flag :each and :example arguments
         if arg_list.is_empty() {
-            return;
-        }
-
-        // Ignore hooks with more than one argument
-        if arg_list.len() > 1 {
             return;
         }
 
