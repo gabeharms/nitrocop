@@ -67,7 +67,26 @@ to the current branch. Cloud VM worktrees get cleaned up on agent timeout, losin
    That row, not the per-cop rerun output, is the lagging scorecard that must
    eventually be refreshed to 100% by the CI corpus-oracle workflow/PR.
 
-5. Show the user the target status and confirm it.
+5. Bootstrap the environment before reducers/tests/check-cop:
+   ```bash
+   git submodule update --init --recursive
+   ```
+   - If `bench/corpus/vendor/bundle/` is missing for the active Ruby version, install it:
+     ```bash
+     cd bench/corpus && BUNDLE_PATH=vendor/bundle bundle install
+     ```
+   - Do **not** treat `vendor/corpus/` as mandatory bootstrap. The smoke test does not
+     need it, and cloud environments should not prefetch the full corpus checkout.
+   - Only hydrate corpus repos on demand when a workflow step actually needs local
+     source files (`investigate-cop.py --context` fallback, `reduce-mismatch.py`,
+     `verify-cop-locations.py`):
+     ```bash
+     python3 scripts/corpus-repo-map.py --clone Department/CopName
+     ```
+   - Missing vendor **rubocop** submodules are setup failures. Missing `vendor/corpus`
+     is not a failure unless the current investigation step needs local corpus files.
+
+6. Show the user the target status and confirm it.
 
 ### Phase 1: Plan Batch (you do this)
 
@@ -83,6 +102,12 @@ For each selected cop, investigate the FP/FN pattern:
 ```bash
 python3 scripts/investigate-cop.py Department/CopName --context --fp-only --limit 10
 python3 scripts/investigate-cop.py Department/CopName --context --fn-only --limit 10
+```
+
+`investigate-cop.py` prefers embedded snippets from `corpus-results.json`. If that
+is insufficient and you need full local source files, clone only the relevant repos:
+```bash
+python3 scripts/corpus-repo-map.py --clone Department/CopName
 ```
 
 **Synthetic-only cops** (zero corpus activity): If `investigate-cop.py` shows no results, the cop
@@ -152,6 +177,11 @@ Parallel-agent activity is common. If you see unrelated modified files, do not e
 ## Step 0: Verify your working directory
 
 Run `git rev-parse --show-toplevel` to confirm you're in the right repo.
+If vendor RuboCop submodules are missing, run `git submodule update --init --recursive`.
+If `bench/corpus/vendor/bundle/` is missing for the active Ruby version, install it with
+`cd bench/corpus && BUNDLE_PATH=vendor/bundle bundle install`.
+Do **not** clone the full `vendor/corpus/` checkout by default; only clone targeted repos
+if the prompt/examples require local corpus source context.
 
 ## Steps
 
@@ -163,7 +193,10 @@ Run `git rev-parse --show-toplevel` to confirm you're in the right repo.
    extend the prior approach to avoid its documented failure mode.
 
 2. **Understand the FP/FN pattern** from the examples provided in your prompt.
-   If needed, read the actual source files from `vendor/corpus/<repo_id>/<path>` to see more context.
+   If needed, read the actual source files from `vendor/corpus/<repo_id>/<path>` to see more context,
+   but only after cloning the targeted repos for this cop. Prefer:
+   `python3 scripts/corpus-repo-map.py --clone Department/CopName`
+   instead of fetching a full corpus checkout.
    **DO NOT run nitrocop or rubocop directly** — not on corpus repos, not on ad-hoc
    files in `/tmp/`, not anywhere outside the test fixtures. Running `nitrocop` on
    arbitrary paths fails ("No lockfile found") and wastes tokens. The ONLY ways to
@@ -251,7 +284,13 @@ Run `git rev-parse --show-toplevel` to confirm you're in the right repo.
    cargo fmt
    cargo clippy --release -- -D warnings
    cargo test --release
+   python3 scripts/corpus_smoke_test.py --binary target/release/nitrocop
    ```
+
+   Run the corpus smoke test once per batch, not after every cop. It is the cheap
+   systemic guard for file discovery, config/plugin loading, directive handling,
+   and other cross-cop regressions that per-cop `check-cop.py` reruns will not catch.
+   It does not require `vendor/corpus/`.
 
 4. Verify each fixed cop with the right acceptance gate:
    ```bash
@@ -355,6 +394,7 @@ When the generated target row is at 100% and Linux CI agrees:
    cargo fmt
    cargo clippy --release -- -D warnings
    cargo test --release
+   python3 scripts/corpus_smoke_test.py --binary target/release/nitrocop
    ```
 
 2. Report to the user:
