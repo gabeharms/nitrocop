@@ -62,3 +62,16 @@ it do
   allow(Foo).to receive(:bar).with(1, 2) { [1, 2] }
                                          ^ RSpec/ReturnFromStub: Use `and_return` for static values.
 end
+# allow_any_instance_of / expect_any_instance_of are also stub setup methods
+it do
+  allow_any_instance_of(Foo).to receive(:bar) { 42 }
+                                              ^ RSpec/ReturnFromStub: Use `and_return` for static values.
+end
+it do
+  expect_any_instance_of(Foo).to receive(:baz) { true }
+                                               ^ RSpec/ReturnFromStub: Use `and_return` for static values.
+end
+it do
+  allow_any_instance_of(Foo).to receive(:qux).with(:arg) { "hello" }
+                                                         ^ RSpec/ReturnFromStub: Use `and_return` for static values.
+end

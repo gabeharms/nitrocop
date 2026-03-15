@@ -48,15 +48,14 @@ use crate::parse::source::SourceFile;
 /// receives a CallNode, correctly walks the chain to find `receive` at the root,
 /// and returns the block. Confirmed via unit tests and Prism AST inspection.
 ///
-/// The FN=86 root cause remains unresolved without direct corpus repo access.
-/// Possible causes:
-/// - Corpus repos using `expect(...).to receive(...)` with `do...end` block
-///   syntax — but our test for `call.block()` covers this
-/// - Projects where rubocop-rspec is not detected properly (lockfile/bundler issues)
-/// - Edge cases in `is_static_value` missing some node type RuboCop considers static
-/// - `allow_any_instance_of(X).to receive(:y) { static }` — we check for no
-///   receiver on `allow`/`expect`, which is correct for this form
-/// - `stub_const("X", value)` — not a receive stub, RuboCop doesn't flag it either
+/// ## Corpus investigation (2026-03-15, round 3)
+///
+/// FN=112 root cause: the receiver name check only accepted `allow` and `expect`,
+/// missing `allow_any_instance_of` and `expect_any_instance_of`. These are RSpec DSL
+/// methods called without a receiver, used for any-instance stubbing. Corpus examples:
+/// `allow_any_instance_of(Foo).to receive(:bar) { true }`. Fixed by adding both
+/// names to the receiver check. Both are receiverless calls, so the existing
+/// `recv_call.receiver().is_some()` guard is already correct for them.
 pub struct ReturnFromStub;
 impl Cop for ReturnFromStub {
     fn name(&self) -> &'static str {
@@ -156,7 +155,11 @@ impl Cop for ReturnFromStub {
             None => return,
         };
         let recv_name = recv_call.name().as_slice();
-        if recv_name != b"allow" && recv_name != b"expect" {
+        if recv_name != b"allow"
+            && recv_name != b"expect"
+            && recv_name != b"allow_any_instance_of"
+            && recv_name != b"expect_any_instance_of"
+        {
             return;
         }
         if recv_call.receiver().is_some() {
