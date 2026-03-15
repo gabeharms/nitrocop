@@ -49,3 +49,24 @@ concern do
     run
   end
 end
+
+# Conditional access modifiers should be skipped
+# (RuboCop skips when parent is an if/unless node)
+class ConditionalModifier
+  if some_condition
+    private :foo
+  end
+
+  unless other_condition
+    protected :bar
+  end
+end
+
+# Inline modifier inside conditional (parent is if_type)
+class ConditionalInline
+  if some_flag
+    private def secret_method
+      'secret'
+    end
+  end
+end
