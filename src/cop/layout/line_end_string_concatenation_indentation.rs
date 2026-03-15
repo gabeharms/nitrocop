@@ -17,17 +17,19 @@ use ruby_prism::Visit;
 /// assignment nodes like `x += "a" \ "b"` inherited `ParentType::Def`, causing
 /// `always_indented?` to be true and suppressing the "Align parts" check.
 ///
-/// **Fix:** Replaced the per-node-type visitor overrides with a stack-based
-/// approach using `visit_branch_node_enter`/`visit_branch_node_leave`. Every
-/// branch node defaults to `ParentType::Other`; only `DefNode`, `BlockNode`,
-/// `LambdaNode`, `BeginNode`, `IfNode`, and `UnlessNode` override to their
-/// specific types. `StatementsNode` and `ElseNode` pass through the parent type.
-/// In `check_dstr`, the parent type is read from the stack (the value saved
-/// before entering the InterpolatedStringNode), ensuring it reflects the true
-/// immediate parent.
+/// ## Investigation findings (2026-03-15)
 ///
-/// **LambdaNode:** In RuboCop's Parser gem, lambdas produce `:block` nodes, so
-/// `always_indented?` is true for lambda bodies. Added `LambdaNode` → `Block`.
+/// **Root cause of 47 FPs:** The `visit_branch_node_enter`/`visit_branch_node_leave`
+/// hooks are NOT reliably called for all nodes in Prism. `StatementsNode`
+/// sometimes bypasses `visit_branch_node_enter` (depending on the parent node).
+/// The previous code used `visit_statements_node` to read `stack.last()` for
+/// "pass-through" of the parent type, but when `visit_branch_node_enter` was
+/// not called for StatementsNode, `stack.last()` returned the wrong entry.
+///
+/// **Fix:** Use a stack-length check in `visit_statements_node`/`visit_else_node`
+/// to detect whether `visit_branch_node_enter` was called. If it was, restore
+/// `nearest_parent_type` from the saved value (the pushed entry). If not,
+/// keep the inherited value. This correctly handles both cases.
 pub struct LineEndStringConcatenationIndentation;
 
 impl Cop for LineEndStringConcatenationIndentation {
@@ -54,8 +56,9 @@ impl Cop for LineEndStringConcatenationIndentation {
             diagnostics: Vec::new(),
             style,
             indent_width,
-            direct_parent_type: ParentType::TopLevel,
-            parent_type_stack: Vec::new(),
+            nearest_parent_type: ParentType::TopLevel,
+            saved_parent_types: Vec::new(),
+            expected_stack_depth: 0,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -69,14 +72,14 @@ struct ConcatVisitor<'a> {
     diagnostics: Vec<Diagnostic>,
     style: &'a str,
     indent_width: usize,
-    /// The type of the direct parent of the current node.
-    /// RuboCop's `always_indented?` checks if the dstr's immediate parent is
-    /// one of [nil, :block, :begin, :def, :defs, :if]. We track this via a
-    /// stack: `visit_branch_node_enter` pushes the current type and defaults
-    /// to Other; specific visitors override to the correct type.
-    direct_parent_type: ParentType,
-    /// Stack of saved parent types, pushed/popped by enter/leave hooks.
-    parent_type_stack: Vec<ParentType>,
+    /// The current effective parent type for `always_indented?` checks.
+    nearest_parent_type: ParentType,
+    /// Save/restore stack for `nearest_parent_type`.
+    saved_parent_types: Vec<ParentType>,
+    /// Expected stack depth at the next `visit_statements_node` or
+    /// `visit_else_node` call. Used to detect whether
+    /// `visit_branch_node_enter` was called for that node.
+    expected_stack_depth: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -137,13 +140,10 @@ impl ConcatVisitor<'_> {
         }
 
         // RuboCop's `always_indented?` checks the DIRECT parent type.
-        // Only these parent types force indented mode:
-        //   nil (top-level), :block, :begin, :def, :defs, :if
-        // Read the parent type from the stack — the value saved by
-        // visit_branch_node_enter when entering this InterpolatedStringNode,
-        // which is the type of this dstr's actual parent node.
+        // saved_parent_types.last() contains the value saved when
+        // visit_branch_node_enter ran for THIS InterpolatedStringNode.
         let parent_type = self
-            .parent_type_stack
+            .saved_parent_types
             .last()
             .copied()
             .unwrap_or(ParentType::TopLevel);
@@ -182,9 +182,6 @@ impl ConcatVisitor<'_> {
                 0
             };
 
-            // Check if the first part's grandparent is a pair (hash key-value)
-            // In that case, base_column is the pair's column
-            // For simplicity, use the line indentation as base
             let expected_indent = first_line_indent + self.indent_width;
 
             if columns[1] != expected_indent {
@@ -200,7 +197,6 @@ impl ConcatVisitor<'_> {
             }
 
             // Check alignment of third+ parts with the second part
-            // RuboCop updates base_column after each check (rolling base)
             if columns.len() >= 3 {
                 let mut base = columns[1];
                 for (idx, &col) in columns[2..].iter().enumerate() {
@@ -216,11 +212,10 @@ impl ConcatVisitor<'_> {
                             "Align parts of a string concatenated with backslash.".to_string(),
                         ));
                     }
-                    base = col; // Update rolling base like RuboCop
+                    base = col;
                 }
             }
         } else if self.style == "aligned" {
-            // check_aligned from index 1: parts should be aligned (rolling base)
             let mut base = columns[0];
             for (idx, &col) in columns[1..].iter().enumerate() {
                 if col != base {
@@ -235,25 +230,23 @@ impl ConcatVisitor<'_> {
                         "Align parts of a string concatenated with backslash.".to_string(),
                     ));
                 }
-                base = col; // Update rolling base like RuboCop
+                base = col;
             }
         }
     }
 }
 
 impl<'pr> Visit<'pr> for ConcatVisitor<'_> {
-    // --- Stack-based parent type tracking ---
-    // visit_branch_node_enter/leave are called by the Visit trait dispatch
-    // for EVERY branch node. We use them to default all nodes to Other,
-    // then specific visitor overrides set the correct type.
-
     fn visit_branch_node_enter(&mut self, _node: ruby_prism::Node<'pr>) {
-        self.parent_type_stack.push(self.direct_parent_type);
-        self.direct_parent_type = ParentType::Other;
+        self.saved_parent_types.push(self.nearest_parent_type);
+        self.nearest_parent_type = ParentType::Other;
     }
 
     fn visit_branch_node_leave(&mut self) {
-        self.direct_parent_type = self.parent_type_stack.pop().unwrap_or(ParentType::TopLevel);
+        self.nearest_parent_type = self
+            .saved_parent_types
+            .pop()
+            .unwrap_or(ParentType::TopLevel);
     }
 
     fn visit_interpolated_string_node(&mut self, node: &ruby_prism::InterpolatedStringNode<'pr>) {
@@ -262,66 +255,63 @@ impl<'pr> Visit<'pr> for ConcatVisitor<'_> {
     }
 
     // --- "Always indented" parent types ---
-    // These correspond to RuboCop's PARENT_TYPES_FOR_INDENTED:
-    //   [nil, :block, :begin, :def, :defs, :if]
-    // visit_branch_node_enter already pushed and set Other;
-    // we override to the correct type before recursing.
-
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
-        self.direct_parent_type = ParentType::Def;
+        self.nearest_parent_type = ParentType::Def;
+        self.expected_stack_depth = self.saved_parent_types.len();
         ruby_prism::visit_def_node(self, node);
     }
 
     fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
-        self.direct_parent_type = ParentType::Block;
+        self.nearest_parent_type = ParentType::Block;
+        self.expected_stack_depth = self.saved_parent_types.len();
         ruby_prism::visit_block_node(self, node);
     }
 
     fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
-        // In RuboCop's Parser gem, lambdas produce :block nodes.
-        self.direct_parent_type = ParentType::Block;
+        self.nearest_parent_type = ParentType::Block;
+        self.expected_stack_depth = self.saved_parent_types.len();
         ruby_prism::visit_lambda_node(self, node);
     }
 
     fn visit_begin_node(&mut self, node: &ruby_prism::BeginNode<'pr>) {
-        self.direct_parent_type = ParentType::Begin;
+        self.nearest_parent_type = ParentType::Begin;
+        self.expected_stack_depth = self.saved_parent_types.len();
         ruby_prism::visit_begin_node(self, node);
     }
 
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
-        self.direct_parent_type = ParentType::If;
+        self.nearest_parent_type = ParentType::If;
+        self.expected_stack_depth = self.saved_parent_types.len();
         ruby_prism::visit_if_node(self, node);
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
-        self.direct_parent_type = ParentType::If;
+        self.nearest_parent_type = ParentType::If;
+        self.expected_stack_depth = self.saved_parent_types.len();
         ruby_prism::visit_unless_node(self, node);
     }
 
     // --- Pass-through nodes ---
-    // These Prism wrappers are transparent in RuboCop's Parser gem.
-    // Restore the parent type from before visit_branch_node_enter changed it.
-
-    fn visit_else_node(&mut self, node: &ruby_prism::ElseNode<'pr>) {
-        // In RuboCop's Parser gem, `else` is part of the `:if` node,
-        // so `dstr.parent.type` inside an else branch is `:if`.
-        self.direct_parent_type = self
-            .parent_type_stack
-            .last()
-            .copied()
-            .unwrap_or(ParentType::TopLevel);
-        ruby_prism::visit_else_node(self, node);
+    fn visit_statements_node(&mut self, node: &ruby_prism::StatementsNode<'pr>) {
+        // Detect if visit_branch_node_enter was called for this node by
+        // checking if the stack grew since the parent set expected_stack_depth.
+        if self.saved_parent_types.len() > self.expected_stack_depth {
+            // visit_branch_node_enter was called: restore the saved value
+            if let Some(&saved) = self.saved_parent_types.last() {
+                self.nearest_parent_type = saved;
+            }
+        }
+        // else: not called, nearest_parent_type already correct
+        ruby_prism::visit_statements_node(self, node);
     }
 
-    fn visit_statements_node(&mut self, node: &ruby_prism::StatementsNode<'pr>) {
-        // StatementsNode is Prism's wrapper; pass through the parent type
-        // from the enclosing node.
-        self.direct_parent_type = self
-            .parent_type_stack
-            .last()
-            .copied()
-            .unwrap_or(ParentType::TopLevel);
-        ruby_prism::visit_statements_node(self, node);
+    fn visit_else_node(&mut self, node: &ruby_prism::ElseNode<'pr>) {
+        if self.saved_parent_types.len() > self.expected_stack_depth {
+            if let Some(&saved) = self.saved_parent_types.last() {
+                self.nearest_parent_type = saved;
+            }
+        }
+        ruby_prism::visit_else_node(self, node);
     }
 }
 

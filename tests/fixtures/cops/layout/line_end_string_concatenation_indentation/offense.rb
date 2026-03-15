@@ -60,3 +60,18 @@ def set_default
       "value"
       ^^^^^^^ Layout/LineEndStringConcatenationIndentation: Align parts of a string concatenated with backslash.
 end
+
+# In always-indented context (if branch), aligned dstr should be indented
+# (previously a false negative)
+def show_message
+  str = ""
+  str << if condition
+           "The first part of a long " \
+           "message that spans multiple lines."
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Layout/LineEndStringConcatenationIndentation: Indent the first part of a string concatenated with backslash.
+         else
+           "A different " \
+           "message here."
+           ^^^^^^^^^^^^^^^ Layout/LineEndStringConcatenationIndentation: Indent the first part of a string concatenated with backslash.
+         end
+end
