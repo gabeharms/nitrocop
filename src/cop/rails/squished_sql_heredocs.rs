@@ -23,6 +23,27 @@ use crate::parse::source::SourceFile;
 /// use single-quoted delimiters (common for heredocs that should not interpolate). The tag
 /// extraction only matched `SQL` literally but not `'SQL'` or `"SQL"`.
 /// Fix: strip surrounding quotes from the tag before comparing.
+///
+/// **FP root cause (4 FP, 2 repos):**
+/// 1. `.squish` chained on the line AFTER the closing heredoc tag (3 FP in ransack):
+///    ```ruby
+///    query = <<-SQL
+///      SELECT ...
+///    SQL
+///    .squish
+///    ```
+///    RuboCop's AST check (`node.parent&.send_type? && node.parent.method?(:squish)`)
+///    catches this because the heredoc is the receiver regardless of line breaks.
+///    nitrocop only checked for `.squish` on the opening tag line.
+///    Fix: also check for `.squish` after the closing heredoc tag.
+///
+/// 2. RuboCop's regex-based SQL comment detection creates phantom `--` (1 FP in discourse):
+///    `SQL_IDENTIFIER_MARKERS` regex `.+?` requires 1+ char, so empty quotes `''`
+///    are NOT stripped. After stripping adjacent non-empty quotes, bare `-` chars
+///    can merge to form `--`, triggering false comment detection. Example:
+///    `REPLACE(flair_url, 'fas fa-', ''), ' fa-', '-')` → phantom `--`.
+///    nitrocop's byte scanner handled quotes correctly but this diverged from RuboCop.
+///    Fix: match RuboCop's behavior — require 1+ char inside quotes to strip.
 pub struct SquishedSQLHeredocs;
 
 /// Check if heredoc content contains SQL single-line comments (`--`).
@@ -30,55 +51,49 @@ pub struct SquishedSQLHeredocs;
 /// Matches RuboCop's approach: strip SQL identifier markers (double-quoted,
 /// single-quoted, and bracket-quoted identifiers) then check for `--`
 /// anywhere in the remaining content.
+///
+/// RuboCop uses `gsub(/(".+?")|('.+?')|(\[.+?\])/, '')` which REMOVES matched
+/// quoted sections and checks the resulting string for `--`. This means
+/// characters from adjacent sections can become adjacent after removal,
+/// potentially forming phantom `--`. We replicate this by building a stripped
+/// string and then checking for `--`, matching RuboCop's behavior exactly.
 fn contains_sql_comments(source: &SourceFile, content_start: usize, content_end: usize) -> bool {
     let bytes = source.as_bytes();
     if content_start >= content_end || content_end > bytes.len() {
         return false;
     }
     let content = &bytes[content_start..content_end];
+
+    // Build a new string with SQL identifier markers removed, matching
+    // RuboCop's gsub(/(".+?")|('.+?')|(\[.+?\])/, '')
+    let mut stripped = Vec::with_capacity(content.len());
     let mut i = 0;
     while i < content.len() {
         let b = content[i];
-        // Skip single-quoted strings: '...'
-        if b == b'\'' {
-            i += 1;
-            while i < content.len() && content[i] != b'\'' {
-                i += 1;
+        // Try to match single-quoted: '.+?' (lazy, 1+ char inside)
+        if (b == b'\'' || b == b'"') && i + 2 < content.len() {
+            let quote = b;
+            // Find the closing quote (lazy match: first occurrence after 1+ char)
+            // .+? means at least one char, then the earliest closing quote
+            if let Some(close_offset) = content[i + 2..].iter().position(|&c| c == quote) {
+                // Skip the entire match: opening quote + content + closing quote
+                i = i + 2 + close_offset + 1;
+                continue;
             }
-            if i < content.len() {
-                i += 1; // skip closing quote
-            }
-            continue;
         }
-        // Skip double-quoted strings: "..."
-        if b == b'"' {
-            i += 1;
-            while i < content.len() && content[i] != b'"' {
-                i += 1;
+        // Try to match bracket identifier: [.+?] (lazy, 1+ char inside)
+        if b == b'[' && i + 2 < content.len() {
+            if let Some(close_offset) = content[i + 2..].iter().position(|&c| c == b']') {
+                i = i + 2 + close_offset + 1;
+                continue;
             }
-            if i < content.len() {
-                i += 1; // skip closing quote
-            }
-            continue;
         }
-        // Skip bracket identifiers: [...]
-        if b == b'[' {
-            i += 1;
-            while i < content.len() && content[i] != b']' {
-                i += 1;
-            }
-            if i < content.len() {
-                i += 1; // skip closing bracket
-            }
-            continue;
-        }
-        // Check for -- (SQL comment)
-        if b == b'-' && i + 1 < content.len() && content[i + 1] == b'-' {
-            return true;
-        }
+        stripped.push(b);
         i += 1;
     }
-    false
+
+    // Check for -- in the stripped content
+    stripped.windows(2).any(|w| w == b"--")
 }
 
 impl Cop for SquishedSQLHeredocs {
@@ -177,6 +192,25 @@ impl Cop for SquishedSQLHeredocs {
         // Also check if the opening text itself contains .squish (e.g., <<~SQL.squish)
         if opening_text.windows(7).any(|w| w == b".squish") {
             return;
+        }
+
+        // Check if .squish is chained on the line after the closing heredoc tag:
+        //   <<-SQL
+        //     ...
+        //   SQL
+        //   .squish
+        let after_close_start = closing_loc.end_offset();
+        if after_close_start < bytes.len() {
+            let after_close = &bytes[after_close_start..];
+            // Skip whitespace (including newline) to find the next non-whitespace
+            let trimmed = after_close
+                .iter()
+                .position(|&b| !b.is_ascii_whitespace())
+                .map(|p| &after_close[p..])
+                .unwrap_or(&[]);
+            if trimmed.starts_with(b".squish") {
+                return;
+            }
         }
 
         // Check for SQL comments that would break if squished
