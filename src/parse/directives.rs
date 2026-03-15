@@ -9,6 +9,18 @@ static DIRECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"#\s*(?:rubocop|nitrocop)\s*:\s*(disable|enable|todo)\s+(.+)").unwrap()
 });
 
+/// Normalize a cop name from disable comments.
+///
+/// RuboCop accepts `Department::CopName` (Ruby constant path style) as equivalent
+/// to `Department/CopName` in inline directive comments. Normalize to `/` form.
+fn normalize_directive_cop_name(name: &str) -> String {
+    if let Some((dept, cop)) = name.split_once("::") {
+        format!("{dept}/{cop}")
+    } else {
+        name.to_string()
+    }
+}
+
 /// Legacy directive aliases derived from obsoletion.yml.
 ///
 /// Maps new cop name -> old cop names when RuboCop still treats the old name as
@@ -133,6 +145,9 @@ impl DisabledRanges {
             match action {
                 "disable" | "todo" => {
                     for &cop in &cop_names {
+                        // Normalize Department::CopName -> Department/CopName
+                        let cop = normalize_directive_cop_name(cop);
+                        let cop = cop.as_str();
                         if is_inline {
                             let range = (line, line);
                             ranges.entry(cop.to_string()).or_default().push(range);
@@ -173,6 +188,9 @@ impl DisabledRanges {
                 }
                 "enable" => {
                     for &cop in &cop_names {
+                        // Normalize Department::CopName -> Department/CopName
+                        let cop = normalize_directive_cop_name(cop);
+                        let cop = cop.as_str();
                         if let Some((start_line, _col, directive_idx)) = open_disables.remove(cop) {
                             let range = (start_line, line);
                             ranges.entry(cop.to_string()).or_default().push(range);
@@ -738,6 +756,28 @@ mod tests {
         assert!(
             unused.is_empty(),
             "moved legacy alias directive should be marked used"
+        );
+    }
+
+    #[test]
+    fn double_colon_separator_normalized_to_slash() {
+        // RuboCop accepts `Department::CopName` as equivalent to `Department/CopName`.
+        // Both block and inline forms should be normalized.
+        let mut dr = disabled_ranges(
+            "# rubocop:disable Rails::SkipsModelValidations\nfoo.update_attribute(:x, y)\n# rubocop:enable Rails::SkipsModelValidations\n",
+        );
+        assert!(
+            dr.check_and_mark_used("Rails/SkipsModelValidations", 2),
+            "Rails::SkipsModelValidations should suppress Rails/SkipsModelValidations"
+        );
+
+        // Inline form
+        let mut dr2 = disabled_ranges(
+            "foo.update_attribute(:x, y) # rubocop:disable Rails::SkipsModelValidations\n",
+        );
+        assert!(
+            dr2.check_and_mark_used("Rails/SkipsModelValidations", 1),
+            "inline Rails::SkipsModelValidations should suppress Rails/SkipsModelValidations"
         );
     }
 
