@@ -88,3 +88,7 @@ foo.do_something = condition ? foo.do_something : bar.do_something
 
 # Multi-assignment
 foo, bar = baz
+
+# Ternary expressions - RuboCop does NOT flag ternary self-assignment
+foo = condition ? bar : foo
+foo = condition ? foo : bar

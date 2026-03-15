@@ -1,11 +1,3 @@
-# Self-assigning else branch in ternary
-foo = condition ? bar : foo
-                        ^^^ Style/RedundantSelfAssignmentBranch: Remove the self-assignment branch.
-
-# Self-assigning if branch in ternary
-foo = condition ? foo : bar
-                  ^^^ Style/RedundantSelfAssignmentBranch: Remove the self-assignment branch.
-
 # Self-assigning else branch in if/else
 foo = if condition
         bar

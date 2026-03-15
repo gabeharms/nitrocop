@@ -12,7 +12,7 @@ use crate::parse::source::SourceFile;
 ///
 /// ## Conditions for offense
 /// - LHS is a local variable assignment (`LocalVariableWriteNode`)
-/// - RHS is an if/else or ternary expression (NOT case/when)
+/// - RHS is an if/else expression (NOT case/when, NOT ternary)
 /// - No `elsif` branch present
 /// - Neither branch has multiple statements
 /// - One branch is a bare read of the same local variable
@@ -22,6 +22,9 @@ use crate::parse::source::SourceFile;
 /// - Flagging if/elsif/else chains
 /// - Flagging branches with multiple statements
 /// - Reporting offense on the whole assignment instead of the self-assignment branch
+/// - Flagging ternary expressions (`a ? b : a`) — RuboCop's `use_if_and_else_branch?`
+///   returns false for ternaries (`!expression.ternary? || !expression.else?` = false).
+///   Found via corpus FP in linguist repo's sinatra.rb sample.
 ///
 /// ## Historical FN causes
 /// - None expected — RuboCop only handles local variables, same as this cop.
@@ -53,11 +56,16 @@ impl Cop for RedundantSelfAssignmentBranch {
         let var_name = write.name().as_slice();
         let value = write.value();
 
-        // Only handle if/ternary expressions — NOT case/when
+        // Only handle if/else expressions — NOT case/when or ternary
         let if_node = match value.as_if_node() {
             Some(n) => n,
             None => return,
         };
+
+        // Skip ternary expressions (a ? b : c) — RuboCop only flags if/else form
+        if if_node.if_keyword_loc().is_none() {
+            return;
+        }
 
         self.check_if_node(source, &if_node, var_name, diagnostics);
     }
