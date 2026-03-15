@@ -103,3 +103,10 @@ allow = [
 [[cli.tools]]
 name = "gh"
 mode = "direct"
+
+# --- Container setup (tools installed on each start via postStartCommand) ---
+[setup]
+claude_code = true
+codex = true
+gh = true
+ssh_signing = true

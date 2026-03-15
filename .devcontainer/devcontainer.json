@@ -12,10 +12,7 @@
   },
   "postCreateCommand": ".devcontainer/setup.sh",
   "postStartCommand": {
-    "claude-code": "command -v claude >/dev/null 2>&1 || curl -fsSL https://claude.ai/install.sh | bash; [ -f ~/.claude.json ] || echo '{\"hasCompletedOnboarding\":true}' > ~/.claude.json",
-    "codex": "command -v codex >/dev/null 2>&1 || { command -v npm >/dev/null 2>&1 && npm install -g @openai/codex || true; }",
-    "gh": "command -v gh >/dev/null 2>&1 || { curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null && echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null && sudo apt-get update -qq && sudo apt-get install -y gh; }",
-    "ssh-signing": "git config --global gpg.ssh.program /usr/bin/ssh-keygen; KEY=$(git config --global user.signingkey 2>/dev/null || true); [ -n \"$KEY\" ] && echo \"$KEY\" > ~/.ssh-signing-key.pub && git config --global user.signingkey ~/.ssh-signing-key.pub || true"
+    "kap-setup": "/opt/kap/bin/kap-post-start"
   },
   "remoteUser": "vscode",
   "dockerComposeFile": ["docker-compose.yml", "docker-compose.kap.yml"],
