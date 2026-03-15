@@ -68,6 +68,17 @@ RSpec.describe Foo do
   end
 end
 
+# Trailing whitespace after `end` should not suppress offense
+RSpec.describe TrailingWhitespace do
+  it "parses simple addition" do
+    expect(true).to be true
+  end   
+  ^^^^^^^ RSpec/EmptyLineAfterExample: Add an empty line after `it`.
+  it "parses complex addition" do
+    expect(true).to be true
+  end
+end
+
 # Examples inside a module wrapper — must be detected (RuboCop on_block fires everywhere)
 module SomeModule
   RSpec.describe Foo do

@@ -68,6 +68,18 @@ use crate::parse::source::SourceFile;
 /// Fix: removed the top-level spec group filter; the visitor now starts from the
 /// program root and walks all nodes. The FN count was 292; removing the scoping
 /// restriction captures examples inside module/class wrapping at file scope.
+///
+/// ## Corpus investigation (2026-03-15)
+///
+/// FP=0, FN=39 (38 from parslet, 1 other).
+///
+/// Root cause: `is_only_closing_syntax` returned `true` for pure whitespace,
+/// so when a block's `end` had trailing spaces (e.g., `end   `), the bytes
+/// after the node end offset were just spaces, and the function reported the
+/// example as "last child on line", suppressing the offense.
+///
+/// Fix: `is_only_closing_syntax` now requires at least one actual closing token
+/// (`;`, `}`, or `end`). Pure whitespace alone returns `false`.
 pub struct EmptyLineAfterExample;
 
 impl Cop for EmptyLineAfterExample {
@@ -344,12 +356,19 @@ fn is_last_child_on_line(source: &SourceFile, node_end_offset: usize, end_line: 
 }
 
 /// Returns true if the byte slice contains only whitespace, semicolons, closing
-/// braces `}`, and/or the `end` keyword (with word boundaries).
+/// braces `}`, and/or the `end` keyword (with word boundaries), AND contains at
+/// least one actual closing token (`;`, `}`, or `end`). Pure whitespace returns
+/// false — trailing spaces after `end` should not suppress the offense.
 fn is_only_closing_syntax(bytes: &[u8]) -> bool {
     let mut i = 0;
+    let mut has_closing_token = false;
     while i < bytes.len() {
         match bytes[i] {
-            b' ' | b'\t' | b';' | b'}' => {
+            b' ' | b'\t' => {
+                i += 1;
+            }
+            b';' | b'}' => {
+                has_closing_token = true;
                 i += 1;
             }
             b'e' => {
@@ -358,6 +377,7 @@ fn is_only_closing_syntax(bytes: &[u8]) -> bool {
                     if after == bytes.len()
                         || matches!(bytes[after], b' ' | b'\t' | b';' | b'}' | b'\n')
                     {
+                        has_closing_token = true;
                         i = after;
                         continue;
                     }
@@ -367,7 +387,7 @@ fn is_only_closing_syntax(bytes: &[u8]) -> bool {
             _ => return false,
         }
     }
-    true
+    has_closing_token
 }
 
 /// Walk descendants of `node` to find the maximum `closing_loc().end_offset()`
