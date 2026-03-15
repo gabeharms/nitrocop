@@ -63,6 +63,15 @@ use ruby_prism::Visit;
 /// Fix: Added `inside_in_node` context tracking. When inside an `InNode`, `check_unless_present`
 /// is skipped.
 ///
+/// ## Investigation (2026-03-15, round 3)
+///
+/// **FN root cause (2 FN):** `nil? || empty?` with implicit receiver (self)
+/// was not matched. `nil_check_receiver` required an explicit receiver via
+/// `receiver_source` which returns None for receiverless calls.
+/// Fix: Changed `nil_check_receiver` return type to `Option<(Option<&[u8]>, &[u8])>` so
+/// None receiver (implicit self) is preserved. Updated `check_nil_or_empty` to match
+/// when both nil-check and empty? have None receivers (both implicit self).
+///
 /// **FN root cause (112 FN):** The `!foo || foo.empty?` pattern was not matched by
 /// `nil_check_receiver`. RuboCop's `nil_or_empty?` NodePattern includes `(send $_ :!)` as one
 /// of the left-side alternatives, meaning `!foo || foo.empty?` is a valid NilOrEmpty offense.
@@ -80,26 +89,27 @@ fn receiver_source<'a>(call: &ruby_prism::CallNode<'a>) -> Option<&'a [u8]> {
 }
 
 /// Check if the left side of an OR node matches a nil-check-like pattern:
-/// - `foo.nil?`
+/// - `foo.nil?` or `nil?` (implicit self)
 /// - `foo == nil`
 /// - `nil == foo`
 /// - `!foo` (boolean negation — RuboCop's `(send $_ :!)` pattern)
 ///
-/// Returns (receiver source bytes, left side source bytes) if matched.
+/// Returns (receiver source bytes option, left side source bytes) if matched.
+/// The receiver is `None` when using implicit self (e.g., bare `nil?`).
 /// RuboCop's `nil_or_empty?` NodePattern matches all four forms.
-fn nil_check_receiver<'a>(node: &ruby_prism::Node<'a>) -> Option<(&'a [u8], &'a [u8])> {
+fn nil_check_receiver<'a>(node: &ruby_prism::Node<'a>) -> Option<(Option<&'a [u8]>, &'a [u8])> {
     let call = node.as_call_node()?;
     let method = call.name().as_slice();
     let left_src = node.location().as_slice();
 
     if method == b"nil?" {
-        // foo.nil?
-        return receiver_source(&call).map(|r| (r, left_src));
+        // foo.nil? or bare nil? (implicit self)
+        return Some((receiver_source(&call), left_src));
     }
 
     if method == b"!" {
         // !foo — boolean negation. RuboCop's `(send $_ :!)` captures the receiver.
-        return receiver_source(&call).map(|r| (r, left_src));
+        return receiver_source(&call).map(|r| (Some(r), left_src));
     }
 
     if method == b"==" {
@@ -114,11 +124,11 @@ fn nil_check_receiver<'a>(node: &ruby_prism::Node<'a>) -> Option<(&'a [u8], &'a 
 
         if arg.as_nil_node().is_some() {
             // foo == nil → receiver is foo
-            return Some((recv.location().as_slice(), left_src));
+            return Some((Some(recv.location().as_slice()), left_src));
         }
         if recv.as_nil_node().is_some() {
             // nil == foo → receiver is arg
-            return Some((arg.location().as_slice(), left_src));
+            return Some((Some(arg.location().as_slice()), left_src));
         }
     }
 
@@ -174,7 +184,7 @@ struct BlankVisitor<'a, 'src> {
 }
 
 impl<'pr> BlankVisitor<'_, '_> {
-    /// Check NilOrEmpty: `foo.nil? || foo.empty?`
+    /// Check NilOrEmpty: `foo.nil? || foo.empty?` or `nil? || empty?` (implicit self)
     fn check_nil_or_empty(&mut self, or_node: &ruby_prism::OrNode<'pr>) {
         let left = or_node.left();
         let right = or_node.right();
@@ -187,23 +197,31 @@ impl<'pr> BlankVisitor<'_, '_> {
                     .call_operator_loc()
                     .is_some_and(|loc| loc.as_slice() == b"&.");
                 if right_call.name().as_slice() == b"empty?" && !is_safe_nav {
-                    if let Some(empty_recv) = receiver_source(&right_call) {
-                        if nil_recv == empty_recv {
-                            let loc = or_node.location();
-                            let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                            let recv_str = std::str::from_utf8(nil_recv).unwrap_or("object");
-                            let left_str = std::str::from_utf8(left_src).unwrap_or("nil?");
-                            let right_str = std::str::from_utf8(right.location().as_slice())
-                                .unwrap_or("empty?");
-                            self.diagnostics.push(self.cop.diagnostic(
-                                self.source,
-                                line,
-                                column,
+                    let empty_recv = receiver_source(&right_call);
+                    // Both receivers must match: both Some with same source, or both None (implicit self)
+                    if nil_recv == empty_recv {
+                        let loc = or_node.location();
+                        let (line, column) = self.source.offset_to_line_col(loc.start_offset());
+                        let left_str = std::str::from_utf8(left_src).unwrap_or("nil?");
+                        let right_str =
+                            std::str::from_utf8(right.location().as_slice()).unwrap_or("empty?");
+                        let message = match nil_recv {
+                            Some(recv_bytes) => {
+                                let recv_str = std::str::from_utf8(recv_bytes).unwrap_or("object");
                                 format!(
                                     "Use `{recv_str}.blank?` instead of `{left_str} || {right_str}`."
-                                ),
-                            ));
-                        }
+                                )
+                            }
+                            None => {
+                                format!("Use `blank?` instead of `{left_str} || {right_str}`.")
+                            }
+                        };
+                        self.diagnostics.push(self.cop.diagnostic(
+                            self.source,
+                            line,
+                            column,
+                            message,
+                        ));
                     }
                 }
             }

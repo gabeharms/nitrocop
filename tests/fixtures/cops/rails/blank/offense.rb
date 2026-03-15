@@ -35,3 +35,8 @@ end
 
 !url || url.empty?
 ^^^^^^^^^^^^^^^^^^ Rails/Blank: Use `url.blank?` instead of `!url || url.empty?`.
+
+return self if nil? || empty?
+               ^^^^^^^^^^^^^^ Rails/Blank: Use `blank?` instead of `nil? || empty?`.
+return [] if nil? || empty?
+             ^^^^^^^^^^^^^^ Rails/Blank: Use `blank?` instead of `nil? || empty?`.
