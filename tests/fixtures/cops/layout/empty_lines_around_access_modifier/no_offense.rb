@@ -188,3 +188,31 @@ private
 
 def top_level_helper
 end
+
+# `public` used as an RSpec let variable receiver — not an access modifier
+context "user not signed in" do
+  context "given a public post" do
+    let(:public) { post(:status_message, text: "hello", public: true) }
+
+    it "shows a public post" do
+      get :show, params: {id: public.id}
+    end
+  end
+end
+
+# `public` used as hash value in argument list — not an access modifier
+describe "messages" do
+  let(:public) { recipient.nil? }
+  let(:local_parent) { create(:status_message, author: person, public: public) }
+  let(:remote_parent) { create(:status_message, author: other.person, public: public) }
+end
+
+# `private` inside a single-line inline class — same line as sibling
+it "does not delegate private methods" do
+  object = Class.new{ private; def hello_world; end }.new
+end
+
+# `private` inside single-line class_eval — same line as sibling
+it "returns true for own private methods" do
+  Decorator.class_eval{private; def hello_world; end}
+end

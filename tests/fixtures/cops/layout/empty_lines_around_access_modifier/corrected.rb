@@ -108,3 +108,24 @@ private
 
 # comment
 1
+
+# Access modifier inside a receiverful block at root level, missing blank after
+Puma::Plugin.create do
+  def start(launcher)
+  end
+
+  private
+
+  def start_forked(launcher)
+  end
+end
+
+# Access modifier inside a receiverful block at root level, missing blank after (2)
+ActiveSupport.on_load(:active_storage_attachment) do
+  validate :no_reuse, on: :create
+
+  private
+
+  def no_reuse
+  end
+end

@@ -52,16 +52,22 @@ use crate::parse::source::SourceFile;
 ///    `1.times { private }` also need to bypass the old whole-line
 ///    `is_bare_modifier_line` filter.
 ///
-/// Updated status (2026-03-15, round 3):
-/// - `verify-cop-locations.py` now reports all 34 known CI FP/FN fixed locally
-///   for this cop.
-/// - `check-cop.py --verbose --rerun` reports `Missing=0`, with only excess
-///   offense total left inside existing file-drop-noise from parser-crash repos.
-/// - The earlier `Builder.new do` no-offense fixture was wrong and was moved to
-///   offense coverage after direct RuboCop verification. The old top-level
-///   `module_eval do` no-offense fixture was removed rather than re-encoded,
-///   because the exact corpus FP depended on an enclosing `begin/rescue`
-///   wrapper, not on receiverful blocks being universally ignored.
+/// 5. `is_inline_brace_block_modifier_line` was too broad: any line containing
+///    `{` before the modifier column and `}` after matched, even hash literals
+///    (`{id: public.id}`) and multi-statement inline blocks
+///    (`Class.new{ private; def foo; end }`). Fix: require the modifier to be
+///    the SOLE content between `{` and `}`, ignoring whitespace (2026-03-15).
+/// 6. Receiverful blocks at Root scope (e.g., `Puma::Plugin.create do ... end`)
+///    were pushed as `NonClass`, so bare access modifiers inside were missed.
+///    RuboCop's `in_macro_scope?` treats any block whose parent is in macro
+///    scope (including root) as valid. Fix: allow `Root` in the receiverful
+///    block scope check (2026-03-15).
+///
+/// Updated status (2026-03-15, round 4):
+/// - `verify-cop-locations.py` reports ALL 14 known CI FP/FN (9 FP, 5 FN)
+///   fixed locally for this cop.
+/// - `check-cop.py --verbose --rerun` reports `Missing=0`, with excess
+///   offense total within existing file-drop-noise from parser-crash repos.
 pub struct EmptyLinesAroundAccessModifier;
 
 const ACCESS_MODIFIERS: &[&[u8]] = &[b"private", b"protected", b"public", b"module_function"];
@@ -173,19 +179,44 @@ fn is_bare_modifier_line(line: &[u8], method_name: &[u8]) -> bool {
 /// Allow inline brace-block forms like `1.times { private }` and
 /// `module_eval { module_function }`, which RuboCop still treats as bare
 /// access modifiers even though the line contains surrounding block syntax.
+/// The modifier must be the SOLE content between `{` and `}` (ignoring
+/// whitespace). This prevents matching hash literals like `{id: public.id}`
+/// and multi-statement inline blocks like `Class.new{ private; def foo; end }`.
 fn is_inline_brace_block_modifier_line(line: &[u8], column: usize, method_name: &[u8]) -> bool {
-    let end = column.saturating_add(method_name.len());
-    if end > line.len() {
+    let end_pos = column.saturating_add(method_name.len());
+    if end_pos > line.len() {
         return false;
     }
 
-    if &line[column..end] != method_name {
+    if &line[column..end_pos] != method_name {
         return false;
     }
 
     let before = &line[..column];
-    let after = &line[end..];
-    before.contains(&b'{') && after.contains(&b'}')
+    let after = &line[end_pos..];
+
+    // Find the last `{` before the modifier
+    let Some(brace_pos) = before.iter().rposition(|&b| b == b'{') else {
+        return false;
+    };
+    // Everything between `{` and the modifier must be whitespace
+    let between_open_and_mod = &before[brace_pos + 1..];
+    if !between_open_and_mod
+        .iter()
+        .all(|&b| b == b' ' || b == b'\t')
+    {
+        return false;
+    }
+
+    // Find the first `}` after the modifier
+    let Some(close_pos) = after.iter().position(|&b| b == b'}') else {
+        return false;
+    };
+    // Everything between the modifier and `}` must be whitespace
+    let between_mod_and_close = &after[..close_pos];
+    between_mod_and_close
+        .iter()
+        .all(|&b| b == b' ' || b == b'\t')
 }
 
 /// Collected access modifier with context about its enclosing scope.
@@ -432,7 +463,7 @@ impl<'pr> ruby_prism::Visit<'pr> for AccessModifierCollector {
             if node.receiver().is_some()
                 && matches!(
                     self.current_scope_kind(),
-                    ScopeKind::ClassLike | ScopeKind::DslBlock
+                    ScopeKind::Root | ScopeKind::ClassLike | ScopeKind::DslBlock
                 )
             {
                 self.push_dsl_block_scope(opening, closing);
