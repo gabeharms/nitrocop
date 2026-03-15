@@ -155,9 +155,9 @@ GEM
     zeitwerk (2.7.5)
 
 PLATFORMS
-  aarch64-linux
   arm64-darwin-23
   arm64-darwin-25
+  x86_64-linux
 
 DEPENDENCIES
   railties (~> 8.0)
@@ -232,4 +232,4 @@ CHECKSUMS
   zeitwerk (2.7.5) sha256=d8da92128c09ea6ec62c949011b00ed4a20242b255293dd66bf41545398f73dd
 
 BUNDLED WITH
-  4.0.3
+  4.0.6
