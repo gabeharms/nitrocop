@@ -139,6 +139,15 @@ impl Cop for CaseLikeIf {
             None => return,
         };
 
+        // Phase 1.5: Check for regexps with named captures (RuboCop's regexp_with_working_captures?)
+        // case/when uses === which doesn't populate named capture local variables,
+        // so if-elsif chains using named captures must not be converted.
+        for pred in &predicates {
+            if with_unwrapped(pred, &regexp_with_working_captures) {
+                return;
+            }
+        }
+
         // Phase 2: Verify all conditions are convertible against the target
         for pred in &predicates {
             let convertible = with_unwrapped(pred, &|n| is_condition_convertible(n, &target));
@@ -158,9 +167,78 @@ impl Cop for CaseLikeIf {
     }
 }
 
+/// RuboCop's `regexp_with_working_captures?`: checks if a condition contains
+/// a regexp with named captures used with `=~` or `match`.
+/// Named captures work with `=~` (regexp on LHS) and `match` (either side).
+/// `match?` does NOT populate named captures, so it's not checked.
+fn regexp_with_working_captures(node: &ruby_prism::Node<'_>) -> bool {
+    // Handle `||` - check both sides
+    if let Some(or_node) = node.as_or_node() {
+        return with_unwrapped(&or_node.left(), &regexp_with_working_captures)
+            || with_unwrapped(&or_node.right(), &regexp_with_working_captures);
+    }
+
+    // In Prism, `/(?<name>.*)/ =~ foo` becomes a MatchWriteNode wrapping a CallNode.
+    // Check MatchWriteNode: the call inside is `=~` with regexp on LHS.
+    if let Some(mw) = node.as_match_write_node() {
+        let call = mw.call();
+        if let Some(receiver) = call.receiver() {
+            if regexp_has_named_captures(&receiver) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if let Some(call) = node.as_call_node() {
+        let method = std::str::from_utf8(call.name().as_slice()).unwrap_or("");
+        // Only `match` populates named captures, not `match?` or `=~` (as send node)
+        if method == "match" {
+            if let Some(receiver) = call.receiver() {
+                if regexp_has_named_captures(&receiver) {
+                    return true;
+                }
+            }
+            let args = call.arguments();
+            if let Some(arg) = args.as_ref().and_then(|a| a.arguments().iter().next()) {
+                if regexp_has_named_captures(&arg) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a node is a regexp literal containing named captures (`(?<name>...)` or `(?'name'...)`).
+fn regexp_has_named_captures(node: &ruby_prism::Node<'_>) -> bool {
+    if let Some(re) = node.as_regular_expression_node() {
+        let content = re.unescaped();
+        // Look for (?< or (?'  which indicate named captures
+        // (?<= and (?<! are lookbehind assertions, not named captures
+        let mut i = 0;
+        while i + 2 < content.len() {
+            if content[i] == b'(' && content[i + 1] == b'?' {
+                if i + 3 < content.len() && content[i + 2] == b'<' {
+                    // (?<  — named capture unless followed by = or ! (lookbehind)
+                    if content[i + 3] != b'=' && content[i + 3] != b'!' {
+                        return true;
+                    }
+                } else if content[i + 2] == b'\'' {
+                    // (?'name'...) — named capture
+                    return true;
+                }
+            }
+            i += 1;
+        }
+    }
+    false
+}
+
 /// Get the inner expression from a potentially parenthesized node.
-/// If the node is a ParenthesesNode containing exactly one statement,
-/// call the provided closure with that inner statement.
+/// Unwraps ParenthesesNode and BeginNode (RuboCop's `deparenthesize` handles
+/// both via `:begin` type in Parser AST; in Prism these are separate node types).
+/// If the node contains exactly one statement, recurse into it.
 /// Otherwise call the closure with the original node.
 fn with_unwrapped<R>(node: &ruby_prism::Node<'_>, f: &dyn Fn(&ruby_prism::Node<'_>) -> R) -> R {
     if let Some(paren) = node.as_parentheses_node() {
@@ -170,6 +248,15 @@ fn with_unwrapped<R>(node: &ruby_prism::Node<'_>, f: &dyn Fn(&ruby_prism::Node<'
                 if children.len() == 1 {
                     return with_unwrapped(&children[0], f);
                 }
+            }
+        }
+    }
+    // BeginNode: explicit `begin...end` wrapping a condition
+    if let Some(begin) = node.as_begin_node() {
+        if let Some(stmts) = begin.statements() {
+            let children: Vec<_> = stmts.body().iter().collect();
+            if children.len() == 1 {
+                return with_unwrapped(&children[0], f);
             }
         }
     }

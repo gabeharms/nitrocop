@@ -99,3 +99,22 @@ if equal?(Foo)
 elsif Bar == x
 elsif x == 3
 end
+
+# Named captures in regexp with match should not be flagged
+# case/when uses === which doesn't populate named capture locals
+if foo.match(/(?<name>.*)/)
+elsif foo == 123
+elsif foo == 456
+end
+
+# Named captures in regexp with match (regexp as receiver)
+if /(?<name>.*)/.match(foo)
+elsif foo == 123
+elsif foo == 456
+end
+
+# Named captures in a later branch should also prevent flagging
+if foo == 1
+elsif foo.match(/(?<capture>\d+)/)
+elsif foo == 3
+end
