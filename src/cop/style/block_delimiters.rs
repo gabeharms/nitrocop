@@ -202,7 +202,7 @@ impl<'a> Visit<'_> for BlockDelimitersVisitor<'a> {
         let is_single_arg_operator = is_operator_method(method_name)
             && node
                 .arguments()
-                .map_or(false, |args| args.arguments().len() == 1);
+                .is_some_and(|args| args.arguments().len() == 1);
 
         if !is_parenthesized && !is_assignment && !is_single_arg_operator {
             if let Some(args) = node.arguments() {
