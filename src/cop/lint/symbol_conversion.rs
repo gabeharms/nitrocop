@@ -74,6 +74,23 @@ use crate::parse::source::SourceFile;
 /// corpus-level debugging with `investigate-cop.py --context` once corpus data
 /// with example locations is available.
 ///
+/// ## FP fix (2026-03-15)
+///
+/// Corpus oracle reported FP=6, FN=94. 6 FPs traced to escape sequences in
+/// quoted symbols where `escape_double_quoted_symbol` didn't reproduce the
+/// necessary escaping:
+/// - Non-printable characters (e.g., `\x00`, `\a`, `\b`, `\e`) were passed
+///   through as raw bytes, producing a correction that didn't match the source.
+/// - `#` before `{`, `$`, `@` was not escaped, so `:"#{c}"` (with escaped
+///   interpolation) would produce `:"#{c}"` (with live interpolation) as
+///   the correction, changing semantics.
+///
+/// Fix: enhanced `escape_double_quoted_symbol` to handle all control characters
+/// (`\a`, `\b`, `\e`, `\xNN` for others), high bytes (UTF-8 pass-through),
+/// and `#` before interpolation triggers (`\#`). This ensures
+/// `source_matches_correction` correctly identifies these symbols as already
+/// using the canonical quoting form.
+///
 /// ## FP fix (2026-03-14)
 ///
 /// Corpus oracle reported FP=14, FN=94. 14 FPs in jruby, natalie, BetterErrors,
@@ -192,16 +209,43 @@ fn can_be_unquoted_symbol(value: &[u8]) -> bool {
 
 fn escape_double_quoted_symbol(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            '\u{0C}' => escaped.push_str("\\f"),
-            _ => escaped.push(ch),
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\\' => escaped.push_str("\\\\"),
+            b'"' => escaped.push_str("\\\""),
+            b'\n' => escaped.push_str("\\n"),
+            b'\r' => escaped.push_str("\\r"),
+            b'\t' => escaped.push_str("\\t"),
+            0x0C => escaped.push_str("\\f"),
+            0x07 => escaped.push_str("\\a"),
+            0x08 => escaped.push_str("\\b"),
+            0x1B => escaped.push_str("\\e"),
+            // Escape # before {, $, @ to prevent interpolation
+            b'#' if i + 1 < bytes.len()
+                && (bytes[i + 1] == b'{' || bytes[i + 1] == b'$' || bytes[i + 1] == b'@') =>
+            {
+                escaped.push_str("\\#");
+            }
+            // Non-printable characters: control chars (0x00-0x1F, 0x7F) and high bytes
+            _ if b < 0x20 || b == 0x7F => {
+                escaped.push_str(&format!("\\x{b:02X}"));
+            }
+            _ if b > 0x7F => {
+                // For multi-byte UTF-8, push the character as-is
+                if let Some(ch) = value[i..].chars().next() {
+                    escaped.push(ch);
+                    i += ch.len_utf8();
+                    continue;
+                }
+                // Fallback: hex escape the byte
+                escaped.push_str(&format!("\\x{b:02X}"));
+            }
+            _ => escaped.push(b as char),
         }
+        i += 1;
     }
     escaped
 }

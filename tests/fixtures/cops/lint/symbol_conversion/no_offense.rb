@@ -52,3 +52,16 @@ alias foo :'bar'
 alias foo :"bar"
 alias :'foo' :'bar'
 alias :"foo" :"bar"
+# Symbols with non-printable escape sequences — quoting IS necessary
+:"\x00"
+:"\x01"
+:"\x1F"
+:"\x7F"
+:"\a"
+:"\b"
+:"\e"
+# Symbol with escaped interpolation guard — quoting IS necessary
+:"\#{c}"
+:"\#{foo}"
+:"\#@ivar"
+:"\#$global"
