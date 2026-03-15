@@ -26,7 +26,7 @@ use crate::parse::source::SourceFile;
 ///
 /// All added to match RuboCop's `recursive_literal_or_const?` behavior.
 ///
-/// ## Corpus investigation (2026-03-14)
+/// ## Corpus investigation (2026-03-14, round 1)
 ///
 /// Corpus oracle reported FP=2, FN=86.
 ///
@@ -35,8 +35,28 @@ use crate::parse::source::SourceFile;
 /// reproduction. Possible cause: `allow(X).to receive(:y) { complex_value }` where
 /// our `is_static_value` incorrectly returns true for a dynamic expression.
 ///
-/// FN=86: Large FN count suggests missing detection patterns. No example locations
-/// available in the current oracle run to diagnose specific patterns.
+/// FN=86: Large FN count initially suspected to be missing chained pattern handling.
+///
+/// ## Corpus investigation (2026-03-15, round 2)
+///
+/// Investigated FN=86 root cause hypothesis: that chained calls like
+/// `allow(Q).to receive(:meaning).with(:universe) { 42 }` were not detected.
+///
+/// **Finding:** The chained patterns ARE correctly detected. Prism parses
+/// `receive(:meaning).with(:universe) { 42 }` as a CallNode (`.with`) with a
+/// block, not a BlockNode argument to `.to`. So `find_block_on_receive_chain`
+/// receives a CallNode, correctly walks the chain to find `receive` at the root,
+/// and returns the block. Confirmed via unit tests and Prism AST inspection.
+///
+/// The FN=86 root cause remains unresolved without direct corpus repo access.
+/// Possible causes:
+/// - Corpus repos using `expect(...).to receive(...)` with `do...end` block
+///   syntax — but our test for `call.block()` covers this
+/// - Projects where rubocop-rspec is not detected properly (lockfile/bundler issues)
+/// - Edge cases in `is_static_value` missing some node type RuboCop considers static
+/// - `allow_any_instance_of(X).to receive(:y) { static }` — we check for no
+///   receiver on `allow`/`expect`, which is correct for this form
+/// - `stub_const("X", value)` — not a receive stub, RuboCop doesn't flag it either
 pub struct ReturnFromStub;
 impl Cop for ReturnFromStub {
     fn name(&self) -> &'static str {
