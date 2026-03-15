@@ -19,6 +19,15 @@ use crate::parse::source::SourceFile;
 ///
 /// Additionally fixed message text to match RuboCop exactly:
 /// "Indentation of first line in file detected." (was missing "in file").
+///
+/// ## Whitespace-only blank line fix (2026-03-15)
+///
+/// FP=2 on jruby and webistrano: lines containing only whitespace (e.g., `" \n"`)
+/// were treated as non-blank and flagged as initial indentation. RuboCop skips
+/// whitespace-only lines. Fix: when scanning for the first non-blank non-comment
+/// line, also skip lines where no non-whitespace character is found.
+/// This also fixed FN=1 where the actual indented code line after the
+/// whitespace-only blank line was not being reached.
 pub struct InitialIndentation;
 
 impl Cop for InitialIndentation {
@@ -53,10 +62,12 @@ impl Cop for InitialIndentation {
                 line
             };
 
-            // Skip pure comment lines: first non-whitespace is '#'
+            // Skip whitespace-only lines (treat as blank) and pure comment lines
             let trimmed = effective.iter().find(|&&b| b != b' ' && b != b'\t');
-            if trimmed == Some(&b'#') {
-                continue;
+            match trimmed {
+                None => continue,        // whitespace-only line
+                Some(&b'#') => continue, // pure comment line
+                _ => {}
             }
 
             // Now we have the first non-empty, non-comment line
@@ -249,6 +260,43 @@ mod tests {
             "should flag indented code after shebang and comments"
         );
         assert_eq!(diags[0].location.line, 4);
+    }
+
+    // FP fix: blank line with whitespace before unindented code → no offense
+    // RuboCop treats whitespace-only lines as blank (skips them).
+    #[test]
+    fn whitespace_only_blank_line_then_unindented_code() {
+        // e.g. jruby sumcol.ruby-2.ruby: comments, then " \n", then "puts ..."
+        // The " \n" line should be skipped, and "puts" at column 0 → no offense
+        let source = SourceFile::from_bytes(
+            "test.rb",
+            b"# comment\n# comment2\n# comment3\n \nputs 'hello'\n".to_vec(),
+        );
+        let mut diags = Vec::new();
+        InitialIndentation.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert!(
+            diags.is_empty(),
+            "should not flag whitespace-only blank line; first code line is at column 0"
+        );
+    }
+
+    // FN fix: blank line with whitespace before indented code → offense on code line
+    #[test]
+    fn whitespace_only_blank_line_then_indented_code() {
+        // e.g. jruby sumcol.ruby-2.ruby: comments, then " \n", then " puts ..."
+        // The " \n" line should be skipped, " puts" is indented → offense
+        let source = SourceFile::from_bytes(
+            "test.rb",
+            b"# comment\n# comment2\n# comment3\n \n puts 'hello'\n".to_vec(),
+        );
+        let mut diags = Vec::new();
+        InitialIndentation.check_lines(&source, &CopConfig::default(), &mut diags, None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "should flag indented code after whitespace-only blank line"
+        );
+        assert_eq!(diags[0].location.line, 5, "offense should be on line 5");
     }
 
     // No FP: file with only comments (all indented) → no offense
