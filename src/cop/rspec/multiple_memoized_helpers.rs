@@ -52,6 +52,22 @@ use ruby_prism::Visit;
 /// blocks were not treated as scope boundaries, causing helpers inside them to leak to the
 /// parent group (producing FPs). Fix: scope boundary check now also accepts all group methods
 /// with `RSpec` receiver.
+///
+/// ## Root cause of FNs (fixed, round 4)
+///
+/// **`ParenthesesNode` not unwrapped in `extract_name_from_arg`**: When a method call has a
+/// space before the argument parentheses (`let (:foo) { }` instead of `let(:foo) { }`),
+/// Prism parses the argument differently. `let(:foo)` produces `CallNode` with `opening_loc`
+/// set and the argument as a bare `SymbolNode`. `let (:foo)` (space before paren) produces
+/// `CallNode` with no `opening_loc` and the argument as a `ParenthesesNode` wrapping a
+/// `StatementsNode` containing the `SymbolNode`. The `extract_name_from_arg` function only
+/// handled `SymbolNode`, `StringNode`, and `InterpolatedStringNode` directly, missing the
+/// `ParenthesesNode` wrapper case entirely. Fix: added `ParenthesesNode` unwrapping that
+/// recurses into the inner expression.
+///
+/// This pattern (`let (:name)` with space) is common in real-world specs (corpus oracle
+/// reported FP=0, FN=769 before this fix). Identified via corpus FN example at
+/// `airbnb/synapse: spec/lib/synapse/service_watcher_multi_spec.rb:7`.
 pub struct MultipleMemoizedHelpers;
 
 impl Cop for MultipleMemoizedHelpers {
