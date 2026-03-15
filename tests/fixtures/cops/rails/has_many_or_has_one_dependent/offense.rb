@@ -6,3 +6,68 @@ class User < ApplicationRecord
   has_many :comments
   ^^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
 end
+
+class Account < ApplicationRecord
+  has_many :entries, class_name: 'Ledger'
+  ^^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+  has_one :logo, class_name: 'Image'
+  ^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+end
+
+# Module concern with included block
+module Taggable
+  extend ActiveSupport::Concern
+
+  included do
+    has_many :tags
+    ^^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+    has_one :primary_tag
+    ^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+  end
+end
+
+# has_many with lambda scope but no dependent
+class Article < ApplicationRecord
+  has_many :items, -> { where(active: true) }
+  ^^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+end
+
+# through: nil should still flag
+class Person < ApplicationRecord
+  has_many :records, through: nil
+  ^^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+  has_one :badge, through: nil
+  ^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+end
+
+# readonly? returning false should still flag
+class Report < ActiveRecord::Base
+  has_one :attachment
+  ^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+
+  def readonly?
+    false
+  end
+end
+
+# with_options block with through: nil should still flag
+class Team < ApplicationRecord
+  with_options through: nil do
+    has_many :members
+    ^^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+  end
+end
+
+# has_many on explicit receiver in module
+module Trackable
+  def self.included(base)
+    base.has_many :events
+         ^^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+  end
+end
+
+# has_many with double splat variable (unknown options)
+class Widget < ApplicationRecord
+  has_one :config, **opts
+  ^^^^^^^ Rails/HasManyOrHasOneDependent: Specify a `:dependent` option.
+end
