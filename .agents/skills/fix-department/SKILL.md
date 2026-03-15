@@ -74,10 +74,20 @@ Run fix work from a dedicated git worktree by default.
      ```bash
      cd bench/corpus && BUNDLE_PATH=vendor/bundle bundle install
      ```
-   - If working in a separate worktree and the main checkout already has corpus data,
-     symlink `vendor/corpus` into the worktree and keep that wiring untracked/local-only.
-   - This bootstrap is required before running the corpus smoke test. Missing vendor
-     submodules in cloud environments are setup failures, not cop regressions.
+   - Do **not** treat `vendor/corpus/` as mandatory bootstrap. The smoke test does not
+     need it, and cloud environments should not prefetch the full corpus checkout.
+   - Only hydrate corpus repos on demand when a workflow step actually needs local
+     source files (`investigate-cop.py --context` fallback, `reduce-mismatch.py`,
+     `verify-cop-locations.py`):
+     ```bash
+     python3 scripts/corpus-repo-map.py --clone Department/CopName
+     ```
+     This clones only the repos relevant to that cop into `vendor/corpus/`.
+   - If working in a separate worktree and the main checkout already has targeted
+     `vendor/corpus` data, symlink it into the worktree and keep that wiring
+     untracked/local-only.
+   - Missing vendor **rubocop** submodules are setup failures. Missing `vendor/corpus`
+     is not a failure unless the current investigation step needs local corpus files.
 
 ### Phase 1: Plan Batch
 
@@ -91,6 +101,12 @@ Investigate each selected cop:
 ```bash
 python3 scripts/investigate-cop.py Department/CopName --context --fp-only --limit 10
 python3 scripts/investigate-cop.py Department/CopName --context --fn-only --limit 10
+```
+
+`investigate-cop.py` prefers embedded snippets from `corpus-results.json`. If that
+is insufficient and you need full local source files, clone only the relevant repos:
+```bash
+python3 scripts/corpus-repo-map.py --clone Department/CopName
 ```
 
 **Synthetic-only cops** (zero corpus activity): If `investigate-cop.py` shows no results, the cop
@@ -198,6 +214,7 @@ python3 scripts/corpus_smoke_test.py --binary target/release/nitrocop
 Run the corpus smoke test once per batch, not after every cop. It is the cheap
 systemic guard for file discovery, config/plugin loading, directive handling,
 and other cross-cop regressions that per-cop `check-cop.py` reruns will not catch.
+It does not require `vendor/corpus/`.
 
 Re-check each fixed cop with the right acceptance gate:
 ```bash
@@ -284,9 +301,11 @@ Do not leave retained progress only in a worktree branch.
   If not in a worktree, continue working on main — do not block on this.
 - New worktree bootstrap (run before reducers/tests/check-cop):
   - Initialize submodules: `git submodule update --init --recursive`
-  - Ensure `vendor/corpus/` exists. If the main checkout already has corpus data, symlink it into the worktree:
-    `ln -s /absolute/path/to/nitrocop/vendor/corpus vendor/corpus`
   - Ensure `bench/corpus/vendor/bundle/` exists for the active Ruby version before any corpus-backed validation or smoke runs.
+  - Do not clone the full corpus by default. Create/populate `vendor/corpus/` only when a step needs local corpus source files, preferably via:
+    `python3 scripts/corpus-repo-map.py --clone Department/CopName`
+  - If the main checkout already has targeted `vendor/corpus` data, symlink it into the worktree:
+    `ln -s /absolute/path/to/nitrocop/vendor/corpus vendor/corpus`
   - Keep corpus wiring untracked and local-only (do not commit worktree-specific symlinks).
 - Parallel-agent activity is common; expect unrelated local changes in the working tree.
 - Do not revert or include unrelated files in your commit; stage only files for the cop(s) you are fixing.
@@ -316,7 +335,7 @@ Do not leave retained progress only in a worktree branch.
   `verify-cop-locations.py` before treating a cop as done locally. Never declare
   `/fix-department` done while generated `README.md` / `docs/corpus.md` still
   show the target below 100%, or while Linux CI parity is still unconfirmed.
-- Use local corpus files under `vendor/corpus/` when available.
+- Use local corpus files under `vendor/corpus/` when available, but fetch them selectively rather than assuming a full local corpus checkout.
 - Do not copy identifiers from private repositories into source, fixtures, or commit messages.
 
 ## Arguments

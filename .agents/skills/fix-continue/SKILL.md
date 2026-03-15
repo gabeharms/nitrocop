@@ -12,7 +12,8 @@ Continue with the fix workflow:
 - If you were in Phase 0 assessment, continue from where you left off
 - If you are resuming in a fresh cloud/worktree environment, rerun the
   `fix-department` bootstrap first (`git submodule update --init --recursive`,
-  corpus bundle setup, and local `vendor/corpus` wiring if needed)
+  corpus bundle setup, and only clone `vendor/corpus` repos on demand if a step
+  needs local corpus source files)
 
 Resume the normal workflow as described in the skill instructions.
 
