@@ -3,6 +3,15 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Style/ClassMethodsDefinitions cop.
+///
+/// ## Investigation findings
+/// FP root cause: The cop did not recognize `private :method_name` or
+/// `protected :method_name` calls (symbol arguments) as making methods
+/// non-public. It only handled standalone modifiers (`private` with no args)
+/// and inline `private def foo` forms. Fixed by treating `private`/`protected`
+/// calls with non-def arguments (symbol args) as marking at least one method
+/// non-public, so the block is not flagged.
 pub struct ClassMethodsDefinitions;
 
 impl Cop for ClassMethodsDefinitions {
@@ -84,14 +93,10 @@ fn all_defs_public(body: &ruby_prism::Node<'_>) -> bool {
                         continue;
                     }
                 } else if name == b"private" || name == b"protected" {
-                    // Inline modifier: `private def foo` / `protected def bar`
-                    // The def is non-public — not all methods are public.
-                    if call.arguments().is_some_and(|args| {
-                        args.arguments().iter().any(|a| a.as_def_node().is_some())
-                    }) {
-                        return false;
-                    }
-                    continue;
+                    // Any form with arguments marks methods as non-public:
+                    // - Inline modifier: `private def foo`
+                    // - Symbol args: `private :foo` / `protected :foo, :bar`
+                    return false;
                 } else if name == b"public" {
                     // `public def foo` — the def is explicitly public.
                     if let Some(args) = call.arguments() {
