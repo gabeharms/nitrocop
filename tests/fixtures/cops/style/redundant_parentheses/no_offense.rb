@@ -159,3 +159,14 @@ var = (foo or bar)
 var = (foo and bar)
 # Arithmetic operator parent for logical
 x - (y || z)
+# Hash literal as first arg of unparenthesized call — parens prevent { being parsed as block
+x ({ y: 1 }), z
+x ({ y: 1 }).merge({ y: 2 }), z
+x ({ y: 1 }.merge({ y: 2 })), z
+# Chained receiver of parenthesized call — parens are around the receiver, not an argument
+(foo).bar(x)
+(a + b).to_s(base)
+(arr || []).each { |x| x }
+(hash || {}).merge(other)
+(x.y).z(arg)
+(a & b).include?(item)

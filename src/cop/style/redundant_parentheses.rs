@@ -38,6 +38,22 @@ use crate::parse::source::SourceFile;
 /// - One-line rescue: `(foo rescue bar)` at top level.
 /// - `return (42)`, `return (foo + bar)`: return/next/break with space before paren
 ///   and non-multiline content should still flag the inner expression.
+///
+/// ## Investigation findings (2026-03-15)
+///
+/// ### FP root causes fixed:
+/// - **Chained receiver as method argument (major, ~thousands of FPs):** `(expr).method(args)`
+///   was flagged as "a method argument" because the paren node's parent Call was parenthesized,
+///   but the paren is the *receiver*, not an argument. RuboCop checks
+///   `parent.receiver != begin_node`. Fixed by adding `is_chained` check in
+///   `check_argument_of_parenthesized_call` — if `)` is followed by `.`/`&.`, it's a receiver.
+/// - **`[]` calls treated as parenthesized:** `call_parenthesized` was set from
+///   `opening_loc().is_some()` which is true for `[` (bracket calls). RuboCop's
+///   `parenthesized?` only matches `(`. Fixed by checking `opening_loc` is specifically `"("`.
+/// - **Hash literal first arg of unparenthesized call:** `x ({y: 1}), z` — parens needed to
+///   prevent `{` from being parsed as a block. RuboCop's `first_arg_begins_with_hash_literal?`
+///   catches this. Added simplified equivalent: skip when inner begins with hash literal and
+///   there's an unparenthesized Call ancestor.
 pub struct RedundantParentheses;
 
 impl Cop for RedundantParentheses {
@@ -301,6 +317,13 @@ impl RedundantParensVisitor<'_> {
             return;
         }
 
+        // first_arg_begins_with_hash_literal? — when the inner expression is (or starts
+        // with) a hash literal, and the paren is the first argument of an unparenthesized
+        // method call, the parens are needed to prevent `{` from being parsed as a block.
+        if self.first_arg_begins_with_hash_literal(node, inner) {
+            return;
+        }
+
         if let Some(msg) = classify_simple(inner) {
             // Check for negative numeric in exponentiation base: (-2)**2 is plausible
             if msg == "a literal"
@@ -386,6 +409,51 @@ impl RedundantParensVisitor<'_> {
                 ParentKind::If | ParentKind::While | ParentKind::Until => return true,
                 ParentKind::Other => continue,
                 _ => return false,
+            }
+        }
+        false
+    }
+
+    /// RuboCop's first_arg_begins_with_hash_literal?: when the inner expression
+    /// starts with a hash literal and the paren is a first argument of an
+    /// unparenthesized method call, parens are needed to prevent `{` from being
+    /// parsed as a block.
+    fn first_arg_begins_with_hash_literal(
+        &self,
+        _node: &ruby_prism::ParenthesesNode<'_>,
+        inner: &ruby_prism::Node<'_>,
+    ) -> bool {
+        // Check if the inner expression is or starts with a hash literal
+        if !self.inner_begins_with_hash(inner) {
+            return false;
+        }
+
+        // Check that there's an unparenthesized Call ancestor (the root method)
+        // and the paren is a first argument (approximated by: there's at least one
+        // Call ancestor that is unparenthesized)
+        self.has_unparenthesized_call_ancestor()
+    }
+
+    /// Walk the receiver chain of call nodes to find a hash literal at the root.
+    fn inner_begins_with_hash(&self, node: &ruby_prism::Node<'_>) -> bool {
+        if node.as_hash_node().is_some() {
+            return true;
+        }
+        if let Some(call) = node.as_call_node() {
+            if let Some(recv) = call.receiver() {
+                return self.inner_begins_with_hash(&recv);
+            }
+        }
+        false
+    }
+
+    /// Check if there's an unparenthesized Call ancestor in the parent stack.
+    fn has_unparenthesized_call_ancestor(&self) -> bool {
+        for i in (0..self.parent_stack.len().saturating_sub(1)).rev() {
+            if matches!(self.parent_stack[i].kind, ParentKind::Call)
+                && !self.parent_stack[i].call_parenthesized
+            {
+                return true;
             }
         }
         false
@@ -500,7 +568,7 @@ impl RedundantParensVisitor<'_> {
     /// RuboCop's argument_of_parenthesized_method_call? flags things like x.y((z)).
     fn check_argument_of_parenthesized_call(
         &self,
-        _node: &ruby_prism::ParenthesesNode<'_>,
+        node: &ruby_prism::ParenthesesNode<'_>,
         inner: &ruby_prism::Node<'_>,
         parent: Option<&ParentInfo>,
     ) -> Option<&'static str> {
@@ -509,6 +577,12 @@ impl RedundantParensVisitor<'_> {
             return None;
         }
         if !p.call_parenthesized {
+            return None;
+        }
+
+        // If the paren is chained (followed by `.` or `&.`), it's the receiver of
+        // the parent call, not an argument. RuboCop checks `parent.receiver != begin_node`.
+        if is_chained(&self.source.content, node) {
             return None;
         }
 
@@ -1019,7 +1093,7 @@ impl<'pr> Visit<'pr> for RedundantParensVisitor<'_> {
                 .0;
             top.kind = ParentKind::Call;
             top.multiline = start_line != end_line;
-            top.call_parenthesized = node.opening_loc().is_some();
+            top.call_parenthesized = node.opening_loc().is_some_and(|loc| loc.as_slice() == b"(");
             top.call_arg_count = node.arguments().map(|a| a.arguments().len()).unwrap_or(0);
             top.is_operator = is_operator_method(node);
         }
