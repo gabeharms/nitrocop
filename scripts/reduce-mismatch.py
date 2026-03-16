@@ -20,6 +20,10 @@ import sys
 import time
 from pathlib import Path
 
+# Allow importing from the same directory
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rubocop_cache import cached_rubocop_run
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_DIR = PROJECT_ROOT / "vendor" / "corpus"
 NITROCOP_BIN = PROJECT_ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "release" / "nitrocop"
@@ -77,19 +81,22 @@ class RubocopRunner:
         if self._server_enabled:
             cmd.insert(3, "--server")
 
+        # Read file content for cache key
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30, env=self.env,
-            )
-        except subprocess.TimeoutExpired:
-            return set()
+            file_content = Path(filepath).read_text()
+        except OSError:
+            file_content = ""
 
-        if result.returncode not in (0, 1):
-            return set()
+        data = cached_rubocop_run(
+            cmd=cmd,
+            file_content=file_content,
+            cop_name=cop,
+            config_path=str(BASELINE_CONFIG),
+            env=self.env,
+            timeout=30,
+        )
 
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
+        if data is None:
             return set()
 
         lines = set()
