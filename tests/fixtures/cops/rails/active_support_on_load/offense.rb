@@ -21,6 +21,3 @@ ActiveStorage::Blob.prepend(MyModule)
 
 ActionMailbox::Base.extend(MyModule)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/ActiveSupportOnLoad: Use `ActiveSupport.on_load(:action_mailbox) { extend ... }` instead of `ActionMailbox::Base.extend(...)`.
-
-ActiveModel::Model.include(MyModule)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/ActiveSupportOnLoad: Use `ActiveSupport.on_load(:active_model) { include ... }` instead of `ActiveModel::Model.include(...)`.

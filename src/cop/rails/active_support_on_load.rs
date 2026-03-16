@@ -3,13 +3,24 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Checks for Rails framework classes that are patched directly instead of
+/// using Active Support load hooks. Direct patching forcibly loads the
+/// framework referenced; using hooks defers loading until it's actually needed.
+///
+/// ## Investigation findings (2026-03-16)
+///
+/// Root cause of 8 FPs: nitrocop was matching ALL LOAD_HOOKS entries regardless
+/// of `TargetRailsVersion`, but RuboCop version-gates `RAILS_5_2_LOAD_HOOKS`
+/// (requires >= 5.2) and `RAILS_7_1_LOAD_HOOKS` (requires >= 7.1). All 8 FPs
+/// involved RAILS_7_1 hooks (`ActiveRecord::TestFixtures`, `ActiveModel::Model`,
+/// `PostgreSQLAdapter`, `TrilogyAdapter`) in projects targeting Rails < 7.1.
+///
+/// Fix: split hooks into three tiers and check `config.rails_version_at_least()`
+/// before matching 5.2 and 7.1 hooks, matching RuboCop's `hook_for_const`.
 pub struct ActiveSupportOnLoad;
 
-/// Complete map of Rails framework classes to their on_load hook names.
-/// Includes all entries from RuboCop's LOAD_HOOKS, RAILS_5_2_LOAD_HOOKS,
-/// and RAILS_7_1_LOAD_HOOKS maps.
-const LOAD_HOOKS: &[(&str, &str)] = &[
-    // LOAD_HOOKS (base)
+/// Base LOAD_HOOKS — available at all Rails versions.
+const BASE_LOAD_HOOKS: &[(&str, &str)] = &[
     ("ActionCable", "action_cable"),
     ("ActionCable::Channel::Base", "action_cable_channel"),
     ("ActionCable::Connection::Base", "action_cable_connection"),
@@ -55,12 +66,16 @@ const LOAD_HOOKS: &[(&str, &str)] = &[
         "active_storage_variant_record",
     ),
     ("ActiveSupport::TestCase", "active_support_test_case"),
-    // RAILS_5_2_LOAD_HOOKS
-    (
-        "ActiveRecord::ConnectionAdapters::SQLite3Adapter",
-        "active_record_sqlite3adapter",
-    ),
-    // RAILS_7_1_LOAD_HOOKS
+];
+
+/// RAILS_5_2_LOAD_HOOKS — only active when TargetRailsVersion >= 5.2.
+const RAILS_5_2_LOAD_HOOKS: &[(&str, &str)] = &[(
+    "ActiveRecord::ConnectionAdapters::SQLite3Adapter",
+    "active_record_sqlite3adapter",
+)];
+
+/// RAILS_7_1_LOAD_HOOKS — only active when TargetRailsVersion >= 7.1.
+const RAILS_7_1_LOAD_HOOKS: &[(&str, &str)] = &[
     ("ActiveRecord::TestFixtures", "active_record_fixtures"),
     ("ActiveModel::Model", "active_model"),
     (
@@ -84,9 +99,12 @@ const LOAD_HOOKS: &[(&str, &str)] = &[
 const PATCH_METHODS: &[&[u8]] = &[b"include", b"prepend", b"extend"];
 
 /// Try to match a constant path like `ActiveRecord::Base` or `::ActiveRecord::Base`.
-/// Returns the hook name if matched.
-fn match_framework_class(node: &ruby_prism::Node<'_>, source: &SourceFile) -> Option<&'static str> {
-    // Get the full text of the receiver and match against known patterns
+/// Returns the hook name if matched, respecting version-gated hook tiers.
+fn match_framework_class(
+    node: &ruby_prism::Node<'_>,
+    source: &SourceFile,
+    config: &CopConfig,
+) -> Option<&'static str> {
     let loc = node.location();
     let text = &source.as_bytes()[loc.start_offset()..loc.end_offset()];
     // Strip leading ::
@@ -96,11 +114,31 @@ fn match_framework_class(node: &ruby_prism::Node<'_>, source: &SourceFile) -> Op
         text
     };
 
-    for &(constant_path, hook) in LOAD_HOOKS {
+    // Base hooks — always active
+    for &(constant_path, hook) in BASE_LOAD_HOOKS {
         if text == constant_path.as_bytes() {
             return Some(hook);
         }
     }
+
+    // Rails 5.2+ hooks
+    if config.rails_version_at_least(5.2) {
+        for &(constant_path, hook) in RAILS_5_2_LOAD_HOOKS {
+            if text == constant_path.as_bytes() {
+                return Some(hook);
+            }
+        }
+    }
+
+    // Rails 7.1+ hooks
+    if config.rails_version_at_least(7.1) {
+        for &(constant_path, hook) in RAILS_7_1_LOAD_HOOKS {
+            if text == constant_path.as_bytes() {
+                return Some(hook);
+            }
+        }
+    }
+
     None
 }
 
@@ -122,7 +160,7 @@ impl Cop for ActiveSupportOnLoad {
         source: &SourceFile,
         node: &ruby_prism::Node<'_>,
         _parse_result: &ruby_prism::ParseResult<'_>,
-        _config: &CopConfig,
+        config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
@@ -146,7 +184,7 @@ impl Cop for ActiveSupportOnLoad {
             None => return,
         };
 
-        let hook = match match_framework_class(&receiver, source) {
+        let hook = match match_framework_class(&receiver, source, config) {
             Some(h) => h,
             None => return,
         };
@@ -176,4 +214,87 @@ impl Cop for ActiveSupportOnLoad {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ActiveSupportOnLoad, "cops/rails/active_support_on_load");
+
+    fn rails_config(version: f64) -> CopConfig {
+        let mut options = std::collections::HashMap::new();
+        options.insert(
+            "TargetRailsVersion".to_string(),
+            serde_yml::Value::Number(serde_yml::value::Number::from(version)),
+        );
+        options.insert(
+            "__RailtiesInLockfile".to_string(),
+            serde_yml::Value::Bool(true),
+        );
+        CopConfig {
+            options,
+            ..CopConfig::default()
+        }
+    }
+
+    /// RAILS_7_1_LOAD_HOOKS should fire when TargetRailsVersion >= 7.1.
+    #[test]
+    fn rails_7_1_hooks_with_version_set() {
+        let source = b"ActiveModel::Model.include(MyModule)\n\
+                        ActiveRecord::TestFixtures.prepend(TestFixtures)\n\
+                        ActiveRecord::ConnectionAdapters::PostgreSQLAdapter.prepend(PgExt)\n";
+        let diags = crate::testutil::run_cop_full_with_config(
+            &ActiveSupportOnLoad,
+            source,
+            rails_config(7.1),
+        );
+        assert_eq!(
+            diags.len(),
+            3,
+            "Expected 3 offenses for RAILS_7_1 hooks with version >= 7.1"
+        );
+    }
+
+    /// RAILS_7_1_LOAD_HOOKS should NOT fire when TargetRailsVersion < 7.1.
+    #[test]
+    fn rails_7_1_hooks_not_flagged_below_7_1() {
+        let source = b"ActiveModel::Model.include(MyModule)\n\
+                        ActiveRecord::TestFixtures.prepend(TestFixtures)\n";
+        let diags = crate::testutil::run_cop_full_with_config(
+            &ActiveSupportOnLoad,
+            source,
+            rails_config(7.0),
+        );
+        assert_eq!(
+            diags.len(),
+            0,
+            "Expected 0 offenses for RAILS_7_1 hooks with version < 7.1"
+        );
+    }
+
+    /// RAILS_5_2_LOAD_HOOKS should fire when TargetRailsVersion >= 5.2.
+    #[test]
+    fn rails_5_2_hooks_with_version_set() {
+        let source = b"ActiveRecord::ConnectionAdapters::SQLite3Adapter.include(MyClass)\n";
+        let diags = crate::testutil::run_cop_full_with_config(
+            &ActiveSupportOnLoad,
+            source,
+            rails_config(5.2),
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for RAILS_5_2 hook with version >= 5.2"
+        );
+    }
+
+    /// RAILS_5_2_LOAD_HOOKS should NOT fire when TargetRailsVersion < 5.2.
+    #[test]
+    fn rails_5_2_hooks_not_flagged_below_5_2() {
+        let source = b"ActiveRecord::ConnectionAdapters::SQLite3Adapter.include(MyClass)\n";
+        let diags = crate::testutil::run_cop_full_with_config(
+            &ActiveSupportOnLoad,
+            source,
+            rails_config(5.0),
+        );
+        assert_eq!(
+            diags.len(),
+            0,
+            "Expected 0 offenses for RAILS_5_2 hooks with version < 5.2"
+        );
+    }
 }
