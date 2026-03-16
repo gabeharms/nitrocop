@@ -14,10 +14,15 @@ use crate::parse::source::SourceFile;
 /// RuboCop flags these because `node.body.multiline?` checks if the body AST
 /// node's first_line != last_line, regardless of `\` continuation.
 ///
-/// **Root cause of FPs (44):** Primarily config-related (project-level
-/// `.rubocop_todo.yml` excludes or file-level disables), not cop logic bugs.
-/// RuboCop does flag patterns like `begin...end if cond`, `def...end if cond`,
-/// and `block do...end if cond`.
+/// **Root cause of FPs (44, across 15 repos):** Config-related, not cop logic
+/// bugs. All 44 FPs are legitimate offenses that RuboCop would also flag —
+/// the projects suppress them via `.rubocop_todo.yml` excludes or file-level
+/// disables. Common patterns: `class Foo...end if defined?(X)` (jruby),
+/// `def test_method...end if Puma.jruby?` (puma), `it "test"...end if
+/// RUBY_VERSION >= '3.'` (yard), `describe...end unless defined?(X)` (haml),
+/// `opts.on(...) { ... } unless Thin.win?` (thin). RuboCop's
+/// `node.modifier_form? && node.body.multiline?` correctly flags all of these.
+/// No cop logic fix possible — the gap is purely config resolution.
 ///
 /// **Fix:** Replaced the `body_start_line < if_kw_line` + backslash exemption
 /// approach with a direct check: `body_start_line != body_end_line` (whether

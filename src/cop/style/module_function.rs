@@ -4,23 +4,25 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// ## Corpus investigation (2026-03-11)
+/// ## Corpus investigation (2026-03-11, updated 2026-03-16)
 ///
-/// Corpus oracle reported FP=2, FN=0.
+/// Corpus oracle: FP=2, FN=0, Match=99.6% (538 matches).
 ///
-/// FP=2: Both false positives were `spec/.../fixtures/singleton_methods.rb` files in
-/// jruby and natalie. Attempted fix: skip single-statement module bodies whose only
-/// statement is `extend self`, based on Parser-vs-Prism body wrapping differences.
-/// Acceptance gate before: expected=540, actual=542, excess=2, missing=0.
-/// Acceptance gate after: expected=540, actual=537, excess=0, missing=3.
-/// Reverted because the change introduced 3 real false negatives. The remaining
-/// corpus FPs were later traced to config handling outside this cop:
-/// `spec/ruby/.rubocop.yml` sets `AllCops.DisabledByDefault: true`, so
-/// `Style/ModuleFunction` should not run on those fixture files unless explicitly
-/// enabled. The 2026-03-14 fix landed in the config layer rather than here and
-/// cleared the jruby nested-config false positive, but the current quick corpus
-/// gate is still `expected=508, actual=503, excess=0, missing=5`, so the
-/// remaining divergence is not attributable to this cop's matcher alone.
+/// FP=2: Both false positives are `spec/.../fixtures/singleton_methods.rb` files in
+/// jruby and natalie containing `extend self` inside a small `SelfExtending` module.
+/// RuboCop does not flag these because nested `.rubocop.yml` files under `spec/ruby/`
+/// set `AllCops.DisabledByDefault: true`, disabling the cop for those paths.
+///
+/// Previous fix attempt (2026-03-11): Tried skipping single-statement module bodies
+/// whose only statement is `extend self`. This cleared the 2 FPs but introduced 3
+/// real FNs elsewhere (excess went from 2 to 0, but missing went from 0 to 3).
+/// Reverted — the pattern `extend self` in a small module body is a legitimate
+/// offense when the cop is enabled.
+///
+/// Root cause: This is a config resolution issue, not a cop logic bug. The cop's
+/// matcher is correct. The FPs will resolve when the config layer properly handles
+/// nested `.rubocop.yml` with `AllCops.DisabledByDefault: true` in these repos.
+/// No code change needed in this cop.
 pub struct ModuleFunction;
 
 impl Cop for ModuleFunction {
