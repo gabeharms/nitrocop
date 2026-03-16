@@ -4,6 +4,30 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Count leading whitespace characters (spaces and tabs) as columns.
+/// Unlike `util::indentation_of()` which only counts spaces, this counts both
+/// spaces and tabs as 1 column each, matching `offset_to_line_col()`'s character
+/// counting and RuboCop's `processed_source.line_indentation()`.
+fn leading_whitespace_columns(line: &[u8]) -> usize {
+    line.iter()
+        .take_while(|&&b| b == b' ' || b == b'\t')
+        .count()
+}
+
+/// Corpus investigation (2026-03-16)
+///
+/// FP root cause #1 (5 FPs from loomio): Tab-indented code. `indentation_of()` only
+/// counts spaces, returning 0 for tab-prefixed lines. `offset_to_line_col()` counts
+/// tabs as 1 character each. This mismatch caused the cop to compute expected=0 for
+/// tab-indented closing parens. Fix: use `leading_whitespace_columns()` which counts
+/// both spaces and tabs, matching RuboCop's `line_indentation()`.
+///
+/// FP root cause #2 (2 FPs from puppetlabs/puppet): When the first argument is an
+/// empty hash `{}`, expanding its children produces an empty `element_columns` vec.
+/// Rust's `.all()` returns true (vacuously) on empty iterators, so the cop treated
+/// it as "all aligned" and required `)` to align with `(`. But RuboCop's `[].uniq.one?`
+/// returns false, going to the else branch (line indentation). Fix: check that
+/// `element_columns` is non-empty before treating it as "all aligned".
 pub struct ClosingParenthesisIndentation;
 
 impl Cop for ClosingParenthesisIndentation {
@@ -97,7 +121,7 @@ fn check_parens(
     // Scenario 1: First param is on its own line (after the opening paren)
     if first_arg_line > open_line {
         let first_arg_line_indent = match util::line_at(source, first_arg_line) {
-            Some(line) => util::indentation_of(line),
+            Some(line) => leading_whitespace_columns(line),
             None => 0,
         };
         let expected = first_arg_line_indent.saturating_sub(indent_width);
@@ -141,7 +165,8 @@ fn check_parens(
                     .collect()
             };
 
-        let all_aligned = element_columns.iter().all(|&c| c == element_columns[0]);
+        let all_aligned =
+            !element_columns.is_empty() && element_columns.iter().all(|&c| c == element_columns[0]);
 
         if all_aligned {
             // All args at same column: `)` aligns with `(`
@@ -156,11 +181,11 @@ fn check_parens(
         } else {
             // Args not aligned: accept first arg line indent or open line indent
             let open_line_indent = match util::line_at(source, open_line) {
-                Some(line) => util::indentation_of(line),
+                Some(line) => leading_whitespace_columns(line),
                 None => 0,
             };
             let first_arg_line_indent = match util::line_at(source, first_arg_line) {
-                Some(line) => util::indentation_of(line),
+                Some(line) => leading_whitespace_columns(line),
                 None => 0,
             };
             if close_col != first_arg_line_indent && close_col != open_line_indent {
@@ -217,7 +242,7 @@ fn check_def_parens(
 
     if first_param_line > open_line {
         let first_param_line_indent = match util::line_at(source, first_param_line) {
-            Some(line) => util::indentation_of(line),
+            Some(line) => leading_whitespace_columns(line),
             None => 0,
         };
         let expected = first_param_line_indent.saturating_sub(indent_width);

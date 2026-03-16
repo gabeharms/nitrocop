@@ -24,3 +24,23 @@ def some_method(a,
                 c
                )
 end
+
+# Mixed tab/space code (loomio pattern): `)` correctly indented
+    			u = Record.create!(
+    				name: name,
+    				email: email
+  				)
+
+# Tab-indented args on same line as `(`, not aligned (webistrano pattern)
+					opts.on("-l", "--logger [STDERR|STDOUT|file]",
+						"Choose logger method."
+					) do |value|
+						puts value
+					end
+
+# Multiple args where first is empty hash: `)` at line indentation
+assert_search_matches({}, {
+    "nonmatching.json" => "value",
+  },
+  {'key' => '4'}
+)
