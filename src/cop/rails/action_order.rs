@@ -1,4 +1,4 @@
-use crate::cop::node_type::{CLASS_NODE, DEF_NODE, STATEMENTS_NODE};
+use crate::cop::node_type::{CLASS_NODE, DEF_NODE, MODULE_NODE, STATEMENTS_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
@@ -31,6 +31,13 @@ use crate::parse::source::SourceFile;
 /// are skipped. Symbol-arg visibility modifiers (`private :index, :show`) are collected
 /// in a pre-pass and used to exclude those methods. Also walks into `if`/`unless` blocks
 /// to find nested `def` nodes.
+///
+/// Root cause of FN=1 (second): the cop only checked ClassNode, not ModuleNode. Rails
+/// controller concerns define action methods inside modules (e.g.,
+/// `module Trestle::Resource::Controller::Actions`). RuboCop's `def_node_search` recursively
+/// finds `def` nodes regardless of whether the enclosing scope is a class or module.
+/// Fix: added MODULE_NODE to interested_node_types and handle ModuleNode in check_node
+/// with the same logic as ClassNode.
 pub struct ActionOrder;
 
 const STANDARD_ORDER: &[&[u8]] = &[
@@ -165,7 +172,7 @@ impl Cop for ActionOrder {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[CLASS_NODE, DEF_NODE, STATEMENTS_NODE]
+        &[CLASS_NODE, MODULE_NODE, DEF_NODE, STATEMENTS_NODE]
     }
 
     fn check_node(
@@ -177,12 +184,16 @@ impl Cop for ActionOrder {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let class = match node.as_class_node() {
-            Some(c) => c,
-            None => return,
+        // Handle both ClassNode and ModuleNode (for controller concerns)
+        let body = if let Some(class) = node.as_class_node() {
+            class.body()
+        } else if let Some(module) = node.as_module_node() {
+            module.body()
+        } else {
+            return;
         };
 
-        let body = match class.body() {
+        let body = match body {
             Some(b) => b,
             None => return,
         };
