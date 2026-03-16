@@ -4,6 +4,19 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Rails/FindById cop.
+///
+/// ## Investigation findings (2026-03-16)
+///
+/// **Root cause of 2 FNs:** Pattern 2 (`find_by!(id: ...)`) and Pattern 1 (`find_by_id!(...)`)
+/// required `call.receiver().is_some()`, but inside module-level class methods (e.g.
+/// `extend`ed mixins like `external_id.rb`), these methods are called without an explicit
+/// receiver — using implicit `self`. RuboCop's NodePattern uses `_` for the receiver slot which
+/// matches `nil` (no receiver), so it fires regardless.
+///
+/// **Fix:** Removed the `call.receiver().is_some()` guard from both Pattern 1 and Pattern 2.
+/// Pattern 3 (`where(id: ...).take!`) was unaffected: `as_method_chain` requires `take!` to
+/// have a receiver (the `where(...)` call), so it already correctly handled both cases.
 pub struct FindById;
 
 /// Check if a call has exactly one keyword argument with key `:id`.
@@ -65,8 +78,9 @@ impl Cop for FindById {
         let name = call.name().as_slice();
 
         // Pattern 1: find_by_id!(id)
+        // Fires with or without an explicit receiver (matches implicit self inside class methods).
         if name == b"find_by_id!" {
-            if call.receiver().is_some() && call.arguments().is_some() {
+            if call.arguments().is_some() {
                 let loc = call.message_loc().unwrap_or(call.location());
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
                 diagnostics.push(self.diagnostic(
@@ -79,9 +93,10 @@ impl Cop for FindById {
             return;
         }
 
-        // Pattern 2: find_by!(id: value) — only when id is the sole argument
+        // Pattern 2: find_by!(id: value) — only when id is the sole argument.
+        // Fires with or without an explicit receiver (matches implicit self inside class methods).
         if name == b"find_by!" {
-            if call.receiver().is_some() && has_sole_id_keyword_arg(&call) {
+            if has_sole_id_keyword_arg(&call) {
                 let loc = call.message_loc().unwrap_or(call.location());
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
                 diagnostics.push(self.diagnostic(
