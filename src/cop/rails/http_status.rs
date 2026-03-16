@@ -13,10 +13,18 @@ use crate::parse::source::SourceFile;
 /// `foo.render(status: 200)` or `response.head(200)` were incorrectly flagged.
 /// Fix: return early when `call.receiver().is_some()`.
 ///
-/// **FN root cause (9 FN):** RuboCop's `status_code` pattern matches `${int sym str}` — it
+/// **FN root cause (9 FN, 2026-03-08):** RuboCop's `status_code` pattern matches `${int sym str}` — it
 /// handles string status codes like `'200'` in addition to integer and symbol nodes.
 /// Nitrocop only handled IntegerNode and SymbolNode, missing StringNode.
 /// Fix: add StringNode handling — parse string content as integer, then look up in status maps.
+///
+/// **FN root cause (5 FN, 2026-03-16):** Rack-style status strings like `"404 Not Found"` and
+/// `"401 Unauthorized"` were not parsed correctly. The previous code did a plain integer parse
+/// of the entire string, which fails for strings with a trailing description. RuboCop uses
+/// `Rack::Utils` which accepts these "status reason phrase" strings and extracts the numeric
+/// prefix. Fix: split on whitespace and parse only the leading token, matching Rack's behavior.
+/// The diagnostic message uses the full original string content as the "current" value (e.g.
+/// `over '404 Not Found'`), matching RuboCop's output exactly.
 pub struct HttpStatus;
 
 fn status_code_to_symbol(code: i64) -> Option<&'static str> {
@@ -236,18 +244,28 @@ impl Cop for HttpStatus {
                 }
                 _ => {
                     // symbolic style: flag integer and string status codes
-                    let (code_num_opt, val_loc) = if let Some(_int) = status_value.as_integer_node()
-                    {
-                        let loc = status_value.location();
-                        let code_text = std::str::from_utf8(loc.as_slice()).unwrap_or("");
-                        (code_text.parse::<i64>().ok(), loc)
-                    } else if let Some(str_node) = status_value.as_string_node() {
-                        let content = str_node.unescaped();
-                        let code_text = std::str::from_utf8(content).unwrap_or("");
-                        (code_text.parse::<i64>().ok(), status_value.location())
-                    } else {
-                        (None, status_value.location())
-                    };
+                    // `display_val` is the "current" value shown in the message (matches RuboCop).
+                    // For integers it's the number itself; for strings it's the original string
+                    // content (e.g. "404 Not Found" stays as-is, not truncated to "404").
+                    let (code_num_opt, display_val, val_loc) =
+                        if let Some(_int) = status_value.as_integer_node() {
+                            let loc = status_value.location();
+                            let code_text = std::str::from_utf8(loc.as_slice()).unwrap_or("");
+                            let num = code_text.parse::<i64>().ok();
+                            let disp = code_text.to_string();
+                            (num, disp, loc)
+                        } else if let Some(str_node) = status_value.as_string_node() {
+                            let content = str_node.unescaped();
+                            let code_text = std::str::from_utf8(content).unwrap_or("");
+                            // Support strings like "404" as well as "404 Not Found" (Rack-style).
+                            // RuboCop uses Rack::Utils which parses the leading numeric portion.
+                            let numeric_prefix =
+                                code_text.split_ascii_whitespace().next().unwrap_or("");
+                            let num = numeric_prefix.parse::<i64>().ok();
+                            (num, code_text.to_string(), status_value.location())
+                        } else {
+                            (None, String::new(), status_value.location())
+                        };
                     if let Some(code_num) = code_num_opt {
                         if let Some(sym) = status_code_to_symbol(code_num) {
                             let (line, column) = source.offset_to_line_col(val_loc.start_offset());
@@ -256,7 +274,7 @@ impl Cop for HttpStatus {
                                 line,
                                 column,
                                 format!(
-                                    "Prefer `{sym}` over `{code_num}` to define HTTP status code."
+                                    "Prefer `{sym}` over `{display_val}` to define HTTP status code."
                                 ),
                             ));
                         }

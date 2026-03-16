@@ -14,3 +14,7 @@ render json: data, status: '404'
                            ^^^^^ Rails/HttpStatus: Prefer `:not_found` over `404` to define HTTP status code.
 redirect_to root_path, status: '301'
                                ^^^^^ Rails/HttpStatus: Prefer `:moved_permanently` over `301` to define HTTP status code.
+render plain: "hello", status: "404 Not Found"
+                               ^^^^^^^^^^^^^^^ Rails/HttpStatus: Prefer `:not_found` over `404 Not Found` to define HTTP status code.
+render plain: "hello", status: "401 Unauthorized"
+                               ^^^^^^^^^^^^^^^^^ Rails/HttpStatus: Prefer `:unauthorized` over `401 Unauthorized` to define HTTP status code.
