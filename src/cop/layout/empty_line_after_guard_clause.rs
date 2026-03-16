@@ -23,6 +23,10 @@ use crate::parse::source::SourceFile;
 ///   instead of skipping all comments to find the first code line.
 /// - Heredoc interference: Fixed via heredoc end line detection.
 ///
+/// - Whitespace-only blank lines: `is_blank_line` only matched truly empty lines,
+///   but many files have trailing spaces/tabs on "blank" lines. Switched all blank
+///   line checks to `is_blank_or_whitespace_line` to match RuboCop's `blank?`.
+///
 /// **Remaining gaps:** Some edge cases with heredocs inside conditions
 /// (e.g., `return true if <<~TEXT.length > bar`) may still differ.
 pub struct EmptyLineAfterGuardClause;
@@ -223,14 +227,16 @@ impl Cop for EmptyLineAfterGuardClause {
         let next_line = lines[effective_end_line]; // 0-indexed: effective_end_line is 1-indexed line number
 
         // Step 1: immediate next line is blank → no offense
-        if util::is_blank_line(next_line) {
+        // Use is_blank_or_whitespace_line to match RuboCop's `blank?` which treats
+        // whitespace-only lines as blank (many files have trailing spaces on "empty" lines).
+        if util::is_blank_or_whitespace_line(next_line) {
             return;
         }
 
         // Step 2: directive/nocov comment followed by blank → no offense
         if is_allowed_directive_comment(next_line)
             && (effective_end_line + 1 >= lines.len()
-                || util::is_blank_line(lines[effective_end_line + 1]))
+                || util::is_blank_or_whitespace_line(lines[effective_end_line + 1]))
         {
             return;
         }
@@ -335,12 +341,13 @@ impl EmptyLineAfterGuardClause {
         }
 
         let next_line = lines[end_line];
-        if util::is_blank_line(next_line) {
+        if util::is_blank_or_whitespace_line(next_line) {
             return;
         }
 
         if is_allowed_directive_comment(next_line)
-            && (end_line + 1 >= lines.len() || util::is_blank_line(lines[end_line + 1]))
+            && (end_line + 1 >= lines.len()
+                || util::is_blank_or_whitespace_line(lines[end_line + 1]))
         {
             return;
         }
@@ -471,7 +478,7 @@ fn is_guard_stmt(node: &ruby_prism::Node<'_>) -> bool {
 /// looking across blank lines (unlike `find_next_code_line` which stops at blanks).
 fn find_first_code_line_anywhere<'a>(lines: &[&'a [u8]], start_idx: usize) -> Option<&'a [u8]> {
     for line in &lines[start_idx..] {
-        if util::is_blank_line(line) {
+        if util::is_blank_or_whitespace_line(line) {
             continue;
         }
         if let Some(start) = line.iter().position(|&b| b != b' ' && b != b'\t') {
@@ -489,7 +496,7 @@ fn find_first_code_line_anywhere<'a>(lines: &[&'a [u8]], start_idx: usize) -> Op
 /// Returns None if a blank line is found first or we reach EOF.
 fn find_next_code_line<'a>(lines: &[&'a [u8]], start_idx: usize) -> Option<&'a [u8]> {
     for line in &lines[start_idx..] {
-        if util::is_blank_line(line) {
+        if util::is_blank_or_whitespace_line(line) {
             return None;
         }
         if let Some(start) = line.iter().position(|&b| b != b' ' && b != b'\t') {

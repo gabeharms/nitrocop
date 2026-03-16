@@ -321,3 +321,19 @@ def ternary_non_guard
   x = condition ? value_a : value_b
   do_something
 end
+
+# Guard clause followed by whitespace-only blank line (spaces)
+# RuboCop treats whitespace-only lines as blank
+def guard_whitespace_blank_spaces
+  return false unless request&.fullpath&.start_with?(callback_path)
+      
+  # Try request.origin first, then fallback to referer.
+  origin = request.origin
+end
+
+# Guard clause followed by whitespace-only blank line (tab)
+def guard_whitespace_blank_tab
+  raise ActiveRecord::RecordNotFound unless record.present?
+	
+  process(record)
+end
