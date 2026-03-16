@@ -14,6 +14,18 @@ use ruby_prism::Visit;
 ///
 /// Also added `complex_content?` check: symbols containing spaces or
 /// unmatched delimiters (`[]`, `()`) cannot be represented in `%i` syntax.
+///
+/// ## Corpus investigation (2026-03-15)
+///
+/// Corpus oracle reported FP=0, FN=8,702. Match rate 62.1%.
+///
+/// FN=8,702: Fixed. The `in_ambiguous_block_context` flag was set for the
+/// entire CallNode subtree (including the block body), but RuboCop's
+/// `invalid_percent_array_context?` only checks direct arguments of the
+/// non-parenthesized call. This caused every symbol array inside the block
+/// body of `describe "x" do`, `it "y" do`, `context "z" do`, etc. to be
+/// incorrectly suppressed — a massive miss in spec-heavy repos. Fixed by
+/// scoping the flag to only the arguments subtree, not the block body.
 pub struct SymbolArray;
 
 /// Delimiter characters that cannot appear unmatched in %i arrays.
@@ -206,15 +218,33 @@ impl<'pr> Visit<'pr> for SymbolArrayVisitor<'_, '_, 'pr> {
     }
 
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
-        let is_ambiguous = self.is_ambiguous_block_call(node);
-        let prev = self.in_ambiguous_block_context;
-        if is_ambiguous {
-            self.in_ambiguous_block_context = true;
+        if self.is_ambiguous_block_call(node) {
+            // Visit receiver normally
+            if let Some(receiver) = node.receiver() {
+                self.visit(&receiver);
+            }
+            // Visit arguments — only suppress top-level ArrayNode arguments,
+            // matching RuboCop's `parent.arguments.include?(node)` check.
+            // Arrays nested inside keyword hashes are NOT ambiguous.
+            if let Some(args) = node.arguments() {
+                let prev = self.in_ambiguous_block_context;
+                for arg in args.arguments().iter() {
+                    if arg.as_array_node().is_some() {
+                        self.in_ambiguous_block_context = true;
+                        self.visit(&arg);
+                        self.in_ambiguous_block_context = prev;
+                    } else {
+                        self.visit(&arg);
+                    }
+                }
+            }
+            // Visit block normally — arrays inside block body are NOT ambiguous
+            if let Some(block) = node.block() {
+                self.visit(&block);
+            }
+        } else {
+            ruby_prism::visit_call_node(self, node);
         }
-
-        ruby_prism::visit_call_node(self, node);
-
-        self.in_ambiguous_block_context = prev;
     }
 }
 
