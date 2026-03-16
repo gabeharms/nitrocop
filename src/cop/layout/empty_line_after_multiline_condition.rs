@@ -60,10 +60,20 @@ use ruby_prism::Visit;
 ///   Parser gem treats it as regular `while` (always check). Only
 ///   `begin...end while cond` is `while_post` (check right_sibling). Fixed
 ///   by using Prism's `is_begin_modifier()` flag instead of `closing_loc().is_none()`.
-/// - Remaining ~10 FN are cases where `has_right_sibling` returns false because
-///   it sees `else`/`elsif` after the condition end, but RuboCop's AST-based
-///   `right_sibling` returns the else/elsif branch node. These are edge cases
-///   where the modifier form is the only statement in an if branch.
+///
+/// **FN root causes (round 3, 12 FN → 0 FN):**
+/// - `has_right_sibling` treated `else`/`elsif`/`rescue`/`ensure` as scope
+///   terminators (returning false), but in RuboCop's Parser AST, when a modifier
+///   if/unless IS the direct body of an outer `if` node (single-statement body),
+///   `right_sibling` returns the else/elsif body as the next child. Similarly,
+///   `rescue`/`ensure` in a `begin` block are sibling positions. Fixed by removing
+///   `else`/`elsif`/`rescue`/`ensure` from the terminator list, keeping only `end`,
+///   `}`, and `when` as true scope-closers.
+///
+/// **Remaining FP (2 in camping, unfixable):**
+/// - Both FPs are in `camping__camping__f2479aa` — heavily minified Ruby with
+///   semicolons and code crammed on single lines. These are edge cases where
+///   text-based heuristics cannot accurately determine scope boundaries.
 pub struct EmptyLineAfterMultilineCondition;
 
 impl Cop for EmptyLineAfterMultilineCondition {
@@ -253,6 +263,16 @@ const MSG: &str = "Use empty line after multiline condition.";
 
 /// Check if there's a non-blank statement-like line after the given line.
 /// This approximates RuboCop's `right_sibling` check for modifier forms.
+///
+/// In RuboCop's AST (Parser gem), `right_sibling` returns the next child of
+/// the parent node. For a modifier if/unless that is the direct body of an
+/// outer `if` node (single-statement body), the parent is the outer `if` and
+/// `right_sibling` returns the else/elsif body. Similarly, in a `begin` block,
+/// `rescue`/`ensure` are sibling positions. So `else`, `elsif`, `rescue`, and
+/// `ensure` keywords indicate a right sibling exists.
+///
+/// Only `end`, `}`, and `when` are true terminators (scope-closing or
+/// case-branch boundaries where the modifier's parent is a `when` body).
 fn has_right_sibling(source: &SourceFile, condition_end_line: usize) -> bool {
     let lines: Vec<&[u8]> = source.lines().collect();
     // Look at lines after the condition end
@@ -267,24 +287,26 @@ fn has_right_sibling(source: &SourceFile, condition_end_line: usize) -> bool {
             if rest.starts_with(b"#") {
                 continue;
             }
-            // If it's `end` or `}` or a structural keyword, it's not a right sibling
+            // `end` and `}` close the parent scope — no right sibling
             if rest == b"end"
                 || rest.starts_with(b"end ")
                 || rest.starts_with(b"end\t")
                 || rest.starts_with(b"end.")
                 || rest.starts_with(b"end)")
                 || rest == b"}"
-                || rest.starts_with(b"else")
-                || rest.starts_with(b"elsif")
-                || rest.starts_with(b"ensure")
-                || rest.starts_with(b"rescue")
-                || rest.starts_with(b"when ")
-                || rest.starts_with(b"when\n")
-                || rest == b"when"
             {
                 return false;
             }
-            // Found a real statement — it's a right sibling
+            // `when` is a case-branch boundary — the modifier's parent is
+            // the when body, and the next when is NOT a right sibling of
+            // the modifier node
+            if rest.starts_with(b"when ") || rest.starts_with(b"when\n") || rest == b"when" {
+                return false;
+            }
+            // `else`, `elsif`, `rescue`, `ensure` indicate that the modifier
+            // is the body of a branching construct (if/begin), and the next
+            // branch is a right sibling in the AST → fire
+            // All other lines are also right siblings → fire
             return true;
         }
     }
