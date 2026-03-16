@@ -34,13 +34,36 @@ use ruby_prism::Visit;
 ///   Fixed by skipping comment lines and adding `when` to the structural
 ///   keyword list.
 ///
-/// **FN root causes:**
+/// **FP root causes (round 3, 21 FP → 0 FP):**
+/// - Offense location placed at keyword (`if`/`unless`/`elsif`) instead of
+///   condition node. When keyword is at end of line and condition starts on
+///   next line, this creates FP on keyword line + FN on condition line.
+///   Fixed by reporting offense at predicate start, matching RuboCop's
+///   `add_offense(condition)`.
+/// - `BlockNode.multiline?` override in rubocop-ast: when condition is a
+///   block call (e.g., `.all? { ... }`), RuboCop checks whether the block
+///   delimiters (`{`/`}` or `do`/`end`) span multiple lines, not the full
+///   expression. A multiline method chain with single-line `{ }` block is
+///   NOT considered multiline. Fixed by checking block delimiter lines when
+///   predicate is a CallNode with a block argument.
+///
+/// **FN root causes (round 1):**
 /// - Missing `case/when` support: multiline when conditions need an empty line
 ///   after the last condition before the body.
 /// - Missing `rescue` support: multiline rescue exception lists need an empty
 ///   line after the last exception before the handler body.
 /// - Message format mismatch: RuboCop uses "Use empty line after multiline condition."
 ///   (no "an"), the old message had "an".
+///
+/// **FN root causes (round 2, 21 FN → ~10 FN):**
+/// - `expr while cond` was treated as modifier (check right_sibling), but
+///   Parser gem treats it as regular `while` (always check). Only
+///   `begin...end while cond` is `while_post` (check right_sibling). Fixed
+///   by using Prism's `is_begin_modifier()` flag instead of `closing_loc().is_none()`.
+/// - Remaining ~10 FN are cases where `has_right_sibling` returns false because
+///   it sees `else`/`elsif` after the condition end, but RuboCop's AST-based
+///   `right_sibling` returns the else/elsif branch node. These are edge cases
+///   where the modifier form is the only statement in an if branch.
 pub struct EmptyLineAfterMultilineCondition;
 
 impl Cop for EmptyLineAfterMultilineCondition {
@@ -110,16 +133,15 @@ impl Cop for EmptyLineAfterMultilineCondition {
 
             if is_modifier {
                 // For modifier forms, only flag if there's a right sibling.
-                // Approximate: check if there's a non-blank, non-end line after the condition.
                 let predicate = if_node.predicate();
                 let pred_end = predicate.location().end_offset().saturating_sub(1);
                 let (pred_end_line, _) = source.offset_to_line_col(pred_end);
                 if has_right_sibling(source, pred_end_line) {
-                    diagnostics.extend(self.check_multiline_condition(source, &predicate, &kw_loc));
+                    diagnostics.extend(self.check_multiline_condition(source, &predicate));
                 }
             } else {
                 let predicate = if_node.predicate();
-                diagnostics.extend(self.check_multiline_condition(source, &predicate, &kw_loc));
+                diagnostics.extend(self.check_multiline_condition(source, &predicate));
             }
             return;
         }
@@ -136,10 +158,10 @@ impl Cop for EmptyLineAfterMultilineCondition {
                 let pred_end = predicate.location().end_offset().saturating_sub(1);
                 let (pred_end_line, _) = source.offset_to_line_col(pred_end);
                 if has_right_sibling(source, pred_end_line) {
-                    diagnostics.extend(self.check_multiline_condition(source, &predicate, &kw_loc));
+                    diagnostics.extend(self.check_multiline_condition(source, &predicate));
                 }
             } else {
-                diagnostics.extend(self.check_multiline_condition(source, &predicate, &kw_loc));
+                diagnostics.extend(self.check_multiline_condition(source, &predicate));
             }
             return;
         }
@@ -150,16 +172,20 @@ impl Cop for EmptyLineAfterMultilineCondition {
             if kw_loc.as_slice() != b"while" {
                 return;
             }
-            let is_modifier = while_node.closing_loc().is_none();
             let predicate = while_node.predicate();
-            if is_modifier {
+            // In RuboCop: `on_while` always checks (block and `expr while cond`),
+            // only `on_while_post` (`begin...end while cond`) checks right_sibling.
+            // Prism's `is_begin_modifier()` distinguishes the post form.
+            let is_begin_modifier =
+                while_node.closing_loc().is_none() && while_node.is_begin_modifier();
+            if is_begin_modifier {
                 let pred_end = predicate.location().end_offset().saturating_sub(1);
                 let (pred_end_line, _) = source.offset_to_line_col(pred_end);
                 if has_right_sibling(source, pred_end_line) {
-                    diagnostics.extend(self.check_multiline_condition(source, &predicate, &kw_loc));
+                    diagnostics.extend(self.check_multiline_condition(source, &predicate));
                 }
             } else {
-                diagnostics.extend(self.check_multiline_condition(source, &predicate, &kw_loc));
+                diagnostics.extend(self.check_multiline_condition(source, &predicate));
             }
             return;
         }
@@ -170,16 +196,18 @@ impl Cop for EmptyLineAfterMultilineCondition {
             if kw_loc.as_slice() != b"until" {
                 return;
             }
-            let is_modifier = until_node.closing_loc().is_none();
             let predicate = until_node.predicate();
-            if is_modifier {
+            // Same as while: only begin...end until form checks right_sibling
+            let is_begin_modifier =
+                until_node.closing_loc().is_none() && until_node.is_begin_modifier();
+            if is_begin_modifier {
                 let pred_end = predicate.location().end_offset().saturating_sub(1);
                 let (pred_end_line, _) = source.offset_to_line_col(pred_end);
                 if has_right_sibling(source, pred_end_line) {
-                    diagnostics.extend(self.check_multiline_condition(source, &predicate, &kw_loc));
+                    diagnostics.extend(self.check_multiline_condition(source, &predicate));
                 }
             } else {
-                diagnostics.extend(self.check_multiline_condition(source, &predicate, &kw_loc));
+                diagnostics.extend(self.check_multiline_condition(source, &predicate));
             }
             return;
         }
@@ -263,6 +291,27 @@ fn has_right_sibling(source: &SourceFile, condition_end_line: usize) -> bool {
     false
 }
 
+/// Check if a predicate node represents a block call where the block delimiters
+/// are on the same line. In RuboCop, `BlockNode.multiline?` checks `loc.begin.line
+/// == loc.end.line` (the `{`/`}` or `do`/`end`), NOT the full expression range.
+/// This means a multiline method chain with single-line `{ }` block (e.g.,
+/// `items\n  .all? { |x| x.valid? }`) is NOT considered multiline.
+fn is_single_line_block_condition(source: &SourceFile, predicate: &ruby_prism::Node<'_>) -> bool {
+    // Check if the predicate is a CallNode with a block
+    if let Some(call_node) = predicate.as_call_node() {
+        if let Some(block) = call_node.block() {
+            if let Some(block_node) = block.as_block_node() {
+                let open_loc = block_node.opening_loc();
+                let close_loc = block_node.closing_loc();
+                let (open_line, _) = source.offset_to_line_col(open_loc.start_offset());
+                let (close_line, _) = source.offset_to_line_col(close_loc.start_offset());
+                return open_line == close_line;
+            }
+        }
+    }
+    false
+}
+
 /// Visitor that handles RescueNode (which Prism dispatches via visit_rescue_node,
 /// not visit_branch_node_enter, so the CopWalker never sees it).
 struct RescueVisitor<'a> {
@@ -285,7 +334,6 @@ impl EmptyLineAfterMultilineCondition {
         &self,
         source: &SourceFile,
         predicate: &ruby_prism::Node<'_>,
-        kw_loc: &ruby_prism::Location<'_>,
     ) -> Vec<Diagnostic> {
         // Skip when the predicate is a CaseNode — case expressions are inherently
         // multiline (they contain when branches) and shouldn't be treated as
@@ -305,6 +353,12 @@ impl EmptyLineAfterMultilineCondition {
             return Vec::new();
         }
 
+        // If the condition is a block call with single-line delimiters, it's not
+        // multiline per RuboCop's BlockNode.multiline? override.
+        if is_single_line_block_condition(source, predicate) {
+            return Vec::new();
+        }
+
         let lines: Vec<&[u8]> = source.lines().collect();
         // The line after the condition ends
         let next_line_num = pred_end_line + 1;
@@ -316,7 +370,9 @@ impl EmptyLineAfterMultilineCondition {
         // Use is_blank_or_whitespace_line to match RuboCop's `blank?` which treats
         // whitespace-only lines as blank.
         if !is_blank_or_whitespace_line(next_line) {
-            let (line, col) = source.offset_to_line_col(kw_loc.start_offset());
+            // Report offense at the condition (predicate) start, matching RuboCop's
+            // `add_offense(condition)` which places the offense on the condition node.
+            let (line, col) = source.offset_to_line_col(predicate.location().start_offset());
             return vec![self.diagnostic(source, line, col, MSG.to_string())];
         }
 
@@ -470,15 +526,57 @@ mod tests {
     }
 
     #[test]
-    fn fp_unless_with_method_chain_continuation() {
-        // unless with method chain on next line - this IS a valid offense per RuboCop
-        // (multiline condition, no empty line after). Keeping as offense test.
+    fn fp_unless_with_single_line_block_condition() {
+        // unless with method chain on next line — block { } is single-line,
+        // so condition is NOT multiline per RuboCop's BlockNode.multiline?
         let source = b"def m\n  unless %w[foo bar baz]\n      .all? { |name| File.exist? File.join(path, name) }\n    run(\"command\")\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterMultilineCondition, source);
+        assert!(
+            diags.is_empty(),
+            "Should not fire on unless with single-line block condition: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn fn_modifier_while_non_begin_form() {
+        // `nil while code.gsub!(...)` — non-begin modifier while with multiline condition.
+        // RuboCop treats this as regular `while` (always check), not `while_post`.
+        let source = b"nil while\n    code.gsub!(/pat/) {\n      result\n    }\ndo_something\n";
         let diags = crate::testutil::run_cop_full(&EmptyLineAfterMultilineCondition, source);
         assert_eq!(
             diags.len(),
             1,
-            "Should fire on unless with multiline condition"
+            "Should fire on non-begin modifier while with multiline condition: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn no_offense_modifier_while_non_begin_at_end() {
+        // nil while with multiline condition but no right sibling — RuboCop's on_while
+        // always checks, so this IS an offense if the condition is multiline. But here
+        // `code.gsub!() { }` has single-line block braces, so condition is NOT multiline.
+        let source =
+            b"def optimize(code)\n  code = code.dup\n  nil while\n    code.gsub!(/pattern/) { |f| f.upcase }\nend\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterMultilineCondition, source);
+        assert!(
+            diags.is_empty(),
+            "Should not fire on modifier while with single-line block condition at end: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn offense_if_with_multiline_do_end_block() {
+        // if with do..end block condition — block delimiters on different lines → multiline
+        let source = b"if items.find do |item|\n     item.ready?\n   end\n  process\nend\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterMultilineCondition, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should fire on if with multiline do..end block condition: {:?}",
+            diags
         );
     }
 }
