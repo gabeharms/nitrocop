@@ -33,3 +33,15 @@ File.open(Rails.root.join("config", "secrets.yml"), "r")
 
 blob = {io: File.open(Rails.root.join("public", "photo.png"))}
             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/RootPathnameMethods: `Rails.root` is a `Pathname`, so you can use `Rails.root.join(...).open` instead.
+
+file = File.open(Rails.root.join("test/fixtures/data.csv"))
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/RootPathnameMethods: `Rails.root` is a `Pathname`, so you can use `Rails.root.join(...).open` instead.
+
+@file = File.open(Rails.root.join("test/fixtures/data.csv"))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/RootPathnameMethods: `Rails.root` is a `Pathname`, so you can use `Rails.root.join(...).open` instead.
+
+@image_fixture_file ||= File.open(Rails.root.join("test/fixtures/image.png"))
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/RootPathnameMethods: `Rails.root` is a `Pathname`, so you can use `Rails.root.join(...).open` instead.
+
+f = File.open(Rails.root.join("config/model_names.rb"), "w+")
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/RootPathnameMethods: `Rails.root` is a `Pathname`, so you can use `Rails.root.join(...).open` instead.

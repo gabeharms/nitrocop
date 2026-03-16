@@ -28,6 +28,19 @@ use crate::parse::source::SourceFile;
 /// heuristic checked for `,` and `)` which incorrectly skipped these (hash commas, not call
 /// args). Refined to only check `.` after the node (chain receiver) and `(`/`,`/`=` before
 /// the node (argument to call / setter).
+///
+/// **Corpus investigation (2026-03-16):**
+///
+/// **FNs fixed (26):** All 26 FNs were `var = File.open(Rails.root.join(...))` — plain local,
+/// instance, or class variable assignments (e.g., `file = File.open(...)`,
+/// `@file = File.open(...)`, `f = File.open(...)`, `@x ||= File.open(...)`). The previous
+/// `=` heuristic treated ALL `=` (except `==`) as setter-method assignments and skipped them.
+/// Root cause: RuboCop's `node.parent&.send_type?` check only skips when the parent is a
+/// *send* node (setter method like `obj.attr=`); for local/instance variable assignments the
+/// parent is `lvasgn`/`ivasgn`, not a send, so RuboCop still reports the offense. Fixed by
+/// refining the `=` heuristic: only skip if the bytes before `=` show a dotted LHS
+/// (e.g., `obj.attr =`). Compound operators (`||=`, `&&=`, `+=`, etc.) and simple variable
+/// identifiers are no longer skipped.
 pub struct RootPathnameMethods;
 
 const FILE_METHODS: &[&[u8]] = &[
@@ -214,8 +227,10 @@ impl Cop for RootPathnameMethods {
             // Check before the node for nesting indicators
             // `(` means argument to a call: YAML.safe_load(File.open(...))
             // `,` means second+ arg: foo(x, File.open(...))
-            // `=` means RHS of setter method: obj.attr = File.open(...)
-            //   (but NOT `==` comparison, which would be `== File.open(...)`)
+            // `=` on RHS of setter method: obj.attr = File.open(...)
+            //   but NOT simple assignment (`var = File.open(...)`) — those ARE offenses.
+            //   and NOT compound assignment (`||= File.open(...)`) — those ARE offenses.
+            //   and NOT comparison (`== File.open(...)`) — not an assignment at all.
             if start_offset > 0 {
                 let before = &src[..start_offset];
                 let prev_meaningful_pos = before.iter().rposition(|&b| b != b' ' && b != b'\t');
@@ -223,8 +238,23 @@ impl Cop for RootPathnameMethods {
                     match before[pos] {
                         b'(' | b',' => return,
                         b'=' => {
-                            // Skip `=` (setter assignment) but not `==` (comparison)
-                            if pos == 0 || before[pos - 1] != b'=' {
+                            // Only skip for setter method assignments like `obj.attr = File.open(...)`
+                            // These are identified by having a `.method` expression on the LHS.
+                            // Do NOT skip for:
+                            //   - `==` (comparison)
+                            //   - `||=`, `&&=`, `+=`, etc. (compound assignments, LHS is a variable)
+                            //   - `var = File.open(...)` (simple local/instance variable assignment)
+                            let is_setter = pos > 0 && {
+                                let prev = before[pos - 1];
+                                // Not `==`, not a compound operator, and LHS is a method call chain
+                                prev != b'='
+                                    && !matches!(
+                                        prev,
+                                        b'|' | b'&' | b'+' | b'-' | b'*' | b'/' | b'%' | b'^'
+                                    )
+                                    && is_setter_method_assignment(before, pos)
+                            };
+                            if is_setter {
                                 return;
                             }
                         }
@@ -278,6 +308,41 @@ impl Cop for RootPathnameMethods {
             }
         }
     }
+}
+
+/// Determine if the `=` at `eq_pos` in `before` is a setter method assignment like
+/// `obj.attr = ` rather than a simple local/instance/class variable assignment.
+///
+/// Returns `true` when the LHS contains a `.` before the final identifier, meaning
+/// the assignment is dispatched as a send (e.g., `obj.attr=`). Returns `false` for
+/// simple assignments like `var = `, `@ivar = `, `@@cvar = `, `CONST = `.
+fn is_setter_method_assignment(before: &[u8], eq_pos: usize) -> bool {
+    // `before[..eq_pos]` ends just before the `=`.
+    // Skip trailing spaces/tabs to find the end of the LHS expression.
+    let lhs = &before[..eq_pos];
+    let Some(lhs_end) = lhs.iter().rposition(|&b| b != b' ' && b != b'\t') else {
+        return false;
+    };
+
+    // Scan backwards over identifier characters (word chars including `?` and `!` for Ruby methods).
+    let mut scan = lhs_end;
+    while scan > 0 && is_ruby_ident_byte(lhs[scan]) {
+        scan -= 1;
+    }
+    // Check if the byte immediately before the identifier is `.`
+    if scan > 0 && lhs[scan] == b'.' {
+        return true; // setter method: `obj.attr =`
+    }
+    // Handle the case where scan reached the start (e.g. the char at index 0 is ident)
+    if scan == 0 && is_ruby_ident_byte(lhs[0]) {
+        return false; // bare identifier at start = simple assignment
+    }
+    false
+}
+
+/// Returns true for bytes that can appear in a Ruby identifier/method name.
+fn is_ruby_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'?' || b == b'!'
 }
 
 /// Check if a node is `Rails.root` or `Rails.public_path`, returning the method name.
