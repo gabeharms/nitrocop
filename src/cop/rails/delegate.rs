@@ -118,6 +118,24 @@ use crate::parse::source::SourceFile;
 /// **FP 2 (palkan/anyway_config)**: `def clear() = value.clear` — endless method
 /// delegation. RuboCop doesn't flag it. Without corpus access, cannot determine visibility
 /// context (likely private block earlier in file).
+///
+/// ## Investigation (2026-03-16): FP=2, FN=24
+///
+/// **FN root cause**: `is_in_module_function_scope` forward scan used substring matching
+/// (`windows().any()`) to detect `module_function`. This falsely matched identifiers
+/// containing `module_function` as a substring, e.g., `register_module_function`,
+/// `module_function?`, `make_module_function`. This was the primary FN source —
+/// particularly in yard (10 FNs), where `lib/yard/handlers/base.rb` has delegation
+/// methods like `def owner; parser.owner end` followed later by method
+/// `def register_module_function(object)` which contains the substring.
+///
+/// Fix: Replaced `windows()` substring matching with `has_module_function_token()`
+/// that checks word boundaries — `module_function` must be preceded and followed by
+/// non-identifier characters (not alphanumeric, `_`, `?`, `!`).
+///
+/// **FP 1 & 2**: Both FPs remain — they are caused by visibility context (private
+/// block earlier in the file) that our line-based scanning doesn't detect. The methods
+/// ARE valid delegation patterns that RuboCop flags when public, confirmed via testing.
 pub struct Delegate;
 
 impl Cop for Delegate {
@@ -553,6 +571,8 @@ fn is_in_module_function_scope(source: &SourceFile, def_offset: usize) -> bool {
         // Only match at the same or enclosing scope level (indent <= def_col) to avoid
         // matching `module_function` in nested blocks, modules, or method calls.
         // Handles `module_function :name`, `end; module_function :name`, etc.
+        // IMPORTANT: Use word boundary matching, not substring matching. Otherwise
+        // identifiers like `register_module_function` or `module_function?` falsely trigger.
         if indent <= def_col {
             // Strip comment portion: find first `#` that's not inside a string
             let code_portion = if let Some(hash_pos) = trimmed.iter().position(|&b| b == b'#') {
@@ -560,15 +580,49 @@ fn is_in_module_function_scope(source: &SourceFile, def_offset: usize) -> bool {
             } else {
                 trimmed
             };
-            if code_portion
-                .windows(b"module_function".len())
-                .any(|w| w == b"module_function")
-            {
+            if has_module_function_token(code_portion) {
                 return true;
             }
         }
     }
 
+    false
+}
+
+/// Check if a code portion contains `module_function` as a standalone token,
+/// not as a substring of a larger identifier (e.g., `register_module_function`).
+/// Returns true only when `module_function` is bounded by non-identifier characters
+/// (or start/end of the slice).
+fn has_module_function_token(code: &[u8]) -> bool {
+    let needle = b"module_function";
+    let nlen = needle.len();
+    for window_start in 0..code.len() {
+        if window_start + nlen > code.len() {
+            break;
+        }
+        if &code[window_start..window_start + nlen] != needle.as_slice() {
+            continue;
+        }
+        // Check preceding character is not an identifier char
+        if window_start > 0 {
+            let prev = code[window_start - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        // Check following character is not an identifier char
+        if window_start + nlen < code.len() {
+            let next_ch = code[window_start + nlen];
+            if next_ch.is_ascii_alphanumeric()
+                || next_ch == b'_'
+                || next_ch == b'?'
+                || next_ch == b'!'
+            {
+                continue;
+            }
+        }
+        return true;
+    }
     false
 }
 

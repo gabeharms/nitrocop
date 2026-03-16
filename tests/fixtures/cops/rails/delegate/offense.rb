@@ -92,3 +92,24 @@ def check_for_pending_migrations
 ^^^ Rails/Delegate: Use `delegate` to define delegations.
   Tasks.check_for_pending_migrations
 end
+
+# Single-line def methods (inline def...end on one line)
+def owner; parser.owner end
+^^^ Rails/Delegate: Use `delegate` to define delegations.
+
+def namespace; parser.namespace end
+^^^ Rails/Delegate: Use `delegate` to define delegations.
+
+def adapters; Adapter.adapters end
+^^^ Rails/Delegate: Use `delegate` to define delegations.
+
+# Methods followed by identifiers containing "module_function" as substring
+# should NOT be suppressed — only actual `module_function` calls count
+class Handler
+  def scope; parser.scope end
+  ^^^ Rails/Delegate: Use `delegate` to define delegations.
+
+  def register_module_function(object)
+    object.module_function
+  end
+end
