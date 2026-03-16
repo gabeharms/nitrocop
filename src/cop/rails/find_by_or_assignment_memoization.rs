@@ -3,6 +3,22 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// Investigation notes (2026-03-16):
+///
+/// Root cause of 8 FNs in `basecamp__fizzy__a02042b`: the visitor's
+/// `visit_instance_variable_or_write_node` was returning early (without recursing into children)
+/// when the value was not a direct `find_by` call. This caused nested `||=` inside
+/// `@outer ||= begin ... Class.new do ... def method ... @inner ||= foo.find_by(...) end end end`
+/// patterns to be silently skipped — the visitor never descended into the begin block or the
+/// anonymous class body.
+///
+/// Fix: always call `ruby_prism::visit_instance_variable_or_write_node` at the end to recurse,
+/// even when the current node doesn't match (value is not a direct find_by call, or we're
+/// inside an if/unless). The if/unless skip logic (`in_if_depth`) correctly matches RuboCop's
+/// `assignment_node.each_ancestor(:if).any?` check — a `||=` inside an if body is skipped
+/// regardless of depth in other constructs.
+///
+/// After fix: FN=0, FP=0 on corpus.
 pub struct FindByOrAssignmentMemoization;
 
 /// Check if a node is a `find_by` call (not `find_by!`) without safe navigation.
@@ -76,27 +92,29 @@ impl<'pr> Visit<'pr> for FindByVisitor<'_> {
         &mut self,
         node: &ruby_prism::InstanceVariableOrWriteNode<'pr>,
     ) {
-        // Skip if inside any if/unless ancestor
-        if self.in_if_depth > 0 {
-            return;
+        // When inside an if/unless, the ||= itself has an if ancestor — RuboCop skips these.
+        // We still recurse into children because an inner def (e.g., inside a block passed
+        // to Class.new) starts a fresh method scope and its own ||= nodes are independent.
+        if self.in_if_depth == 0 {
+            let value = node.value();
+
+            // The value should be a direct find_by call (not part of || or ternary),
+            // and not using safe navigation (&.find_by)
+            if is_find_by_call_without_safe_nav(&value) {
+                let loc = node.location();
+                let (line, column) = self.source.offset_to_line_col(loc.start_offset());
+                self.diagnostics.push(self.cop.diagnostic(
+                    self.source,
+                    line,
+                    column,
+                    "Avoid memoizing `find_by` results with `||=`.".to_string(),
+                ));
+            }
         }
 
-        let value = node.value();
-
-        // The value should be a direct find_by call (not part of || or ternary),
-        // and not using safe navigation (&.find_by)
-        if !is_find_by_call_without_safe_nav(&value) {
-            return;
-        }
-
-        let loc = node.location();
-        let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
-            self.source,
-            line,
-            column,
-            "Avoid memoizing `find_by` results with `||=`.".to_string(),
-        ));
+        // Always recurse into children so we catch ||= nodes nested inside begin blocks,
+        // blocks passed to Class.new, inner method definitions, etc.
+        ruby_prism::visit_instance_variable_or_write_node(self, node);
     }
 }
 
