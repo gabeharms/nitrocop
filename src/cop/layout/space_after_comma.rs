@@ -49,6 +49,18 @@ use crate::parse::source::SourceFile;
 /// `heredoc_interpolation_non_code_ranges` to CodeMap which tracks string/regex/
 /// symbol literal ranges that are nested within heredoc interpolation blocks,
 /// and checking `!is_non_code_in_heredoc_interpolation(i)` in the skip logic.
+///
+/// ## Corpus investigation (2026-03-16)
+///
+/// FN=1 root cause:
+/// - Comma inside `#{}` interpolation within a string continuation (`"..." \ "..."`).
+///   Prism wraps continued strings in an outer `InterpolatedStringNode` with no
+///   opening/closing, whose parts include the inner `InterpolatedStringNode` (with
+///   `#{}`) as a non-`EmbeddedStatementsNode` part. CodeMap's non-heredoc handler
+///   was marking all non-`EmbeddedStatementsNode` parts as non-code, inadvertently
+///   covering the inner interpolated string's `#{}` content. Fixed in CodeMap by
+///   also skipping `InterpolatedStringNode` parts (the recursive visitor handles
+///   them correctly on its own).
 pub struct SpaceAfterComma;
 
 impl Cop for SpaceAfterComma {

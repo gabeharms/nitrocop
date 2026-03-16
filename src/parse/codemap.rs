@@ -253,12 +253,15 @@ impl NonCodeCollector<'_> {
                         self.ranges.push((open.start_offset(), open.end_offset()));
                     }
                     for part in isn.parts().iter() {
-                        if part.as_embedded_statements_node().is_none() {
-                            // StringNode part — literal text, not code
+                        if part.as_embedded_statements_node().is_none()
+                            && part.as_interpolated_string_node().is_none()
+                        {
+                            // StringNode part — literal text, not code.
+                            // Skip InterpolatedStringNode parts (from string continuation
+                            // like "..." \ "#{...}") — the recursive visitor handles them.
                             let ploc = part.location();
                             self.ranges.push((ploc.start_offset(), ploc.end_offset()));
                         }
-                        // EmbeddedStatementsNode parts are left unmarked (= code)
                     }
                     if let Some(close) = isn.closing_loc() {
                         self.ranges.push((close.start_offset(), close.end_offset()));
@@ -347,6 +350,24 @@ fn merge_ranges(sorted: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
 mod tests {
     use super::*;
     use crate::parse::parse_source;
+
+    #[test]
+    fn string_continuation_interpolation_is_code() {
+        // String continuation: "x #{foo(1,2)}" \
+        //   "more"
+        // Prism produces an outer InterpolatedStringNode (no opening/closing)
+        // wrapping the two continued strings. The inner InterpolatedStringNode
+        // contains #{} interpolation whose content should be code.
+        let source = b"x = \"x #{foo(1,2)}\" \\\n  \"more\"\n";
+        let pr = parse_source(source);
+        let cm = CodeMap::from_parse_result(source, &pr);
+
+        let comma = source.iter().position(|&b| b == b',').unwrap();
+        assert!(
+            cm.is_code(comma),
+            "Comma inside #{{}} in continuation string should be code"
+        );
+    }
 
     #[test]
     fn empty_source() {

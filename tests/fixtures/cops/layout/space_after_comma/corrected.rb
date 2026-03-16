@@ -12,3 +12,5 @@ MSG
 txt = <<~TXT
   #{w.message.to_s[0, 40]}
 TXT
+get = "GET /#{rand_data(10, 120)} HTTP/1.1" \
+  "#{header * count}"
