@@ -45,6 +45,20 @@ use ruby_prism::Visit;
 /// implements `visit_rescue_node` to find rescue exception lists and apply the
 /// same multiline element check (same `all_on_same_line?` guard and
 /// `last_seen_line` algorithm).
+///
+/// ## Investigation (2026-03-16)
+///
+/// **Root cause of 43 FNs:** Implicit arrays (no brackets) were skipped by the
+/// `check_node` handler. The cop had a guard `if opening_loc().is_none()` that
+/// returned early for implicit arrays — e.g. multi-assignment RHS
+/// (`a, b = val1, val2`), method calls with implicit array args
+/// (`config.cache_store = :redis, { ... }`), and constant assignments
+/// (`ITEMS = :a, :b`). RuboCop's `on_array` fires on ALL array nodes including
+/// implicit ones and applies the same line-break check.
+///
+/// **Fix:** Removed the implicit array skip. Prism's `ArrayNode.elements()`
+/// returns the correct element list for both explicit `[...]` and implicit
+/// arrays, so the `check_elements` logic works unchanged.
 pub struct MultilineArrayLineBreaks;
 
 impl MultilineArrayLineBreaks {
@@ -155,11 +169,6 @@ impl Cop for MultilineArrayLineBreaks {
             Some(a) => a,
             None => return,
         };
-
-        // Skip implicit arrays (no brackets — e.g. multiple assignment RHS)
-        if array.opening_loc().is_none() || array.closing_loc().is_none() {
-            return;
-        }
 
         let elements: Vec<ruby_prism::Node<'_>> = array.elements().iter().collect();
         self.check_elements(source, &elements, allow_multiline_final, diagnostics);

@@ -7,17 +7,26 @@ use ruby_prism::Visit;
 ///
 /// ## Investigation findings
 ///
-/// FP root causes (16 → 8 FPs):
+/// FP root causes (16 → 8 → 6 FPs):
 /// - `has_method_definition_in_subtree` only recursed into `if`/`unless` nodes, missing
 ///   `define_method` calls inside `.each` blocks, `begin..end` blocks, and other containers.
 ///   RuboCop's `check_child_nodes` recurses into ALL non-scope, non-defs child nodes.
 /// - `recurse_children` did not handle `LambdaNode` (`-> { def foo; end }`) or recurse
 ///   into `CallNode` receivers (e.g., `-> { def foo; end }.call`), causing FPs when
 ///   `private` preceded a lambda/proc containing a `def`.
+/// - `recurse_children` did not handle `CaseNode`/`WhenNode`, missing method defs inside
+///   case branches (e.g., `case RUBY_ENGINE; when "ruby"; def foo; end; end`).
+/// - `private_class_method` with arguments (e.g., `private_class_method def self.foo`)
+///   was not recognized as resetting access modifier tracking. In RuboCop, this causes
+///   `check_send_node` to return nil, clearing the `unused` marker.
 ///
-/// FN root causes (73 FNs):
+/// FN root causes (73 → 50 FNs):
 /// - `private_class_method` without arguments was not detected at all. RuboCop always
 ///   flags bare `private_class_method` as useless (it doesn't affect subsequent `def self.`).
+/// - Top-level access modifiers (outside class/module) were not detected. RuboCop's
+///   `on_begin` handler flags any bare access modifier at top level as useless.
+/// - `module_function` was not recognized as an access modifier. RuboCop's
+///   `bare_access_modifier?` includes `module_function`.
 ///
 /// Fixes applied:
 /// - Rewrote `has_method_definition_in_subtree` to recursively traverse all relevant
@@ -29,6 +38,10 @@ use ruby_prism::Visit;
 /// - Added `LambdaNode` handling in `recurse_children`.
 /// - Added `CallNode` receiver recursion in `recurse_children`.
 /// - Added `is_bare_private_class_method` detection in `check_scope`.
+/// - Added `CaseNode`/`WhenNode` handling in `recurse_children`.
+/// - Added `private_class_method` with args resetting `unused_modifier` in `check_scope`.
+/// - Added `visit_program_node` for top-level access modifier detection.
+/// - Added `module_function` to `AccessKind` and `get_access_modifier`.
 pub struct UselessAccessModifier;
 
 impl Cop for UselessAccessModifier {
@@ -69,6 +82,7 @@ enum AccessKind {
     Public,
     Private,
     Protected,
+    ModuleFunction,
 }
 
 impl AccessKind {
@@ -77,6 +91,7 @@ impl AccessKind {
             AccessKind::Public => "public",
             AccessKind::Private => "private",
             AccessKind::Protected => "protected",
+            AccessKind::ModuleFunction => "module_function",
         }
     }
 }
@@ -90,6 +105,7 @@ fn get_access_modifier(call: &ruby_prism::CallNode<'_>) -> Option<AccessKind> {
         b"public" => Some(AccessKind::Public),
         b"private" => Some(AccessKind::Private),
         b"protected" => Some(AccessKind::Protected),
+        b"module_function" => Some(AccessKind::ModuleFunction),
         _ => None,
     }
 }
@@ -337,6 +353,31 @@ fn recurse_children(node: &ruby_prism::Node<'_>, method_creating_methods: &[Stri
         }
         return false;
     }
+    // CaseNode — `case expr; when ...; def foo; end; end`
+    if let Some(case_node) = node.as_case_node() {
+        for condition in case_node.conditions().iter() {
+            if has_method_definition_in_subtree(&condition, method_creating_methods) {
+                return true;
+            }
+        }
+        if let Some(else_clause) = case_node.else_clause() {
+            if has_method_definition_in_subtree(&else_clause.as_node(), method_creating_methods) {
+                return true;
+            }
+        }
+        return false;
+    }
+    // WhenNode — body of a when clause
+    if let Some(when_node) = node.as_when_node() {
+        if let Some(stmts) = when_node.statements() {
+            for stmt in stmts.body().iter() {
+                if has_method_definition_in_subtree(&stmt, method_creating_methods) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
     false
 }
 
@@ -364,6 +405,16 @@ fn check_scope(
                     column,
                     "Useless `private_class_method` access modifier.".to_string(),
                 ));
+                continue;
+            }
+
+            // private_class_method with arguments resets tracking
+            // (matches RuboCop where check_send_node returns nil for this case)
+            if call.receiver().is_none()
+                && call.arguments().is_some()
+                && call.name().as_slice() == b"private_class_method"
+            {
+                unused_modifier = None;
                 continue;
             }
 
@@ -420,7 +471,39 @@ struct UselessAccessVisitor<'a, 'src> {
     method_creating_methods: Vec<String>,
 }
 
+/// Check if a call node is a bare access modifier (including module_function and
+/// private_class_method without args). Used for top-level detection.
+fn is_access_modifier_call(call: &ruby_prism::CallNode<'_>) -> bool {
+    get_access_modifier(call).is_some() || is_bare_private_class_method(call)
+}
+
 impl<'pr> Visit<'pr> for UselessAccessVisitor<'_, '_> {
+    fn visit_program_node(&mut self, node: &ruby_prism::ProgramNode<'pr>) {
+        // Top-level access modifiers are always useless (RuboCop's on_begin handler).
+        // At top level, access modifiers have no effect on method visibility.
+        let stmts = node.statements();
+        for stmt in stmts.body().iter() {
+            if let Some(call) = stmt.as_call_node() {
+                if is_access_modifier_call(&call) {
+                    let loc = call.location();
+                    let (line, column) = self.source.offset_to_line_col(loc.start_offset());
+                    let name = if is_bare_private_class_method(&call) {
+                        "private_class_method".to_string()
+                    } else {
+                        get_access_modifier(&call).unwrap().as_str().to_string()
+                    };
+                    self.diagnostics.push(self.cop.diagnostic(
+                        self.source,
+                        line,
+                        column,
+                        format!("Useless `{}` access modifier.", name),
+                    ));
+                }
+            }
+        }
+        ruby_prism::visit_program_node(self, node);
+    }
+
     fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
         if let Some(body) = node.body() {
             if let Some(stmts) = body.as_statements_node() {
@@ -464,6 +547,40 @@ impl<'pr> Visit<'pr> for UselessAccessVisitor<'_, '_> {
             }
         }
         ruby_prism::visit_singleton_class_node(self, node);
+    }
+
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        // Handle eval blocks (class_eval, instance_eval) and constructor blocks
+        // (Class.new, Module.new, Struct.new, Data.define) as scopes.
+        // Matches RuboCop's on_block handler for eval_call? and included_block?.
+        if let Some(block_node) = node.block() {
+            if let Some(block) = block_node.as_block_node() {
+                let name = node.name().as_slice();
+                let is_eval_scope = if name == b"class_eval" || name == b"instance_eval" {
+                    true
+                } else if name == b"new" || name == b"define" {
+                    node.receiver()
+                        .as_ref()
+                        .is_some_and(|r| is_class_constructor_receiver(r))
+                } else {
+                    false
+                };
+                if is_eval_scope {
+                    if let Some(body) = block.body() {
+                        if let Some(stmts) = body.as_statements_node() {
+                            check_scope(
+                                self.cop,
+                                self.source,
+                                &mut self.diagnostics,
+                                &stmts,
+                                &self.method_creating_methods,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        ruby_prism::visit_call_node(self, node);
     }
 }
 

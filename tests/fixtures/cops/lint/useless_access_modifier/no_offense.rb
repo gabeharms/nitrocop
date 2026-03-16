@@ -80,3 +80,30 @@ class WithPrivateClassMethodArgs
     42
   end
 end
+
+# private before private_class_method with args — not useless
+# (matches RuboCop behavior where private_class_method with args
+# resets access modifier tracking)
+class WithPrivateBeforePrivateClassMethod
+  private
+
+  private_class_method def self.secret
+    42
+  end
+end
+
+# private before case with method definitions in branches — not useless
+class WithCaseContainingDefs
+  private
+
+  case RUBY_ENGINE
+  when "ruby"
+    def get_result
+      @result
+    end
+  when "jruby"
+    def get_result
+      @result
+    end
+  end
+end

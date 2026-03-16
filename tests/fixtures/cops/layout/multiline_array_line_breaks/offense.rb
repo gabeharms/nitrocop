@@ -33,3 +33,21 @@ rescue FooError, BarError,
                  ^^^^^^^^ Layout/MultilineArrayLineBreaks: Each item in a multi-line array must start on a separate line.
   retry
 end
+
+# Implicit array in multi-assignment (no brackets)
+a, b, c =
+  val1, val2,
+        ^^^^ Layout/MultilineArrayLineBreaks: Each item in a multi-line array must start on a separate line.
+  val3
+
+# Method call with implicit array args (e.g. config.cache_store=)
+config.cache_store = :redis_cache_store, {
+                                         ^ Layout/MultilineArrayLineBreaks: Each item in a multi-line array must start on a separate line.
+  url: "redis://localhost:6379/1",
+  expires_in: 90
+}
+
+# Constant assignment with implicit array
+ITEMS = :scan, :skip,
+               ^^^^^ Layout/MultilineArrayLineBreaks: Each item in a multi-line array must start on a separate line.
+  :match

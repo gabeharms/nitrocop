@@ -44,3 +44,18 @@ begin
 rescue FooError, BarError, BazError
   retry
 end
+
+# Implicit array — all on same line
+a, b, c = val1, val2, val3
+
+# Implicit array — each on own line
+a, b, c =
+  val1,
+  val2,
+  val3
+
+# Method call with implicit array all on same line
+config.cache_store = :redis_cache_store, { url: "redis://localhost" }
+
+# Constant assignment implicit array on single line
+ITEMS = :scan, :skip, :match
