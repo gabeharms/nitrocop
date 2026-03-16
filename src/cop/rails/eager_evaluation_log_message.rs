@@ -3,6 +3,31 @@ use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// Rails/EagerEvaluationLogMessage
+///
+/// Flags `Rails.logger.debug "#{interpolated}"` calls that pass an eager-evaluated
+/// interpolated string instead of a lazy block. Matches vendor pattern:
+/// `(send (send (const {cbase nil?} :Rails) :logger) :debug (dstr ...))`
+///
+/// ## Investigation (2026-03-16)
+///
+/// **Root cause of FN=12**: The `sole_block_stmt` flag was not being reset when
+/// entering a nested block with multiple statements. When an outer block has a single
+/// statement (e.g., `items.each do |item| Post.transaction do ... end end`), the flag
+/// is set to `true`. If the inner block (`Post.transaction do`) has multiple statements,
+/// the debug call inside it IS an offense — but the inherited `sole_block_stmt=true`
+/// caused it to be skipped. Fix: reset `sole_block_stmt=false` when descending into a
+/// multi-statement (or no-body) block.
+///
+/// **Confirmed patterns** seen in corpus FNs (discourse/discourse, theforeman/foreman, etc.):
+/// ```ruby
+/// items.each do |item|
+///   Post.transaction do
+///     Rails.logger.debug "Processing #{item.name}"  # was incorrectly skipped
+///     do_something(item)
+///   end
+/// end
+/// ```
 pub struct EagerEvaluationLogMessage;
 
 impl Cop for EagerEvaluationLogMessage {
@@ -42,6 +67,13 @@ struct EagerEvalVisitor<'a> {
     /// Matches RuboCop's `return if node.parent&.block_type?` — in Parser AST,
     /// a block with a single statement has the statement as a direct child of the
     /// block node (no `begin` wrapper), so `parent.block_type?` is true.
+    ///
+    /// IMPORTANT: This flag must be reset to false when entering a nested block
+    /// that has multiple statements. Otherwise, debug calls inside a multi-statement
+    /// inner block would be skipped because the flag was set true by the outer
+    /// single-statement block. Example: `items.each { Post.transaction do <debug>; <other>; end }`
+    /// — the outer each block has 1 stmt so sole_block_stmt=true, but the inner
+    /// transaction block has 2 stmts so the debug inside it IS an offense.
     sole_block_stmt: bool,
 }
 
@@ -60,7 +92,14 @@ impl<'pr> Visit<'pr> for EagerEvalVisitor<'_> {
                 }
             }
         }
+        // Multiple statements (or no body): reset flag so nested debug calls ARE checked.
+        // This is necessary because an outer single-statement block sets sole_block_stmt=true,
+        // but a nested multi-statement block must not inherit that flag — its debug calls
+        // are not sole statements and must be flagged.
+        let was = self.sole_block_stmt;
+        self.sole_block_stmt = false;
         ruby_prism::visit_block_node(self, node);
+        self.sole_block_stmt = was;
     }
 
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {

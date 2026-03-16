@@ -15,3 +15,11 @@ end
 records.each do |record|
   Rails.logger.debug("Deleting record: #{record.slice(:id, :name)}")
 end
+
+# Nested: inner block with a SINGLE debug statement — both blocks are sole-stmt
+# The inner block's parent IS block_type?, so still no offense.
+items.each do |item|
+  Post.transaction do
+    Rails.logger.debug "Single stmt in inner block: #{item.name}"
+  end
+end
