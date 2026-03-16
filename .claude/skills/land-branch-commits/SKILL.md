@@ -64,12 +64,16 @@ Use this when the user wants commits from one or more branches landed onto
    # read original author before cherry-picking
    git log -1 --format='%an <%ae>' <sha1>
    git cherry-pick <sha1>
-   # build clean message: strip claude.ai URLs and existing Co-Authored-By lines
-   clean_msg=$(git log -1 --format='%B' HEAD | grep -v 'https://claude\.ai' | grep -v '^Co-Authored-By:')
-   # amend to reset author, clean message, add Co-Authored-By with blank line
-   git commit --amend --reset-author -m "$clean_msg
-
-   Co-Authored-By: Original Name <original@email>"
+   # build clean message: strip claude.ai URLs and Co-Authored-By lines,
+   # trim trailing blank lines, append trailer.
+   # Uses only grep + awk (cross-platform: macOS + Linux).
+   git log -1 --format='%B' HEAD \
+     | grep -v 'https://claude\.ai' \
+     | grep -v '^Co-Authored-By:' \
+     | awk '{lines[NR]=$0} END{while(NR>0 && lines[NR]=="") NR--; for(i=1;i<=NR;i++) print lines[i]}' \
+     > /tmp/_git_clean_msg.txt
+   printf '\n\nCo-Authored-By: Original Name <original@email>\n' >> /tmp/_git_clean_msg.txt
+   git commit --amend --reset-author -F /tmp/_git_clean_msg.txt
    # verify success, then repeat for next commit
    ```
 
