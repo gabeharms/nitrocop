@@ -64,17 +64,30 @@ use crate::parse::source::SourceFile;
 /// Fix: expanded `has_parser_rejected_escape` to reject any `\[A-Z]` sequence except
 /// `\C-` (control) and `\M-` (meta) prefixes.
 ///
-/// Round 5 (56 FP from `%q{...}` strings):
+/// Round 5 (56 FP from `%q{...}` strings — reverted):
 ///
-/// FP root cause: All 56 FPs were from `%q{...}` multiline strings containing
-/// `#{...}` on subsequent lines. RuboCop v1.85+ added `processed_source.ast.dstr_type?`
-/// to `valid_syntax?`: after `gsub(/\A'|'\z/, '"')`, `%q{...}` is unchanged (no
-/// leading/trailing `'`), so parsing produces a `str` node (not `dstr`), causing
-/// `valid_syntax?` to return false. Affected repos: slim-template (28), opal (7),
-/// backup (5), fluentd (4), rails (4), and 6 others.
+/// Previous (incorrect) analysis claimed v1.85+ `dstr_type?` check causes `%q`
+/// to be skipped. Actually, RuboCop 1.84.2 DOES flag single-line `%q` strings.
+/// The gsub doesn't modify `%q{...}` (no leading `'`), so parsing the original
+/// `%q{...}` always succeeds, and `valid_syntax?` returns true.
 ///
-/// Fix: skip `%q` strings entirely in `check_node` — they can never contain real
-/// Ruby interpolation, so flagging them is always a false positive.
+/// The previous blanket `%q` skip was wrong — removed in round 6.
+///
+/// Round 6 (1 FP multiline, 56 FN `%q` strings):
+///
+/// FP root cause: The Parser gem represents multiline single-quoted strings as
+/// `dstr` nodes with `str` children. The child `str` nodes have no `loc.begin`
+/// or `loc.end`, so RuboCop's `return unless node.loc.begin && node.loc.end`
+/// skips them. Prism keeps these as a single `StringNode` with opening/closing
+/// quotes, so nitrocop previously flagged them. Fix: skip strings whose content
+/// (between quotes) contains newlines, matching the Parser gem's dstr split.
+///
+/// FN root cause: The blanket `%q` skip from round 5 was incorrect. RuboCop
+/// 1.84.2 flags single-line `%q` strings. The `gsub(/\A'|'\z/, '"')` doesn't
+/// modify `%q{...}` (no leading/trailing `'`), and parsing the unchanged `%q`
+/// is always valid. Multiline `%q` strings are naturally skipped by the new
+/// multiline check. Fix: remove the `%q` blanket skip, handle `%q` in
+/// `valid_syntax_as_double_quoted` by returning true (since gsub is a no-op).
 pub struct InterpolationCheck;
 
 impl Cop for InterpolationCheck {
@@ -113,16 +126,9 @@ impl Cop for InterpolationCheck {
 
         let open_slice = opening.as_slice();
 
-        // Skip %q{...} strings — RuboCop (v1.85+) does not flag these.
-        // RuboCop's valid_syntax? does gsub(/\A'|'\z/, '"') which doesn't modify
-        // %q{...} (no leading/trailing '), then checks parsed_result.ast.dstr_type?.
-        // Parsing %q{...} as-is produces a str node (not dstr), so the check fails.
-        if open_slice.starts_with(b"%q") {
-            return;
-        }
-
-        // Single-quoted: starts with '
-        if open_slice != b"'" {
+        // Only check single-quoted strings: either ' or %q delimiters
+        let is_pctq = open_slice.starts_with(b"%q");
+        if !is_pctq && open_slice != b"'" {
             return;
         }
 
@@ -134,6 +140,17 @@ impl Cop for InterpolationCheck {
         };
         let node_end = closing.end_offset();
         let node_source = &source.as_bytes()[node_start..node_end];
+
+        // Skip multiline strings. The Parser gem represents multiline single-quoted
+        // strings as dstr nodes with str children that have no loc.begin/loc.end,
+        // causing RuboCop to skip them. We match this by checking if the content
+        // between the opening and closing delimiters contains newlines.
+        let content_start = opening.end_offset();
+        let content_end = closing.start_offset();
+        let content_bytes = &source.as_bytes()[content_start..content_end];
+        if content_bytes.contains(&b'\n') {
+            return;
+        }
 
         // Match RuboCop's regex: /(?<!\\)#\{.*\}/
         // Look for #{ not preceded by backslash in the source text
@@ -205,7 +222,12 @@ fn valid_syntax_as_double_quoted(source: &[u8]) -> bool {
         Err(_) => return false,
     };
 
-    // Note: %q strings are now filtered out in check_node before reaching here.
+    // For %q strings, RuboCop's gsub(/\A'|'\z/, '"') doesn't modify the source
+    // (no leading/trailing '), so it parses the original %q{...} which is always
+    // valid Ruby. Return true immediately.
+    if source_str.starts_with("%q") {
+        return true;
+    }
 
     let double_quoted = if source_str.starts_with('\'') && source_str.ends_with('\'') {
         // Simple single-quoted: 'content' -> "content"
@@ -308,14 +330,13 @@ mod tests {
     }
 
     #[test]
-    fn test_pctq_skipped_in_check_node() {
-        // %q strings are now filtered out in check_node before reaching
-        // valid_syntax_as_double_quoted. The function returns false for %q
-        // since it doesn't start with ' and end with '.
-        assert!(!valid_syntax_as_double_quoted(b"%q{text \"#{name}\"}"));
-        assert!(!valid_syntax_as_double_quoted(b"%q(#{foo})"));
-        assert!(!valid_syntax_as_double_quoted(b"%q[#{bar}]"));
-        assert!(!valid_syntax_as_double_quoted(b"%q|#{baz}|"));
+    fn test_pctq_valid_syntax() {
+        // For %q strings, RuboCop's gsub doesn't modify them (no leading/trailing '),
+        // so parsing the original %q{...} always succeeds. valid_syntax should return true.
+        assert!(valid_syntax_as_double_quoted(b"%q{text \"#{name}\"}"));
+        assert!(valid_syntax_as_double_quoted(b"%q(#{foo})"));
+        assert!(valid_syntax_as_double_quoted(b"%q[#{bar}]"));
+        assert!(valid_syntax_as_double_quoted(b"%q|#{baz}|"));
     }
 
     #[test]

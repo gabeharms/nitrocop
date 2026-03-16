@@ -82,13 +82,18 @@ u = '\X #{name}'
 v = '\Y #{name}'
 w = '\Z #{name}'
 
-# %q{} strings — RuboCop (v1.85+) does not flag these because after
-# gsub(/\A'|'\z/, '"'), %q{...} is unchanged, and parsing it produces
-# a str node (not dstr), so valid_syntax? returns false.
-x = %q{text "#{name}"}
+# Multiline %q strings — RuboCop does not flag these (Parser gem splits
+# multiline strings into dstr children without loc markers).
 y = %q{
 p id="#{id_helper}" class="hello world" = hello_world
 }
-z = %q(#{foo})
-aa = %q[#{bar}]
-bb = %q|#{baz}|
+
+# Multiline single-quoted string with #{...} on one line — RuboCop does not
+# flag because the Parser gem represents this as dstr children without loc.begin.
+body = '
+  #{user.firstname} #{user.lastname}
+
+--
+ Support Team
+ Email: hot@example.com
+--'

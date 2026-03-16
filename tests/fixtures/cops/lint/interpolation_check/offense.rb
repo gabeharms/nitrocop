@@ -18,3 +18,13 @@ a = 'foo "#{bar}"'
 "x" \
   'foo #{bar}'
   ^ Lint/InterpolationCheck: Interpolation in single quoted string detected. Use double quoted strings if you need interpolation.
+
+# %q strings with interpolation patterns — RuboCop flags these (single-line only)
+a = %q{hello #{name}}
+    ^^^ Lint/InterpolationCheck: Interpolation in single quoted string detected. Use double quoted strings if you need interpolation.
+
+b = %q|text #{foo} bar|
+    ^^^ Lint/InterpolationCheck: Interpolation in single quoted string detected. Use double quoted strings if you need interpolation.
+
+c = %q(value #{bar})
+    ^^^ Lint/InterpolationCheck: Interpolation in single quoted string detected. Use double quoted strings if you need interpolation.
