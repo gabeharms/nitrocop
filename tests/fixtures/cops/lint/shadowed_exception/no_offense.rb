@@ -63,3 +63,23 @@ rescue Psych::SyntaxError => e
 rescue Psych::BadAlias => e
   warn e.message
 end
+
+# Two consecutive bare rescue clauses — not shadowed (same implicit StandardError)
+begin
+  event
+rescue
+  fallback_one
+rescue
+  fallback_two
+end
+
+# Unknown exception classes not in hierarchy — don't flag as shadowed
+begin
+  if user.nickname_changed?
+    user.save!
+  end
+rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+  retry_with_new_nickname(user)
+rescue ActiveRecord::RecordInvalid
+  logger.warn("failed")
+end

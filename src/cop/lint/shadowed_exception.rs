@@ -25,6 +25,21 @@ use crate::parse::source::SourceFile;
 /// - The older comment below remains directionally correct: RuboCop uses Ruby's
 ///   live class hierarchy rather than a pure hardcoded tree, so this cop needs
 ///   conservative static approximations of the runtime relationships RuboCop sees.
+///
+/// ## Corpus investigation (2026-03-16)
+///
+/// FP=2 remaining after prior fixes:
+/// - Two consecutive bare `rescue` clauses (both resolve to StandardError) were
+///   flagged because `groups_sorted` used `equivalent_exception_classes` which
+///   treats identical classes as "shadowing". Bare rescue duplicates are
+///   `Lint/DuplicateRescueException`, not `ShadowedException`.
+/// - Unknown exception classes (e.g., `ActiveRecord::RecordInvalid` appearing in
+///   both an earlier and later rescue clause) were flagged via the same
+///   `equivalent_exception_classes` check in `groups_sorted`.
+/// Fix: removed `equivalent_exception_classes` from `groups_sorted` so cross-clause
+/// ordering only checks `is_ancestor_of` (true ancestor/descendant relationships).
+/// The `equivalent_exception_classes` check remains in `contains_multiple_levels`
+/// for within-group alias detection (e.g., RSAError/DSAError in same rescue).
 pub struct ShadowedException;
 
 // Known Ruby exception hierarchy — matches relationships that RuboCop's runtime
@@ -225,10 +240,14 @@ fn groups_sorted(earlier: &[String], later: &[String]) -> bool {
     {
         return true;
     }
-    // Check that no earlier exception is an ancestor of a later one
+    // Check that no earlier exception is an ancestor of a later one.
+    // Note: we intentionally do NOT check equivalent_exception_classes here.
+    // Exact duplicates across rescue clauses are Lint/DuplicateRescueException,
+    // not Lint/ShadowedException. Shadowing requires an ancestor/descendant
+    // relationship, and both classes must be in the known hierarchy.
     for e in earlier {
         for l in later {
-            if equivalent_exception_classes(e, l) || is_ancestor_of(e, l) {
+            if is_ancestor_of(e, l) {
                 return false;
             }
         }
