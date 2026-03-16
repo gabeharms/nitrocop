@@ -34,3 +34,23 @@ execute(cmd, env, opts,
 super(arg,
       ^^^ Layout/FirstMethodArgumentLineBreak: Add a line break before the first argument of a multi-line method call.
       &block)
+
+# Block argument as sole argument spanning multiple lines
+configure(&configuration_block(
+          ^^^^^^^^^^^^^^^^^^^^ Layout/FirstMethodArgumentLineBreak: Add a line break before the first argument of a multi-line method call.
+  verifier_email: email,
+  verifier_domain: domain
+))
+
+# Block argument with hash-to-proc as sole argument
+process(&{
+        ^^ Layout/FirstMethodArgumentLineBreak: Add a line break before the first argument of a multi-line method call.
+  key_one: :value_one,
+  key_two: :value_two
+}.to_proc)
+
+# Block argument with lambda as sole argument
+endpoint(&-> {
+         ^^^^ Layout/FirstMethodArgumentLineBreak: Add a line break before the first argument of a multi-line method call.
+  @record
+})

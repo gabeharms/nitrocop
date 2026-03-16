@@ -33,3 +33,12 @@ client.send(request_method, :post, &@callback)
 
 # Super with block argument on same line
 super(arg, &block)
+
+# Sole block argument on same line (single line)
+configure(&block)
+process(&handler)
+
+# Sole block argument on new line (already broken)
+configure(
+  &configuration_block(verifier_email: email)
+)

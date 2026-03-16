@@ -39,6 +39,18 @@ use crate::parse::source::SourceFile;
 /// the same `block()` handling that was added for `CallNode` in the previous
 /// fix. Fix: include `super_node.block()` when it is a `BlockArgumentNode`
 /// in the arg_locs vector, mirroring the `CallNode` logic.
+///
+/// ## Corpus investigation (2026-03-16)
+///
+/// CI baseline: FP=0, FN=5. All 5 remaining FNs had `&block_arg` as the SOLE
+/// argument inside parentheses (e.g., `configure(&configuration_block(...))`).
+/// In Prism, `BlockArgumentNode` lives on `call.block()`, not in
+/// `call.arguments()`, so when no other arguments exist, `call.arguments()`
+/// returns `None`. The old code did `let Some(args) = call.arguments() else {
+/// return; }`, bailing before ever checking `call.block()`. Fix: initialize
+/// `arg_locs` from `call.arguments()` when present (or empty vec when `None`),
+/// then always check `call.block()` for `BlockArgumentNode`. Same fix applied
+/// to the `SuperNode` branch.
 pub struct FirstMethodArgumentLineBreak;
 
 impl Cop for FirstMethodArgumentLineBreak {
@@ -83,11 +95,11 @@ impl Cop for FirstMethodArgumentLineBreak {
                 return;
             }
 
-            let Some(args) = call.arguments() else {
-                return;
+            let mut arg_locs = if let Some(args) = call.arguments() {
+                collect_arg_locs(args.arguments().iter().collect())
+            } else {
+                Vec::new()
             };
-
-            let mut arg_locs = collect_arg_locs(args.arguments().iter().collect());
 
             // In Prism, BlockArgumentNode (&block) is on call.block(), not in arguments().
             // Include it so multiline detection accounts for block args on different lines.
@@ -104,11 +116,11 @@ impl Cop for FirstMethodArgumentLineBreak {
                 return;
             }
 
-            let Some(args) = super_node.arguments() else {
-                return;
+            let mut arg_locs = if let Some(args) = super_node.arguments() {
+                collect_arg_locs(args.arguments().iter().collect())
+            } else {
+                Vec::new()
             };
-
-            let mut arg_locs = collect_arg_locs(args.arguments().iter().collect());
 
             // In Prism, BlockArgumentNode (&block) is on super_node.block(), not in arguments().
             // Include it so multiline detection accounts for block args on different lines.
