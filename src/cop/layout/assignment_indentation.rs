@@ -16,6 +16,18 @@
 /// `hash[key] = val` via `CallNode`), and compound setter/index assignments
 /// (`obj.x ||= val`, `hash[key] += val` via `Call*WriteNode`/`Index*WriteNode`). All added.
 ///
+/// ## Investigation findings (2026-03-16)
+///
+/// **FP root cause (25 FPs):** Chained assignments like `a = b = \n value` caused the inner
+/// write node to use its own LHS column (`b`'s position) as the indentation base, producing
+/// false positives when the value was correctly indented relative to the outermost assignment.
+/// RuboCop uses `leftmost_multiple_assignment` to walk up the parent chain to the outermost
+/// assignment on the same line. Without parent pointers in Prism, we detect this by scanning
+/// the source line before the LHS for a preceding `=` operator. When found, we use the line's
+/// indentation (first non-whitespace column) as the base instead of the inner LHS column.
+/// This covers chained simple writes (`a = b =`), chained setter calls (`x = obj[key] =`),
+/// and chained compound assignments (`result = cache[key] ||=`).
+///
 /// ## Investigation findings (2026-03-15)
 ///
 /// **FP root cause (149 FPs):** Multiline bracket LHS assignments like
@@ -46,6 +58,78 @@ use crate::parse::source::SourceFile;
 pub struct AssignmentIndentation;
 
 impl AssignmentIndentation {
+    /// Check if there is an assignment operator (`=`) on the same line before `name_offset`,
+    /// indicating this write is the RHS of a chained assignment (e.g., `a = b = \n val`).
+    /// Returns `Some(col)` with the column of the first non-whitespace character on the line
+    /// (i.e., the outermost assignment's indentation) if a preceding `=` is found.
+    fn find_chained_assignment_base(source: &SourceFile, name_offset: usize) -> Option<usize> {
+        let bytes = source.as_bytes();
+        // Find the start of the line containing name_offset
+        let mut line_start = name_offset;
+        while line_start > 0 && bytes[line_start - 1] != b'\n' {
+            line_start -= 1;
+        }
+
+        // If name is at line start (after whitespace), no chained assignment possible
+        let prefix = &bytes[line_start..name_offset];
+        if prefix.iter().all(|&b| b == b' ' || b == b'\t') {
+            return None;
+        }
+
+        // Scan prefix for `=` that is part of an assignment (not ==, !=, ===, <=>, >=, <=)
+        let mut i = 0;
+        let mut found_eq = false;
+        while i < prefix.len() {
+            let b = prefix[i];
+            if b == b'=' {
+                // Check it's not ==, ===
+                let next = prefix.get(i + 1).copied();
+                if next == Some(b'=') {
+                    // Skip == or ===
+                    i += if prefix.get(i + 2) == Some(&b'=') {
+                        3
+                    } else {
+                        2
+                    };
+                    continue;
+                }
+                // Check it's not !=, >=, <=, <=>
+                let prev = if i > 0 { Some(prefix[i - 1]) } else { None };
+                if prev == Some(b'!') || prev == Some(b'>') || prev == Some(b'<') {
+                    i += 1;
+                    continue;
+                }
+                found_eq = true;
+                break;
+            }
+            // Skip string literals (single and double quoted)
+            if b == b'"' || b == b'\'' {
+                let quote = b;
+                i += 1;
+                while i < prefix.len() && prefix[i] != quote {
+                    if prefix[i] == b'\\' {
+                        i += 1; // skip escaped char
+                    }
+                    i += 1;
+                }
+                i += 1; // skip closing quote
+                continue;
+            }
+            i += 1;
+        }
+
+        if !found_eq {
+            return None;
+        }
+
+        // Return the column of the first non-whitespace character on the line
+        let indent = prefix
+            .iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count();
+        Some(indent)
+    }
+
     fn check_write(
         &self,
         source: &SourceFile,
@@ -66,11 +150,12 @@ impl AssignmentIndentation {
             return Vec::new();
         }
 
-        // Use the column of the assignment variable as the base, not the line indentation.
-        // This correctly handles embedded assignments like `if x = \n value` where the
-        // line indentation includes the `if` keyword but the expected indent is relative
-        // to the variable name position.
-        let expected = name_col + width;
+        // For chained assignments like `a = b = \n value`, use the column of the
+        // outermost (leftmost) assignment on the same line as the base, matching
+        // RuboCop's `leftmost_multiple_assignment` behavior. Without parent pointers,
+        // we detect this by scanning for a preceding `=` on the same source line.
+        let base_col = Self::find_chained_assignment_base(source, name_offset).unwrap_or(name_col);
+        let expected = base_col + width;
 
         if value_col != expected {
             return vec![

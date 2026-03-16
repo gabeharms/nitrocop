@@ -72,3 +72,29 @@ obj.attributes[
 items[
   index
 ] += extra
+
+# Chained assignments — inner write uses outermost assignment's indentation
+@stroke_color = @fill_color =
+  GlobalConfig.constantize('color_space.map', :DeviceGray).new.default_color
+
+off_form = @widget.appearance_dict.normal_appearance[:Off] =
+  @document.add({Type: :XObject, Subtype: :Form, BBox: [0, 0, width, height],
+                 Matrix: matrix})
+
+gem.description = gem.summary =
+  'Process monitoring tool'
+
+result = cache[key] ||=
+  begin
+    compute_value
+  end
+
+configs = app.config.active_storage.service_configurations ||=
+  begin
+    load_configurations
+  end
+
+rules = LOAD_RULES_CACHE[self.class.rules_cache_key] ||=
+  self.class.files.each_with_object({}) do |filename, hash|
+    hash[filename] = true
+  end
