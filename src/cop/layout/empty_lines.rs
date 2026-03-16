@@ -13,6 +13,19 @@ use crate::parse::source::SourceFile;
 /// Acceptance gate after fix: expected=12,238, actual=13,320, excess=0, missing=0.
 /// The 23 FNs are pre-existing (likely CodeMap edge cases) and unrelated.
 ///
+/// ## Corpus investigation (2026-03-16)
+///
+/// FP=11 remained. All 11 FPs were consecutive blank lines at the very start of
+/// a file (lines 1-2). Root cause: RuboCop's `each_extra_empty_line` starts with
+/// `prev_line = 1` and uses `LINE_OFFSET = 2`, so the gap from virtual line 1 to
+/// the first token must exceed 2 for any check to occur. This means 1-2 leading
+/// blank lines are never flagged by Layout/EmptyLines (Layout/LeadingEmptyLines
+/// handles those). nitrocop was using a flat `consecutive_blanks > max` threshold
+/// everywhere, including at the file start.
+/// Fix: track whether any non-blank line has been seen; before the first non-blank
+/// line, use threshold `max + 1` instead of `max`, matching RuboCop's LINE_OFFSET
+/// behavior.
+///
 /// ## Corpus investigation (2026-03-11)
 ///
 /// FP=1,106 remained. Root cause: RuboCop uses token-based gap detection — it
@@ -69,6 +82,7 @@ impl Cop for EmptyLines {
         let mut byte_offset: usize = 0;
         let lines: Vec<&[u8]> = source.lines().collect();
         let total_lines = lines.len();
+        let mut seen_non_blank = false;
 
         for (i, line) in lines.iter().enumerate() {
             let line_len = line.len() + 1; // +1 for newline
@@ -96,7 +110,13 @@ impl Cop for EmptyLines {
                     continue;
                 }
                 consecutive_blanks += 1;
-                if consecutive_blanks > max {
+                // RuboCop starts prev_line=1 with LINE_OFFSET=2, so at the
+                // start of a file (before any token), the gap threshold is
+                // effectively max+1 instead of max. This means 1-2 leading
+                // blank lines are never flagged (Layout/LeadingEmptyLines
+                // handles those). Only 3+ leading blanks trigger this cop.
+                let threshold = if seen_non_blank { max } else { max + 1 };
+                if consecutive_blanks > threshold {
                     let mut diag = self.diagnostic(
                         source,
                         current_line,
@@ -117,6 +137,7 @@ impl Cop for EmptyLines {
                 }
             } else {
                 consecutive_blanks = 0;
+                seen_non_blank = true;
             }
             byte_offset += line_len;
         }
@@ -247,13 +268,38 @@ mod tests {
     }
 
     #[test]
-    fn fire_on_blanks_before_first_code() {
-        // Consecutive blank lines before the first code token
+    fn fire_on_three_blanks_before_first_code() {
+        // 3+ blank lines at start: gap from virtual line 1 to first token > LINE_OFFSET(2)
         let source = b"\n\n\nx = 1\n";
         let diags = run_cop_full(&EmptyLines, source);
         assert!(
             !diags.is_empty(),
-            "Should fire on consecutive blank lines at start of file"
+            "Should fire on 3+ blank lines at start of file"
+        );
+    }
+
+    #[test]
+    fn skip_two_blanks_at_start_of_file() {
+        // RuboCop starts prev_line=1, so 2 blank lines at start (gap=2)
+        // don't exceed LINE_OFFSET=2. Layout/LeadingEmptyLines handles these.
+        let source = b"\n\nx = 1\n";
+        let diags = run_cop_full(&EmptyLines, source);
+        assert!(
+            diags.is_empty(),
+            "Should not fire on 2 blank lines at start of file: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn skip_one_blank_at_start_of_file() {
+        // Single blank line at start — never flagged by EmptyLines
+        let source = b"\nx = 1\n";
+        let diags = run_cop_full(&EmptyLines, source);
+        assert!(
+            diags.is_empty(),
+            "Should not fire on single blank line at start of file: {:?}",
+            diags
         );
     }
 
