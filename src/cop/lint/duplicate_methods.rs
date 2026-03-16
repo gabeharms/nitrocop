@@ -760,32 +760,20 @@ impl<'pr> Visit<'pr> for DupMethodVisitor<'_, '_> {
             }
         } else {
             // `class << SomeConst` or `class << A::B` or `class << expr`
-            let scope_name = if let Some(const_read) = expr.as_constant_read_node() {
-                std::str::from_utf8(const_read.name().as_slice())
-                    .unwrap_or("")
-                    .to_string()
-            } else if let Some(const_path) = expr.as_constant_path_node() {
-                constant_path_name(&const_path)
-            } else if let Some(call) = expr.as_call_node() {
-                std::str::from_utf8(call.name().as_slice())
-                    .unwrap_or("")
-                    .to_string()
-            } else {
-                return;
-            };
-
-            // For `class << A` inside `class B`, the scope is just `A`
-            // (not nested under B), since it's a different object's singleton class
-            let saved_scopes = self.scope_stack.clone();
-            self.scope_stack.clear();
-            self.scope_stack.push(ScopeEntry {
-                name: scope_name,
-                is_singleton: true,
-            });
+            //
+            // RuboCop's `parent_module_name` returns nil for defs inside a
+            // non-self sclass, and `found_sclass_method` only handles
+            // send-type receivers (not const receivers). This means methods
+            // defined inside `class << SomeConst` (including nested classes)
+            // are effectively invisible to RuboCop's duplicate detection.
+            //
+            // We match this behavior by incrementing plain_block_depth, which
+            // causes process_def and process_call to skip all definitions.
+            self.plain_block_depth += 1;
             if let Some(body) = node.body() {
                 self.visit(&body);
             }
-            self.scope_stack = saved_scopes;
+            self.plain_block_depth -= 1;
         }
     }
 
@@ -1286,20 +1274,22 @@ mod tests {
     }
 
     #[test]
-    fn test_sclass_constant_path() {
-        // class << A::B should recognize A::B as scope name
+    fn test_sclass_constant_path_ignored() {
+        // RuboCop's parent_module_name returns nil for defs inside class << SomeConst,
+        // and found_sclass_method only handles send-type receivers (not const receivers).
+        // So methods inside class << SomeConst are invisible to duplicate detection.
         let n = count_offenses(
             b"class << Multiton::ClassMethods\n  def extended; 1; end\n  def extended; 2; end\nend\n",
         );
-        assert_eq!(n, 1, "class << A::B should detect duplicates");
+        assert_eq!(n, 0, "class << A::B should be invisible to dup detection");
     }
 
     #[test]
-    fn test_sclass_constant_path_reopened() {
-        // Reopened class << A::B should share the same scope
+    fn test_sclass_constant_path_reopened_ignored() {
+        // Reopened class << A::B is also invisible
         let n = count_offenses(
             b"class << Multiton::ClassMethods\n  def extended; 1; end\nend\nclass << Multiton::ClassMethods\n  def extended; 2; end\nend\n",
         );
-        assert_eq!(n, 1, "reopened class << A::B should detect dups");
+        assert_eq!(n, 0, "reopened class << A::B should be invisible");
     }
 }
