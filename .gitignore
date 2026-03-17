@@ -45,8 +45,9 @@ docs/INTERNAL_*
 # OS
 .DS_Store
 
-# Claude Code worktrees
+# Claude Code
 .claude/worktrees/
+.claude/settings.local.json
 
 # Environment
 .env
