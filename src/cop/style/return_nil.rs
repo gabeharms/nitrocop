@@ -3,6 +3,17 @@ use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// Corpus investigation (2026-03-17):
+/// - FP=5: All in fastlane, `return nil` inside `proc do |result| ... end` blocks.
+///   Root cause: proc creates non-local exit context (return exits the enclosing method),
+///   so RuboCop suppresses the offense (defers to Lint/NonLocalExitFromIterator).
+///   Fix: detect `proc` and `Proc.new` calls and treat their blocks as iterator blocks.
+/// - FN=2: `return nil` inside `lambda do...end` (method-style lambda, not stabby `-> {}`).
+///   Root cause: Prism parses `lambda do...end` as CallNode (not LambdaNode). The
+///   visit_call_node pushed a block context but didn't reset the block stack like
+///   visit_lambda_node does for stabby lambdas. When nested inside an outer iterator
+///   block, the outer block remained on the stack and suppressed the offense.
+///   Fix: detect `lambda` calls and save/restore block stack (same as visit_lambda_node).
 pub struct ReturnNil;
 
 impl Cop for ReturnNil {
@@ -128,9 +139,46 @@ impl<'pr> Visit<'pr> for ReturnNilVisitor<'_, '_> {
         // If call has a block, push block context and visit block body
         if let Some(block) = node.block() {
             if let Some(block_node) = block.as_block_node() {
+                let method_name = node.name().as_slice();
+
+                // `lambda do...end` creates its own scope (like stabby `-> {}`).
+                // In Prism, method-style `lambda` is a CallNode, not LambdaNode.
+                // Save and restore the block stack to isolate the lambda scope.
+                if method_name == b"lambda" && node.receiver().is_none() {
+                    let saved = std::mem::take(&mut self.block_stack);
+                    if let Some(body) = block_node.body() {
+                        self.visit(&body);
+                    }
+                    self.block_stack = saved;
+                    return;
+                }
+
+                // `proc do...end` and `Proc.new do...end` create non-local exit
+                // contexts — `return` inside a proc returns from the enclosing
+                // method. Treat as an iterator block to suppress the offense,
+                // matching RuboCop's behavior which defers to
+                // Lint/NonLocalExitFromIterator.
+                let is_proc = (method_name == b"proc" && node.receiver().is_none())
+                    || (method_name == b"new"
+                        && node
+                            .receiver()
+                            .and_then(|r| r.as_constant_read_node())
+                            .is_some_and(|c| c.name().as_slice() == b"Proc"));
+                if is_proc {
+                    self.block_stack.push(BlockContext {
+                        has_args: true,
+                        is_chained_send: true,
+                        is_define_method: false,
+                    });
+                    if let Some(body) = block_node.body() {
+                        self.visit(&body);
+                    }
+                    self.block_stack.pop();
+                    return;
+                }
+
                 let has_args = block_node.parameters().is_some();
                 let is_chained_send = node.receiver().is_some();
-                let method_name = node.name().as_slice();
                 let is_define_method =
                     method_name == b"define_method" || method_name == b"define_singleton_method";
 

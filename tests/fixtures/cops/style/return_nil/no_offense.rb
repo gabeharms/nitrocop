@@ -47,3 +47,30 @@ def nested_example
     return nil if token == "stop"
   end
 end
+
+# return nil inside proc blocks should NOT be flagged
+# proc creates non-local exit context — return exits the enclosing method
+def method_with_proc
+  handler = proc do |result|
+    return nil if result.nil?
+  end
+end
+
+# Proc.new also creates non-local exit context
+def method_with_proc_new
+  handler = Proc.new do |result|
+    return nil unless result.valid?
+  end
+end
+
+# proc inside hash value inside method call
+def method_with_proc_in_hash
+  SomeApi.run(
+    handlers: {
+      '*' => proc do |result|
+        log("error: #{result[:status]}")
+        return nil
+      end
+    }
+  )
+end
