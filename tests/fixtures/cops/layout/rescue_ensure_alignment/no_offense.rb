@@ -39,3 +39,54 @@ result = begin; compute; rescue; nil; end
 
 # Single-line begin/rescue inside block
 items.each { begin; process; rescue; nil; end }
+
+# Properly aligned rescue inside def
+def fetch(key)
+  @store[key]
+rescue
+  raise RetrievalError
+end
+
+# Properly aligned ensure inside def
+def process
+  do_work
+ensure
+  cleanup
+end
+
+# Properly aligned rescue + ensure inside def
+def transform
+  compute
+rescue StandardError => e
+  handle(e)
+ensure
+  finalize
+end
+
+# Properly aligned rescue inside class
+class Widget
+  do_something
+rescue
+  handle_error
+end
+
+# Properly aligned ensure inside module
+module Helpers
+  initialize_stuff
+ensure
+  finalize
+end
+
+# Properly aligned rescue inside do-end block
+items.each do |item|
+  item.process
+rescue StandardError
+  next
+end
+
+# Properly aligned ensure inside do-end block
+records.map do |rec|
+  rec.save
+ensure
+  rec.unlock
+end

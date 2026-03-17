@@ -1,9 +1,11 @@
-use crate::cop::node_type::{BEGIN_NODE, DEF_NODE, RESCUE_NODE};
+use crate::cop::node_type::{
+    BEGIN_NODE, BLOCK_NODE, CLASS_NODE, DEF_NODE, MODULE_NODE, SINGLETON_CLASS_NODE,
+};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Checks alignment of rescue/ensure keywords with their matching begin/def.
+/// Checks alignment of rescue/ensure keywords with their matching begin/def/class/module/block.
 ///
 /// ## FP investigation (2026-03-16)
 /// 128 FPs caused by two bugs:
@@ -16,13 +18,62 @@ use crate::parse::source::SourceFile;
 ///    line was flagged because no same-line check existed. RuboCop skips these
 ///    via `same_line?`. Fix: Skip when rescue/ensure is on the same line as begin.
 ///
-/// ## Remaining FN gaps (42)
-/// Rescue/ensure inside class, module, singleton class, and block bodies are
-/// not yet detected. Prism wraps these in implicit BeginNodes (begin_keyword_loc
-/// is None), which the cop currently skips. Also, the def handler uses
-/// `body.as_rescue_node()` but Prism wraps def bodies with rescue in a
-/// BeginNode, not a bare RescueNode.
+/// ## FN investigation (2026-03-17)
+/// 42 FNs caused by three gaps:
+/// 1. Def body wrapping: Prism wraps def bodies with rescue/ensure in an implicit
+///    BeginNode, but the cop used `body.as_rescue_node()` which only matches bare
+///    RescueNode. Fix: Check `body.as_begin_node()` and extract rescue/ensure.
+/// 2. Missing ancestor types: Class, module, singleton class, and block bodies
+///    with rescue/ensure were not handled. Prism wraps these in implicit BeginNodes
+///    (begin_keyword_loc is None). Fix: Add handlers for all these node types.
+/// 3. Rescue chains: Only the first rescue clause was checked; subsequent()
+///    rescues in the chain were missed. Fix: Walk the full rescue chain.
 pub struct RescueEnsureAlignment;
+
+impl RescueEnsureAlignment {
+    /// Check rescue/ensure alignment in an implicit BeginNode body.
+    /// `align_col` is the column the rescue/ensure should align to.
+    /// `align_line` is the line of the enclosing keyword (for same-line checks).
+    /// `keyword` is the name used in the diagnostic message (e.g., "def", "class").
+    fn check_implicit_begin(
+        &self,
+        source: &SourceFile,
+        begin_node: &ruby_prism::BeginNode<'_>,
+        align_col: usize,
+        align_line: usize,
+        keyword: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Walk the rescue chain
+        let mut rescue_opt = begin_node.rescue_clause();
+        while let Some(rescue_node) = rescue_opt {
+            let rescue_kw_loc = rescue_node.keyword_loc();
+            let (rescue_line, rescue_col) = source.offset_to_line_col(rescue_kw_loc.start_offset());
+            if rescue_line != align_line && rescue_col != align_col {
+                diagnostics.push(self.diagnostic(
+                    source,
+                    rescue_line,
+                    rescue_col,
+                    format!("Align `rescue` with `{keyword}`."),
+                ));
+            }
+            rescue_opt = rescue_node.subsequent();
+        }
+
+        if let Some(ensure_node) = begin_node.ensure_clause() {
+            let ensure_kw_loc = ensure_node.ensure_keyword_loc();
+            let (ensure_line, ensure_col) = source.offset_to_line_col(ensure_kw_loc.start_offset());
+            if ensure_line != align_line && ensure_col != align_col {
+                diagnostics.push(self.diagnostic(
+                    source,
+                    ensure_line,
+                    ensure_col,
+                    format!("Align `ensure` with `{keyword}`."),
+                ));
+            }
+        }
+    }
+}
 
 impl Cop for RescueEnsureAlignment {
     fn name(&self) -> &'static str {
@@ -30,7 +81,14 @@ impl Cop for RescueEnsureAlignment {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[BEGIN_NODE, DEF_NODE, RESCUE_NODE]
+        &[
+            BEGIN_NODE,
+            DEF_NODE,
+            CLASS_NODE,
+            MODULE_NODE,
+            SINGLETON_CLASS_NODE,
+            BLOCK_NODE,
+        ]
     }
 
     fn check_node(
@@ -43,6 +101,9 @@ impl Cop for RescueEnsureAlignment {
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if let Some(begin_node) = node.as_begin_node() {
+            // Only handle explicit begin (with begin keyword).
+            // Implicit begins (from def/class/module/block bodies) are handled
+            // by their parent node handlers below.
             let begin_kw_loc = match begin_node.begin_keyword_loc() {
                 Some(loc) => loc,
                 None => return,
@@ -75,52 +136,153 @@ impl Cop for RescueEnsureAlignment {
                 }
             };
 
-            if let Some(rescue_node) = begin_node.rescue_clause() {
-                let rescue_kw_loc = rescue_node.keyword_loc();
-                let (rescue_line, rescue_col) =
-                    source.offset_to_line_col(rescue_kw_loc.start_offset());
-                // Skip if rescue is on the same line as begin (single-line form)
-                if rescue_line != begin_line && rescue_col != align_col {
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        rescue_line,
-                        rescue_col,
-                        "Align `rescue` with `begin`.".to_string(),
-                    ));
-                }
-            }
-
-            if let Some(ensure_node) = begin_node.ensure_clause() {
-                let ensure_kw_loc = ensure_node.ensure_keyword_loc();
-                let (ensure_line, ensure_col) =
-                    source.offset_to_line_col(ensure_kw_loc.start_offset());
-                // Skip if ensure is on the same line as begin (single-line form)
-                if ensure_line != begin_line && ensure_col != align_col {
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        ensure_line,
-                        ensure_col,
-                        "Align `ensure` with `begin`.".to_string(),
-                    ));
-                }
-            }
+            self.check_implicit_begin(
+                source,
+                &begin_node,
+                align_col,
+                begin_line,
+                "begin",
+                diagnostics,
+            );
         } else if let Some(def_node) = node.as_def_node() {
             let def_kw_loc = def_node.def_keyword_loc();
-            let (_, def_col) = source.offset_to_line_col(def_kw_loc.start_offset());
+            let (def_line, def_col) = source.offset_to_line_col(def_kw_loc.start_offset());
 
-            // Check if the def body is a rescue node
             if let Some(body) = def_node.body() {
-                if let Some(rescue_node) = body.as_rescue_node() {
+                if let Some(begin_node) = body.as_begin_node() {
+                    // Only handle implicit BeginNode (no begin keyword).
+                    // Explicit begin...end blocks are handled by the BEGIN_NODE arm.
+                    if begin_node.begin_keyword_loc().is_none() {
+                        self.check_implicit_begin(
+                            source,
+                            &begin_node,
+                            def_col,
+                            def_line,
+                            "def",
+                            diagnostics,
+                        );
+                    }
+                } else if let Some(rescue_node) = body.as_rescue_node() {
+                    // Bare rescue node (rare but possible)
                     let rescue_kw_loc = rescue_node.keyword_loc();
                     let (rescue_line, rescue_col) =
                         source.offset_to_line_col(rescue_kw_loc.start_offset());
-                    if rescue_col != def_col {
+                    if rescue_line != def_line && rescue_col != def_col {
                         diagnostics.push(self.diagnostic(
                             source,
                             rescue_line,
                             rescue_col,
                             "Align `rescue` with `def`.".to_string(),
                         ));
+                    }
+                    // Walk the chain
+                    let mut rescue_opt = rescue_node.subsequent();
+                    while let Some(sub) = rescue_opt {
+                        let kw_loc = sub.keyword_loc();
+                        let (line, col) = source.offset_to_line_col(kw_loc.start_offset());
+                        if line != def_line && col != def_col {
+                            diagnostics.push(self.diagnostic(
+                                source,
+                                line,
+                                col,
+                                "Align `rescue` with `def`.".to_string(),
+                            ));
+                        }
+                        rescue_opt = sub.subsequent();
+                    }
+                }
+            }
+        } else if let Some(class_node) = node.as_class_node() {
+            let kw_loc = class_node.class_keyword_loc();
+            let (kw_line, kw_col) = source.offset_to_line_col(kw_loc.start_offset());
+
+            if let Some(body) = class_node.body() {
+                if let Some(begin_node) = body.as_begin_node() {
+                    if begin_node.begin_keyword_loc().is_none() {
+                        self.check_implicit_begin(
+                            source,
+                            &begin_node,
+                            kw_col,
+                            kw_line,
+                            "class",
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+        } else if let Some(module_node) = node.as_module_node() {
+            let kw_loc = module_node.module_keyword_loc();
+            let (kw_line, kw_col) = source.offset_to_line_col(kw_loc.start_offset());
+
+            if let Some(body) = module_node.body() {
+                if let Some(begin_node) = body.as_begin_node() {
+                    if begin_node.begin_keyword_loc().is_none() {
+                        self.check_implicit_begin(
+                            source,
+                            &begin_node,
+                            kw_col,
+                            kw_line,
+                            "module",
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+        } else if let Some(sclass_node) = node.as_singleton_class_node() {
+            let kw_loc = sclass_node.class_keyword_loc();
+            let (kw_line, kw_col) = source.offset_to_line_col(kw_loc.start_offset());
+
+            if let Some(body) = sclass_node.body() {
+                if let Some(begin_node) = body.as_begin_node() {
+                    if begin_node.begin_keyword_loc().is_none() {
+                        self.check_implicit_begin(
+                            source,
+                            &begin_node,
+                            kw_col,
+                            kw_line,
+                            "class",
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+        } else if let Some(block_node) = node.as_block_node() {
+            let opening_loc = block_node.opening_loc();
+            let opening_slice =
+                &source.as_bytes()[opening_loc.start_offset()..opening_loc.end_offset()];
+            // Only check do-end blocks, not brace blocks
+            if opening_slice != b"do" {
+                return;
+            }
+
+            let (do_line, _) = source.offset_to_line_col(opening_loc.start_offset());
+
+            // For blocks, RuboCop aligns rescue/ensure with the start of the
+            // line containing the `do` keyword (the call expression).
+            let bytes = source.as_bytes();
+            let mut line_start = opening_loc.start_offset();
+            while line_start > 0 && bytes[line_start - 1] != b'\n' {
+                line_start -= 1;
+            }
+            let mut indent = 0;
+            while line_start + indent < bytes.len()
+                && (bytes[line_start + indent] == b' ' || bytes[line_start + indent] == b'\t')
+            {
+                indent += 1;
+            }
+            let align_col = indent;
+
+            if let Some(body) = block_node.body() {
+                if let Some(begin_node) = body.as_begin_node() {
+                    if begin_node.begin_keyword_loc().is_none() {
+                        self.check_implicit_begin(
+                            source,
+                            &begin_node,
+                            align_col,
+                            do_line,
+                            "do",
+                            diagnostics,
+                        );
                     }
                 }
             }
@@ -159,5 +321,54 @@ mod tests {
             diags.is_empty(),
             "tab-indented aligned begin/rescue should not fire"
         );
+    }
+
+    #[test]
+    fn def_rescue_misaligned() {
+        let src = b"def fetch\n  @store\n    rescue\n    handle\nend\n";
+        let diags = run_cop_full(&RescueEnsureAlignment, src);
+        assert_eq!(diags.len(), 1, "should flag misaligned rescue in def");
+    }
+
+    #[test]
+    fn def_ensure_misaligned() {
+        let src = b"def process\n  work\n    ensure\n    cleanup\nend\n";
+        let diags = run_cop_full(&RescueEnsureAlignment, src);
+        assert_eq!(diags.len(), 1, "should flag misaligned ensure in def");
+    }
+
+    #[test]
+    fn def_rescue_aligned_no_offense() {
+        let src = b"def fetch\n  @store\nrescue\n  handle\nend\n";
+        let diags = run_cop_full(&RescueEnsureAlignment, src);
+        assert!(diags.is_empty(), "aligned rescue in def should not fire");
+    }
+
+    #[test]
+    fn class_rescue_misaligned() {
+        let src = b"class Foo\n  bar\n    rescue\n    handle\nend\n";
+        let diags = run_cop_full(&RescueEnsureAlignment, src);
+        assert_eq!(diags.len(), 1, "should flag misaligned rescue in class");
+    }
+
+    #[test]
+    fn module_ensure_misaligned() {
+        let src = b"module Foo\n  bar\n    ensure\n    handle\nend\n";
+        let diags = run_cop_full(&RescueEnsureAlignment, src);
+        assert_eq!(diags.len(), 1, "should flag misaligned ensure in module");
+    }
+
+    #[test]
+    fn block_rescue_misaligned() {
+        let src = b"items.each do |i|\n  i.call\n    rescue\n    next\nend\n";
+        let diags = run_cop_full(&RescueEnsureAlignment, src);
+        assert_eq!(diags.len(), 1, "should flag misaligned rescue in block");
+    }
+
+    #[test]
+    fn rescue_chain_subsequent_misaligned() {
+        let src = b"begin\n  call\nrescue Timeout\n  retry\n  rescue\nend\n";
+        let diags = run_cop_full(&RescueEnsureAlignment, src);
+        assert_eq!(diags.len(), 1, "should flag misaligned subsequent rescue");
     }
 }
