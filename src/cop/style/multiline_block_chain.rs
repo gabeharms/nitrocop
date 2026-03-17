@@ -3,6 +3,27 @@ use crate::diagnostic::{Diagnostic, Location, Severity};
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
+/// ## Known false positives (151 FP in corpus as of 2026-03-17)
+///
+/// An attempt was made to fix two issues (commit 38898a01, reverted f8166f95):
+/// 1. Location mismatch: changed offense location from method name column to
+///    block closing delimiter (end/}) to match RuboCop's range.
+/// 2. Missing intermediate chain walk: added loop through receiver chain to
+///    find multiline blocks through intermediate non-block calls.
+///
+/// Acceptance gate before: expected=3,616, actual=3,454, excess=0, missing=162
+/// Acceptance gate after:  expected=3,616, actual=3,828, excess=212, missing=0
+/// This swung from FN=162 to FP=212 — a net regression of 278 new excess.
+///
+/// Root cause of regression: the intermediate chain walk was too aggressive,
+/// detecting chains that RuboCop doesn't flag. The location change alone might
+/// be correct, but combined with the chain walk, it created new FPs.
+///
+/// A correct fix needs to:
+/// 1. Separate the location fix from the chain walk fix
+/// 2. Validate the location change independently against corpus
+/// 3. Only add chain walk for patterns RuboCop actually flags (compare
+///    RuboCop's on_block trigger more carefully)
 pub struct MultilineBlockChain;
 
 /// Visitor that checks for multiline block chains.
