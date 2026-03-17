@@ -570,8 +570,7 @@ impl<'pr> Visit<'pr> for ShadowVisitor<'_, '_> {
         let mut body_scope = HashMap::new();
         if let Some(params_node) = node.parameters() {
             if let Some(block_params) = params_node.as_block_parameters_node() {
-                body_scope =
-                    build_block_body_scope(&block_params, block_in_else_of_if);
+                body_scope = build_block_body_scope(&block_params, block_in_else_of_if);
             }
         }
         self.scopes.push(body_scope);
@@ -608,8 +607,7 @@ impl<'pr> Visit<'pr> for ShadowVisitor<'_, '_> {
         let mut body_scope = HashMap::new();
         if let Some(params_node) = node.parameters() {
             if let Some(block_params) = params_node.as_block_parameters_node() {
-                body_scope =
-                    build_block_body_scope(&block_params, block_in_else_of_if);
+                body_scope = build_block_body_scope(&block_params, block_in_else_of_if);
             }
         }
         self.scopes.push(body_scope);
