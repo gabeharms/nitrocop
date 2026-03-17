@@ -76,6 +76,32 @@ use crate::parse::source::SourceFile;
 /// with `=begin` (at column 0), enter embdoc mode. When a line starts with
 /// `=end` (at column 0) while in embdoc mode, exit it. Skip all lines
 /// (including blank lines) while in embdoc mode.
+///
+/// ## Corpus investigation (2026-03-17, FN=21 final fix)
+///
+/// 21 FN across 8 repos. Three root causes:
+///
+/// 1. **`=begin`/`=end` block skip was wrong** (~16 FN). RuboCop's
+///    `processed_source.tokens` treats the entire `=begin`..`=end` block as a
+///    single `tCOMMENT` token on line 1. The gap between that token line and
+///    the next token after `=end` spans the block interior, so
+///    `previous_and_current_lines_empty?` fires on consecutive blank lines
+///    inside the block. The `in_embdoc` skip was based on an incorrect
+///    empirical test. Fix: removed the `=begin`/`=end` skip entirely.
+///
+/// 2. **CRLF blank line handling** (~3 FN). Files with `\r\n` line endings
+///    produced `b"\r"` lines after splitting on `\n`. `line.is_empty()` was
+///    false for these, so blank CRLF lines were treated as non-blank. RuboCop
+///    strips `\r` from lines. Fix: treat `b"\r"` as blank alongside empty.
+///
+/// 3. **Leading blank lines off-by-one** (~2 FN). The `max + 1` threshold at
+///    file start caused the first offense to fire one line late. RuboCop's
+///    `prev_line=1` + `LINE_OFFSET=2` approach means: if there are 3+ leading
+///    blanks, fire starting at line 2 (where both line 1 and 2 are empty).
+///    The consecutive_blanks counter at line 2 is 2, but `2 > max+1=2` is
+///    false, so line 2 was missed. Fix: defer leading blank detection —
+///    collect offsets during leading blanks, then emit retroactively when the
+///    first non-blank line is seen, if there were 3+ leading blanks.
 pub struct EmptyLines;
 
 impl Cop for EmptyLines {
@@ -137,45 +163,23 @@ impl Cop for EmptyLines {
 
         let max = config.get_usize("Max", 1);
 
-        let mut consecutive_blanks = 0;
+        let mut consecutive_blanks: usize = 0;
         let mut byte_offset: usize = 0;
         let lines: Vec<&[u8]> = source.lines().collect();
         let total_lines = lines.len();
         let mut seen_non_blank = false;
-        let mut in_embdoc = false;
+        // Track byte offsets of leading blank lines for deferred emission.
+        let mut leading_blank_offsets: Vec<(usize, usize, usize)> = Vec::new();
 
         for (i, line) in lines.iter().enumerate() {
             let line_len = line.len() + 1; // +1 for newline
             let current_line = i + 1; // 1-indexed
 
-            // Track =begin/=end block boundaries. These must start at
-            // column 0 (Ruby syntax requirement).
-            if line.starts_with(b"=begin")
-                && (line.len() == 6 || line[6] == b' ' || line[6] == b'\t')
-            {
-                in_embdoc = true;
-                byte_offset += line_len;
-                consecutive_blanks = 0;
-                seen_non_blank = true;
-                continue;
-            }
-            if in_embdoc
-                && line.starts_with(b"=end")
-                && (line.len() == 4 || line[4] == b' ' || line[4] == b'\t')
-            {
-                in_embdoc = false;
-                byte_offset += line_len;
-                consecutive_blanks = 0;
-                continue;
-            }
-            // Skip all lines inside =begin/=end blocks.
-            if in_embdoc {
-                byte_offset += line_len;
-                consecutive_blanks = 0;
-                continue;
-            }
+            // A line is "blank" if it's empty or consists only of \r (CRLF).
+            // RuboCop strips \r from line content, so "\r\n" lines are empty.
+            let is_blank = line.is_empty() || *line == [b'\r'];
 
-            if line.is_empty() {
+            if is_blank {
                 // Skip the trailing empty element from split() — RuboCop's
                 // EmptyLines cop doesn't flag trailing blank lines at EOF
                 // (that's Layout/TrailingEmptyLines).
@@ -191,22 +195,24 @@ impl Cop for EmptyLines {
                     continue;
                 }
                 // Skip blank lines inside string/heredoc/regex literals.
-                // =begin/=end blocks are already handled above (in_embdoc).
                 // is_not_string() returns false for strings/heredocs/regexes/symbols
-                // but true for comments and code.
+                // but true for comments (including =begin/=end) and code.
                 if !code_map.is_not_string(byte_offset) {
                     byte_offset += line_len;
                     consecutive_blanks = 0;
                     continue;
                 }
                 consecutive_blanks += 1;
-                // RuboCop starts prev_line=1 with LINE_OFFSET=2, so at the
-                // start of a file (before any token), the gap threshold is
-                // effectively max+1 instead of max. This means 1-2 leading
-                // blank lines are never flagged (Layout/LeadingEmptyLines
-                // handles those). Only 3+ leading blanks trigger this cop.
-                let threshold = if seen_non_blank { max } else { max + 1 };
-                if consecutive_blanks > threshold {
+                if !seen_non_blank {
+                    // Defer leading blank line detection. RuboCop uses
+                    // prev_line=1 with LINE_OFFSET=2: the gap from line 1
+                    // to the first token must exceed 2 (i.e., 3+ leading
+                    // blanks) before any check occurs. Then it fires on
+                    // each line where both previous and current are empty,
+                    // starting at line 2. We collect offsets here and emit
+                    // retroactively when the first non-blank line is seen.
+                    leading_blank_offsets.push((current_line, byte_offset, line_len));
+                } else if consecutive_blanks > max {
                     let mut diag = self.diagnostic(
                         source,
                         current_line,
@@ -226,6 +232,35 @@ impl Cop for EmptyLines {
                     diagnostics.push(diag);
                 }
             } else {
+                // First non-blank line: emit deferred leading blank diagnostics.
+                // RuboCop requires gap > LINE_OFFSET(2), meaning 3+ leading
+                // blank lines. Then fires on lines 2..N (where both prev and
+                // current lines are empty).
+                if !seen_non_blank && consecutive_blanks >= max + 2 {
+                    // Skip the first blank (line 1): RuboCop's
+                    // previous_and_current_lines_empty? needs both prev AND
+                    // current empty, so line 1 can't fire (no line 0).
+                    // With prev_line=1, the check starts at line 2.
+                    for &(ln, off, ll) in &leading_blank_offsets[1..] {
+                        let mut diag = self.diagnostic(
+                            source,
+                            ln,
+                            0,
+                            "Extra blank line detected.".to_string(),
+                        );
+                        if let Some(ref mut corr) = corrections {
+                            corr.push(crate::correction::Correction {
+                                start: off,
+                                end: off + ll,
+                                replacement: String::new(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+                        diagnostics.push(diag);
+                    }
+                }
                 consecutive_blanks = 0;
                 seen_non_blank = true;
             }
@@ -358,11 +393,14 @@ mod tests {
     #[test]
     fn fire_on_three_blanks_before_first_code() {
         // 3+ blank lines at start: gap from virtual line 1 to first token > LINE_OFFSET(2)
+        // Should fire on lines 2 and 3 (2 offenses, not 1).
         let source = b"\n\n\nx = 1\n";
         let diags = run_cop_full(&EmptyLines, source);
-        assert!(
-            !diags.is_empty(),
-            "Should fire on 3+ blank lines at start of file"
+        assert_eq!(
+            diags.len(),
+            2,
+            "Should fire twice on 3 blank lines at start of file: {:?}",
+            diags
         );
     }
 
@@ -402,22 +440,24 @@ mod tests {
     }
 
     #[test]
-    fn skip_blanks_in_begin_end_block() {
-        // RuboCop does NOT flag consecutive blank lines inside =begin/=end
-        // blocks. Despite embdoc tokens existing in processed_source.tokens,
-        // the token-gap logic does not flag blank lines within them.
+    fn fire_blanks_in_begin_end_block() {
+        // RuboCop treats the entire =begin/=end block as a single tCOMMENT
+        // token on the first line. The gap between that token and the next
+        // token after =end spans the block interior, so consecutive blank
+        // lines inside =begin/=end ARE flagged.
         let source = b"=begin\nsome docs\n\n\nmore docs\n=end\nx = 1\n";
         let diags = run_cop_full(&EmptyLines, source);
-        assert!(
-            diags.is_empty(),
-            "Should not fire on consecutive blank lines inside =begin/=end: {:?}",
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should fire on consecutive blank lines inside =begin/=end: {:?}",
             diags
         );
     }
 
     #[test]
     fn skip_single_blank_in_begin_end_block() {
-        // Single blank line inside =begin/=end is fine.
+        // Single blank line inside =begin/=end is fine (not consecutive).
         let source = b"=begin\nsome docs\n\nmore docs\n=end\nx = 1\n";
         let diags = run_cop_full(&EmptyLines, source);
         assert!(
@@ -428,13 +468,14 @@ mod tests {
     }
 
     #[test]
-    fn skip_many_blanks_in_begin_end_block() {
-        // Even many consecutive blank lines inside =begin/=end are not flagged.
+    fn fire_many_blanks_in_begin_end_block() {
+        // Multiple consecutive blank lines inside =begin/=end are flagged.
         let source = b"=begin\n\n\n\n\n=end\nx = 1\n";
         let diags = run_cop_full(&EmptyLines, source);
-        assert!(
-            diags.is_empty(),
-            "Should not fire on many blank lines inside =begin/=end: {:?}",
+        assert_eq!(
+            diags.len(),
+            3,
+            "Should fire 3 times on 4 consecutive blank lines inside =begin/=end: {:?}",
             diags
         );
     }
@@ -447,6 +488,31 @@ mod tests {
         assert!(
             !diags.is_empty(),
             "Should fire on consecutive blank lines outside =begin/=end"
+        );
+    }
+
+    #[test]
+    fn fire_blanks_crlf_line_endings() {
+        // CRLF files: blank lines are "\r\n", which after splitting on \n
+        // leaves "\r". These should still be treated as blank lines.
+        let source = b"x = 1\r\n\r\n\r\ny = 2\r\n";
+        let diags = run_cop_full(&EmptyLines, source);
+        assert!(
+            !diags.is_empty(),
+            "Should fire on consecutive blank CRLF lines: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn fire_blanks_crlf_single_blank_is_fine() {
+        // Single blank line in CRLF should not fire.
+        let source = b"x = 1\r\n\r\ny = 2\r\n";
+        let diags = run_cop_full(&EmptyLines, source);
+        assert!(
+            diags.is_empty(),
+            "Should not fire on single blank CRLF line: {:?}",
+            diags
         );
     }
 }

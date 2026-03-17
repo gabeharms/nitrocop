@@ -30,16 +30,6 @@ more documentation
 =end
 x = 1
 
-# Consecutive blank lines inside =begin/=end blocks are NOT offenses.
-# RuboCop does not flag blank lines inside embdoc blocks.
-=begin
-chapter one
-
-
-chapter two
-=end
-y = 1
-
 # Single blank line between code and comment is fine.
 puts "last code"
 
