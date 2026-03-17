@@ -4,3 +4,12 @@ a || (b && c)
 a + b + c
 a * b / c
 a && b && c
+a && (b * c)
+(a * b) && c
+a || (b + c)
+(a << b) || c
+a && (b | c)
+(a && b) || c
+a || (b & c)
+array << i and return
+array << i or return
