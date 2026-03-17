@@ -106,6 +106,13 @@ while true
   ^^^^^ Lint/UnreachableCode: Unreachable code detected.
 end
 
+# ::Kernel.raise with fully-qualified constant path
+def test_qualified_kernel_raise
+  ::Kernel.raise "error"
+  cleanup
+  ^^^^^^^ Lint/UnreachableCode: Unreachable code detected.
+end
+
 # code after exit! is unreachable
 def test_exit_bang
   exit!

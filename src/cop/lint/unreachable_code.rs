@@ -93,13 +93,19 @@ fn is_flow_call(node: &ruby_prism::Node<'_>) -> bool {
             }
             Some(recv) => {
                 // Kernel.raise, Kernel.exit, etc.
-                if let Some(cr) = recv.as_constant_read_node() {
-                    if cr.name().as_slice() == b"Kernel" {
-                        return matches!(
-                            name,
-                            b"raise" | b"fail" | b"throw" | b"exit" | b"exit!" | b"abort"
-                        );
-                    }
+                let is_kernel = if let Some(cr) = recv.as_constant_read_node() {
+                    cr.name().as_slice() == b"Kernel"
+                } else if let Some(cp) = recv.as_constant_path_node() {
+                    // ::Kernel.raise — parent is None (root), child is "Kernel"
+                    cp.parent().is_none() && cp.name().map_or(false, |n| n.as_slice() == b"Kernel")
+                } else {
+                    false
+                };
+                if is_kernel {
+                    return matches!(
+                        name,
+                        b"raise" | b"fail" | b"throw" | b"exit" | b"exit!" | b"abort"
+                    );
                 }
                 false
             }
