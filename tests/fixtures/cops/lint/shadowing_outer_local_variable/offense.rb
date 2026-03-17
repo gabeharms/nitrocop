@@ -135,7 +135,7 @@ def validate_entries
   elsif entry = archive.entries.find { |entry| entry.starts_with?("/") }
     errors.add(:base, "bad path")
   elsif entry = archive.entries.find { |entry| entry.traversal? }
-                                       ^^^^^ Lint/ShadowingOuterLocalVariable: Shadowing outer local variable - `entry`.
+                                        ^^^^^ Lint/ShadowingOuterLocalVariable: Shadowing outer local variable - `entry`.
     errors.add(:base, "traversal")
   end
 end
@@ -149,13 +149,5 @@ def nested_shadow_in_if
         puts k, txt
       end
     end
-  end
-end
-
-# FN fix: block param shadows local assigned earlier in same scope
-def find_result(results, line_number)
-  if interline_align
-    result = @align.call line_number, results[line_number].map { |result| result.gsub "\n", '\n' }
-                                                                  ^^^^^^ Lint/ShadowingOuterLocalVariable: Shadowing outer local variable - `result`.
   end
 end

@@ -283,3 +283,10 @@ def setup_item(page)
   end
 end
 
+# Block param in RHS of assignment — variable_used_in_declaration_of_outer suppression
+def find_result(results, line_number)
+  if interline_align
+    result = @align.call line_number, results[line_number].map { |result| result.gsub "\n", '\n' }
+  end
+end
+
