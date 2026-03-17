@@ -23,6 +23,14 @@ use crate::parse::source::SourceFile;
 /// - Switched from `check_node` to `check_source` with a visitor that tracks
 ///   `def_depth` to ensure blocks are inside method definitions.
 /// - Added support for zero-arg blocks with zero-arg yield.
+/// - Fixed FPs on destructured block params `|(key, val)|` — these are
+///   MultiTargetNode, not RequiredParameterNode, and were returning None
+///   which matched (None, None) in the zip comparison.
+/// - Fixed FPs on blocks with `&b` parameter — `extract_block_param_names`
+///   now checks for block, rest, and keyword_rest params and bails out.
+/// - Remaining FNs (2): `->{ yield }.call` — lambda containing yield. This
+///   is a LambdaNode as receiver of `.call`, not a block attached to a call.
+///   Would require visiting LambdaNode bodies, which is a different pattern.
 pub struct ExplicitBlockArgument;
 
 impl Cop for ExplicitBlockArgument {
@@ -88,11 +96,18 @@ impl<'a> ExplicitBlockArgumentVisitor<'a> {
             None => return,
         };
 
-        // Get block params (may be None for zero-arg blocks like `{ yield }`)
-        let block_param_names = self.extract_block_param_names(block);
+        // Get block params (may be empty for zero-arg blocks like `{ yield }`)
+        // Returns None if block has non-simple params (destructured, &block, *rest, **kwrest)
+        let block_param_names = match self.extract_block_param_names(block) {
+            Some(names) => names,
+            None => return,
+        };
 
-        // Get yield args
-        let yield_arg_names = self.extract_yield_arg_names(&yield_node);
+        // Get yield args (None if any arg is not a simple local variable read)
+        let yield_arg_names = match self.extract_yield_arg_names(&yield_node) {
+            Some(names) => names,
+            None => return,
+        };
 
         // Both must have same count
         if block_param_names.len() != yield_arg_names.len() {
@@ -101,10 +116,8 @@ impl<'a> ExplicitBlockArgumentVisitor<'a> {
 
         // Each yield arg must match the corresponding block param
         for (param, arg) in block_param_names.iter().zip(yield_arg_names.iter()) {
-            match (param, arg) {
-                (Some(p), Some(a)) if p == a => {}
-                (None, None) => {} // both zero-arg: ok
-                _ => return,
+            if param != arg {
+                return;
             }
         }
 
@@ -119,51 +132,63 @@ impl<'a> ExplicitBlockArgumentVisitor<'a> {
     }
 
     /// Extract block parameter names as a list of byte slices.
-    /// Returns empty vec for blocks with no parameters.
-    fn extract_block_param_names(&self, block: &ruby_prism::BlockNode<'_>) -> Vec<Option<Vec<u8>>> {
+    /// Returns `Some(vec![])` for blocks with no parameters.
+    /// Returns `None` if block has non-simple params (destructured, &block, *rest, **kwrest).
+    fn extract_block_param_names(&self, block: &ruby_prism::BlockNode<'_>) -> Option<Vec<Vec<u8>>> {
         let params = match block.parameters() {
             Some(p) => p,
-            None => return vec![],
+            None => return Some(vec![]),
         };
 
         let block_params = match params.as_block_parameters_node() {
             Some(p) => p,
-            None => return vec![],
+            None => return Some(vec![]),
         };
 
         let params_node = match block_params.parameters() {
             Some(p) => p,
-            None => return vec![],
+            None => return Some(vec![]),
         };
 
-        params_node
-            .requireds()
-            .into_iter()
-            .map(|p| {
-                p.as_required_parameter_node()
-                    .map(|rp| rp.name().as_slice().to_vec())
-            })
-            .collect()
+        // Bail out if block has &block, *rest, or **kwrest parameters
+        if params_node.block().is_some()
+            || params_node.rest().is_some()
+            || params_node.keyword_rest().is_some()
+        {
+            return None;
+        }
+
+        let mut names = Vec::new();
+        for p in params_node.requireds().into_iter() {
+            match p.as_required_parameter_node() {
+                Some(rp) => names.push(rp.name().as_slice().to_vec()),
+                // Destructured param like |(key, val)| — not simple
+                None => return None,
+            }
+        }
+        Some(names)
     }
 
     /// Extract yield argument names (must all be local variable reads).
     /// Returns empty vec for bare `yield`.
+    /// Returns `None` if any argument is not a simple local variable read.
     fn extract_yield_arg_names(
         &self,
         yield_node: &ruby_prism::YieldNode<'_>,
-    ) -> Vec<Option<Vec<u8>>> {
+    ) -> Option<Vec<Vec<u8>>> {
         let args = match yield_node.arguments() {
             Some(a) => a,
-            None => return vec![],
+            None => return Some(vec![]),
         };
 
-        args.arguments()
-            .into_iter()
-            .map(|a| {
-                a.as_local_variable_read_node()
-                    .map(|lv| lv.name().as_slice().to_vec())
-            })
-            .collect()
+        let mut names = Vec::new();
+        for a in args.arguments().into_iter() {
+            match a.as_local_variable_read_node() {
+                Some(lv) => names.push(lv.name().as_slice().to_vec()),
+                None => return None,
+            }
+        }
+        Some(names)
     }
 }
 

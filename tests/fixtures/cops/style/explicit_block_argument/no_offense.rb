@@ -24,3 +24,35 @@ items.each do |x|
 end
 
 collection.map { |item| yield item }
+
+# Destructured block params should not be flagged
+def normalize_repeatable_value(option_name, value)
+  value.each do |(key, val)|
+    yield [[option_name, key], val]
+  end
+end
+
+def stream(tokens)
+  formatted_lines.each {|(lineno, line)| yield line }
+end
+
+# Block with & parameter should not be flagged
+def create
+  Proc.new do |&b|
+    yield
+  end
+end
+
+# Block with * rest parameter should not be flagged
+def wrap
+  items.each do |*args|
+    yield args.first
+  end
+end
+
+# Block with ** keyword rest parameter should not be flagged
+def wrap2
+  items.each do |**opts|
+    yield opts
+  end
+end
