@@ -6,7 +6,8 @@ use regex::Regex;
 use crate::parse::source::SourceFile;
 
 static DIRECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"#\s*(?:rubocop|nitrocop)\s*:\s*(disable|enable|todo)\s+(.+)").unwrap()
+    // Anchored: nested comments like `#   # rubocop:disable all` must not match.
+    Regex::new(r"^#\s*(?:rubocop|nitrocop)\s*:\s*(disable|enable|todo)\s+(.+)").unwrap()
 });
 
 /// Normalize a cop name from disable comments.

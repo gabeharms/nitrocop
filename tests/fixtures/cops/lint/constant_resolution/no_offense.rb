@@ -28,3 +28,9 @@ end
 module SingleBody
   SomeConst
 end
+# ConstantPathWriteNode with Class.new/Module.new RHS: target is a module
+# definition. RuboCop's `defined_module` returns truthy, so target is suppressed.
+Validators::Custom = Module.new
+Registry::Entry = Class.new(::Base) do
+  def call; end
+end

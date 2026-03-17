@@ -18,6 +18,13 @@ use crate::parse::source::SourceFile;
 ///   expression (e.g., `class Foo; Bar; end`) is skipped by RuboCop.
 /// - `ConstantWriteNode` with `Class.new`/`Module.new` RHS matches RuboCop's
 ///   `defined_module` for `casgn` — the target constant is a definition name.
+/// - FP fix: `ConstantPathWriteNode` with `Class.new`/`Module.new` RHS — the
+///   target path is treated as a module definition (e.g.,
+///   `ProblemCheck::TestCheck = Class.new(ProblemCheck)`). `Struct.new` does NOT
+///   trigger `defined_module` — the root constant IS still flagged.
+/// - FN fix: Directive regex in `directives.rs` was not anchored, causing nested
+///   comments like `#   # rubocop:disable all` (YARD doc examples) to suppress
+///   offenses for entire files.
 pub struct ConstantResolution;
 
 impl Cop for ConstantResolution {
@@ -114,6 +121,28 @@ impl ConstantResolutionVisitor<'_, '_> {
     }
 }
 
+/// Check if a node is a `Class.new` or `Module.new` call.
+/// RuboCop's `defined_module` returns truthy for `casgn` where the RHS is one of
+/// these, treating the target constant as a module definition name.
+/// Note: `Struct.new` does NOT trigger `defined_module` — RuboCop flags the root.
+fn is_class_or_module_new(node: &ruby_prism::Node<'_>) -> bool {
+    let Some(call) = node.as_call_node() else {
+        return false;
+    };
+    let method_name = std::str::from_utf8(call.name().as_slice()).unwrap_or("");
+    if method_name != "new" {
+        return false;
+    }
+    let Some(receiver) = call.receiver() else {
+        return false;
+    };
+    let Some(const_read) = receiver.as_constant_read_node() else {
+        return false;
+    };
+    let name = std::str::from_utf8(const_read.name().as_slice()).unwrap_or("");
+    matches!(name, "Class" | "Module")
+}
+
 impl<'pr> Visit<'pr> for ConstantResolutionVisitor<'_, '_> {
     fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
         // The constant_path() of a ClassNode is the class name being defined.
@@ -183,14 +212,6 @@ impl<'pr> Visit<'pr> for ConstantResolutionVisitor<'_, '_> {
         let loc = node.location();
 
         // Skip constants that are class/module definition names.
-        // RuboCop checks `node.parent&.defined_module` which returns truthy
-        // when the constant's immediate parent is a class/module node and this
-        // constant is the defined name. For simple `class Foo`, the ConstantReadNode
-        // is the direct constant_path() of the ClassNode.
-        // For `class Foo::Bar`, the ConstantPathNode is the constant_path(), and
-        // the inner Foo ConstantReadNode's parent is the ConstantPathNode (not the
-        // ClassNode), so RuboCop DOES flag the Foo part. We match this by only
-        // checking if the ConstantReadNode IS the direct constant_path() node.
         if self.is_in_def_name(loc.start_offset()) {
             return;
         }
@@ -216,17 +237,33 @@ impl<'pr> Visit<'pr> for ConstantResolutionVisitor<'_, '_> {
     fn visit_constant_path_node(&mut self, node: &ruby_prism::ConstantPathNode<'pr>) {
         // ConstantPathNode itself (e.g., Foo::Bar or ::Foo) is already qualified,
         // so we don't flag it. But we must visit its children in case there's an
-        // unqualified root constant (like Foo in Foo::Bar — as_constant_path_node
-        // parent holds a ConstantReadNode that should still be checked).
+        // unqualified root constant (like Foo in Foo::Bar).
         ruby_prism::visit_constant_path_node(self, node);
     }
 
-    // No visit_constant_path_write_node override needed.
-    // RuboCop's `defined_module` only returns truthy for `casgn` nodes where the
-    // RHS is `Class.new` or `Module.new`. For plain assignments like `Foo::Bar = 42`,
-    // `defined_module` returns nil, so the root constant `Foo` IS flagged.
-    // The default visitor walks into the target ConstantPathNode and correctly
-    // visits the root ConstantReadNode.
+    fn visit_constant_path_write_node(
+        &mut self,
+        node: &ruby_prism::ConstantPathWriteNode<'pr>,
+    ) {
+        // RuboCop's `defined_module` returns truthy for `casgn` nodes where the
+        // RHS is `Class.new` or `Module.new` — the target path is treated as a
+        // module definition name. For plain assignments like `Foo::Bar = 42`,
+        // `defined_module` returns nil, so the root constant `Foo` IS flagged.
+        // Note: `Struct.new` does NOT trigger `defined_module` in RuboCop.
+        let is_module_def = is_class_or_module_new(&node.value());
+        if is_module_def {
+            let target = node.target();
+            let loc = target.location();
+            self.def_name_ranges
+                .push(loc.start_offset()..loc.end_offset());
+        }
+
+        ruby_prism::visit_constant_path_write_node(self, node);
+
+        if is_module_def {
+            self.pop_def_name_range();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +325,54 @@ mod tests {
         // `class Foo; Bar; end` — Bar is the sole body statement, suppressed.
         let diags = crate::testutil::run_cop_full(&ConstantResolution, b"class Foo\n  Bar\nend\n");
         assert_eq!(diags.len(), 0, "Expected 0 offenses, got: {:?}", diags);
+    }
+
+    #[test]
+    fn constant_path_write_class_new_suppresses_target() {
+        // `ProblemCheck::TestCheck = Class.new(ProblemCheck)` — target path is
+        // a module definition; root of target should NOT be flagged.
+        // But `ProblemCheck` in the argument IS flagged.
+        let diags = crate::testutil::run_cop_full(
+            &ConstantResolution,
+            b"ProblemCheck::TestCheck = Class.new(ProblemCheck)\n",
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for ProblemCheck arg, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn constant_path_write_module_new_suppresses_target() {
+        // `Validators::Custom = Module.new` — the target is a module definition.
+        let diags = crate::testutil::run_cop_full(
+            &ConstantResolution,
+            b"Validators::Custom = Module.new\n",
+        );
+        assert_eq!(
+            diags.len(),
+            0,
+            "Expected 0 offenses, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn constant_path_write_struct_new_flags_root() {
+        // `Parent::Child = Struct.new(:name)` — Struct.new does NOT trigger
+        // defined_module in RuboCop. Both `Parent` and `Struct` are flagged.
+        let diags = crate::testutil::run_cop_full(
+            &ConstantResolution,
+            b"Parent::Child = Struct.new(:name)\n",
+        );
+        assert_eq!(
+            diags.len(),
+            2,
+            "Expected 2 offenses (Parent + Struct), got: {:?}",
+            diags
+        );
     }
 
     #[test]
