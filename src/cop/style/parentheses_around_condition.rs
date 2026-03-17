@@ -3,6 +3,16 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-17)
+///
+/// FP=5: All `begin...end while (cond)` or `begin...end until (cond)` patterns.
+/// RuboCop has separate `while_post`/`until_post` node types for do-while loops
+/// and only registers `on_while`/`on_until` (not `on_while_post`/`on_until_post`).
+/// In Prism, these are regular WhileNode/UntilNode in modifier form with a
+/// BeginNode body. Fix: detect this form (no closing_loc + BeginNode body) and skip.
+///
+/// FN=1: In `rubyworks/facets`, a `while (x = next_val)` inside a method.
+/// Appears to be a config issue (AllowSafeAssignment overrides).
 pub struct ParenthesesAroundCondition;
 
 /// Check if the content of a parenthesized node is a safe assignment (=).
@@ -299,6 +309,15 @@ impl Cop for ParenthesesAroundCondition {
                 ));
             }
         } else if let Some(while_node) = node.as_while_node() {
+            // Skip `begin...end while (cond)` form (RuboCop's while_post node type).
+            if while_node.closing_loc().is_none() {
+                if let Some(stmts) = while_node.statements() {
+                    let body: Vec<_> = stmts.body().iter().collect();
+                    if body.len() == 1 && body[0].as_begin_node().is_some() {
+                        return;
+                    }
+                }
+            }
             if let Some(paren) = while_node.predicate().as_parentheses_node() {
                 if should_skip(source, &paren, allow_safe_assignment, allow_multiline, true) {
                     return;
@@ -313,6 +332,15 @@ impl Cop for ParenthesesAroundCondition {
                 ));
             }
         } else if let Some(until_node) = node.as_until_node() {
+            // Skip `begin...end until (cond)` form (RuboCop's until_post node type).
+            if until_node.closing_loc().is_none() {
+                if let Some(stmts) = until_node.statements() {
+                    let body: Vec<_> = stmts.body().iter().collect();
+                    if body.len() == 1 && body[0].as_begin_node().is_some() {
+                        return;
+                    }
+                }
+            }
             if let Some(paren) = until_node.predicate().as_parentheses_node() {
                 if should_skip(source, &paren, allow_safe_assignment, allow_multiline, true) {
                     return;

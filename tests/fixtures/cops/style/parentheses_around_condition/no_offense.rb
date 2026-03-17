@@ -98,3 +98,13 @@ end
 until (foo do
       end)
 end
+
+# begin...end while/until (do-while loop) — RuboCop's while_post/until_post
+# These are exempt because removing parens can change semantics.
+begin
+  process
+end while (running)
+
+begin
+  work
+end until (done)
