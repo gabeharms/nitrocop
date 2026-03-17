@@ -160,10 +160,14 @@ impl<'pr> Visit<'pr> for ReturnNilVisitor<'_, '_> {
                 // Lint/NonLocalExitFromIterator.
                 let is_proc = (method_name == b"proc" && node.receiver().is_none())
                     || (method_name == b"new"
-                        && node
-                            .receiver()
-                            .and_then(|r| r.as_constant_read_node())
-                            .is_some_and(|c| c.name().as_slice() == b"Proc"));
+                        && node.receiver().is_some_and(|r| {
+                            r.as_constant_read_node()
+                                .is_some_and(|c| c.name().as_slice() == b"Proc")
+                                || r.as_constant_path_node().is_some_and(|cp| {
+                                    cp.parent().is_none()
+                                        && cp.name().is_some_and(|n| n.as_slice() == b"Proc")
+                                })
+                        }));
                 if is_proc {
                     self.block_stack.push(BlockContext {
                         has_args: true,

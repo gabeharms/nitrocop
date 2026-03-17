@@ -63,6 +63,13 @@ def method_with_proc_new
   end
 end
 
+# ::Proc.new (qualified constant path) also creates non-local exit context
+def method_with_qualified_proc_new
+  handler = ::Proc.new do |result|
+    return nil if result.error?
+  end
+end
+
 # proc inside hash value inside method call
 def method_with_proc_in_hash
   SomeApi.run(
