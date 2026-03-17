@@ -66,8 +66,9 @@ impl Cop for ColonMethodCall {
         }
 
         // RuboCop's java_type_node? matcher: exempt calls where the receiver
-        // is the bare `Java` constant (ConstantReadNode, not ConstantPathNode).
-        // Matches `Java::int`, `Java::byte`, `Java::com`, etc.
+        // is the bare `Java` constant (ConstantReadNode). Qualified paths like
+        // `Foo::Java::bar` use constant_path_node and are NOT exempt — only
+        // `(send (const nil? :Java) _)` matches RuboCop's pattern.
         if let Some(receiver) = call_node.receiver() {
             if receiver
                 .as_constant_read_node()
