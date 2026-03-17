@@ -92,3 +92,11 @@ module Config
     _temp = 42
   end
 end
+
+# Underscore var used only inside a lambda — lambda creates new scope,
+# reads inside lambda don't count as "using" the outer variable (matches RuboCop)
+def setup_workspace
+  _filenames = nil
+  filenames = ->{ _filenames ||= workspace.filenames.to_set }
+  filenames.call
+end

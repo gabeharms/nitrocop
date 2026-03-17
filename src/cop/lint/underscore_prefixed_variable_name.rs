@@ -15,7 +15,7 @@ use ruby_prism::Visit;
 /// - Write collection stops at inner scope boundaries (blocks, lambdas, defs, classes,
 ///   modules) so each scope only handles its own variables.
 /// - Read collection crosses into blocks (since blocks can read outer-scope variables)
-///   but stops at lambdas/defs/classes/modules.
+///   but stops at lambdas/defs/classes/modules (all create new variable scopes).
 ///
 /// This matches RuboCop's VariableForce model where blocks are "twisted scopes"
 /// that create their own variable tables. Variables first assigned inside a block
@@ -65,6 +65,14 @@ use ruby_prism::Visit;
 /// - Variables in different blocks at top-level sharing the same name caused
 ///   FP (reads from one block attributed to writes in another). Fixed by per-block
 ///   scoping.
+/// - Lambda bodies were traversed during read collection for enclosing scopes,
+///   causing FP when an underscore-prefixed var was used only inside a lambda.
+///   RuboCop's VariableForce does NOT cross lambda boundaries for reads (lambdas
+///   create a new scope like defs). Fixed by making ScopeAwareReadCollector stop
+///   at lambda boundaries. Also fixed check_lambda to filter out reassignments
+///   of outer-scope variables (matching check_block behavior).
+///   Example: `_filenames = nil; filenames = ->{ _filenames ||= ... }` — the
+///   `_filenames` read inside the lambda should not flag the outer assignment.
 pub struct UnderscorePrefixedVariableName;
 
 impl Cop for UnderscorePrefixedVariableName {
@@ -278,11 +286,16 @@ impl ScopeFinder<'_, '_> {
             }
         }
 
-        // Lambdas create new scopes, so collect local variable writes here
+        // Lambdas create new scopes, so collect local variable writes here.
+        // Filter out reassignments of enclosing-scope vars (same as check_block).
         if let Some(body) = lambda_node.body() {
             let mut write_collector = WriteCollector { writes: Vec::new() };
             write_collector.visit(&body);
-            underscore_vars.extend(write_collector.writes);
+            for write in write_collector.writes {
+                if !self.outer_var_names.contains(&write.name) {
+                    underscore_vars.push(write);
+                }
+            }
         }
 
         let lambda_var_names: HashSet<String> =
@@ -758,20 +771,10 @@ impl<'pr> Visit<'pr> for ScopeAwareReadCollector<'_> {
         self.shadowed = old_shadowed;
     }
 
-    fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
-        let lambda_params = collect_lambda_param_names(node);
-
-        let old_shadowed = self.shadowed.clone();
-        self.shadowed.extend(lambda_params);
-
-        if let Some(body) = node.body() {
-            self.visit(&body);
-        }
-
-        self.shadowed = old_shadowed;
-    }
-
-    // Don't cross into nested defs/classes/modules — they have their own scope
+    // Don't cross into nested defs/lambdas/classes/modules — they have their own scope.
+    // Lambdas create a new variable scope just like defs; reads inside a lambda
+    // do not count as "using" a variable from the enclosing scope.
+    fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
     fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
     fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
     fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
@@ -780,18 +783,6 @@ impl<'pr> Visit<'pr> for ScopeAwareReadCollector<'_> {
 fn collect_block_param_names(block_node: &ruby_prism::BlockNode<'_>) -> HashSet<String> {
     let mut names = HashSet::new();
     if let Some(params) = block_node.parameters() {
-        if let Some(params_node) = params.as_block_parameters_node() {
-            if let Some(inner) = params_node.parameters() {
-                collect_all_param_names(&inner, &mut names);
-            }
-        }
-    }
-    names
-}
-
-fn collect_lambda_param_names(lambda_node: &ruby_prism::LambdaNode<'_>) -> HashSet<String> {
-    let mut names = HashSet::new();
-    if let Some(params) = lambda_node.parameters() {
         if let Some(params_node) = params.as_block_parameters_node() {
             if let Some(inner) = params_node.parameters() {
                 collect_all_param_names(&inner, &mut names);
