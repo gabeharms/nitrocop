@@ -20,6 +20,18 @@ use crate::parse::source::SourceFile;
 /// included in `string_literal_ranges`, so RuboCop checks its indentation.
 /// Fix: detect heredoc closing delimiter lines (inside heredoc range,
 /// content is just an identifier) and still check their indentation.
+///
+/// ## Corpus investigation (2026-03-17, FP=69)
+///
+/// 69 FP on tab-indented heredoc content lines (not the closing delimiter).
+/// Root cause: `is_heredoc_closing_delimiter()` was using content-pattern
+/// matching (whitespace + identifier), which matched short content lines
+/// like `y`, `end`, `SQL` etc. inside heredoc bodies. These were incorrectly
+/// treated as closing delimiters and flagged.
+/// Fix: replaced pattern-matching heuristic with positional check — a line
+/// is a closing delimiter only if it's the LAST line within its heredoc range
+/// (i.e., the next line's start offset falls outside the heredoc range).
+/// Added `CodeMap::heredoc_range_end()` to support this check.
 pub struct IndentationStyle;
 
 impl Cop for IndentationStyle {
@@ -152,30 +164,25 @@ impl Cop for IndentationStyle {
 }
 
 /// Check if a line is a heredoc closing delimiter.
-/// Heredoc closing delimiters are lines inside a heredoc range that contain only
-/// a word (the delimiter) with optional leading whitespace (for `<<~` and `<<-`).
+/// The closing delimiter is the last line within a heredoc range. We detect this
+/// by checking whether the next line's start offset falls outside the heredoc range.
+/// This is more reliable than pattern-matching on content, which can false-positive
+/// on short content lines like `y` or `end` that look like identifiers.
+///
 /// In Parser gem, the closing delimiter is a `:tSTRING_END` token and is NOT
 /// included in `string_literal_ranges`, so RuboCop checks its indentation.
 fn is_heredoc_closing_delimiter(line: &[u8], code_map: &CodeMap, line_start: usize) -> bool {
-    // Must be inside a heredoc range (not just any string)
-    if !code_map.is_heredoc(line_start) {
-        return false;
-    }
+    // Must be inside a heredoc range
+    let range_end = match code_map.heredoc_range_end(line_start) {
+        Some(end) => end,
+        None => return false,
+    };
 
-    // The line should look like a heredoc delimiter: optional whitespace + identifier only
-    let trimmed = line.iter().skip_while(|&&b| b == b' ' || b == b'\t');
-    let ident_len = trimmed
-        .clone()
-        .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_')
-        .count();
-    if ident_len == 0 {
-        return false;
-    }
-    let content_len = line
-        .iter()
-        .skip_while(|&&b| b == b' ' || b == b'\t')
-        .count();
-    content_len == ident_len
+    // The closing delimiter line is the last line in the heredoc range.
+    // The next line starts at line_start + line.len() + 1 (for the newline).
+    // If that offset is >= the heredoc range end, this is the closing delimiter.
+    let next_line_start = line_start + line.len() + 1;
+    next_line_start >= range_end
 }
 
 #[cfg(test)]
@@ -198,6 +205,47 @@ mod tests {
             diags.len(),
             1,
             "Only the closing tag tab, not heredoc content: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn heredoc_squiggly_content_tabs_not_flagged() {
+        // Tab-indented heredoc content in a <<~ heredoc should NOT be flagged.
+        // This reproduces the phlex FP pattern where a tab-indented file uses
+        // <<~RUBY heredocs and the content lines have tab indentation.
+        let source = b"\t\timg: <<~RUBY,\n\t\t\tif true\n\t\t\t\ty\n\t\t\tend\n\t\tRUBY\n";
+        let diags = crate::testutil::run_cop_full(&IndentationStyle, source);
+        // The opening line ("\t\timg: <<~RUBY,") has a tab indent in code — flagged.
+        // The closing delimiter ("\t\tRUBY") is a heredoc closing tag — flagged.
+        // The content lines ("\t\t\tif true", etc.) are inside the heredoc — NOT flagged.
+        let flagged_lines: Vec<usize> = diags.iter().map(|d| d.location.line).collect();
+        assert!(
+            !flagged_lines.contains(&2),
+            "Heredoc content line 2 should not be flagged: {:?}",
+            diags
+        );
+        assert!(
+            !flagged_lines.contains(&3),
+            "Heredoc content line 3 should not be flagged: {:?}",
+            diags
+        );
+        assert!(
+            !flagged_lines.contains(&4),
+            "Heredoc content line 4 should not be flagged: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn heredoc_interpolated_content_tabs_not_flagged() {
+        // Interpolated heredoc content should not be flagged either.
+        let source = b"\t\tx = <<~RUBY\n\t\t\tval = #{foo}\n\t\tRUBY\n";
+        let diags = crate::testutil::run_cop_full(&IndentationStyle, source);
+        let flagged_lines: Vec<usize> = diags.iter().map(|d| d.location.line).collect();
+        assert!(
+            !flagged_lines.contains(&2),
+            "Interpolated heredoc content line 2 should not be flagged: {:?}",
             diags
         );
     }

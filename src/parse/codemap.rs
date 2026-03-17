@@ -133,6 +133,23 @@ impl CodeMap {
         Self::in_ranges(&self.regex_ranges, offset)
     }
 
+    /// Returns the end offset of the heredoc range containing `offset`, or None
+    /// if the offset is not inside a heredoc range.
+    pub fn heredoc_range_end(&self, offset: usize) -> Option<usize> {
+        self.heredoc_ranges
+            .binary_search_by(|&(start, end)| {
+                if offset < start {
+                    std::cmp::Ordering::Greater
+                } else if offset >= end {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()
+            .map(|idx| self.heredoc_ranges[idx].1)
+    }
+
     /// Returns true if the given byte offset is inside `#{}` interpolation
     /// within a heredoc. These offsets are marked non-code by `is_code()` (since
     /// the entire heredoc body is non-code), but contain actual Ruby expressions
