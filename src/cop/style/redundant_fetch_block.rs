@@ -7,6 +7,10 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (2026-03):
+/// - 2 FN in rouge-ruby/rouge: string literal defaults in files without
+///   `frozen_string_literal: true`. RuboCop flags `fetch(:key) { 'value' }`
+///   regardless of the frozen_string_literal pragma, so the check was removed.
 pub struct RedundantFetchBlock;
 
 impl RedundantFetchBlock {
@@ -57,12 +61,6 @@ impl Cop for RedundantFetchBlock {
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let safe_for_constants = config.get_bool("SafeForConstants", false);
-        // Check if frozen_string_literal is enabled (needed for string body)
-        let frozen_string_literal = source.lines().next().is_some_and(|line| {
-            std::str::from_utf8(line)
-                .unwrap_or("")
-                .contains("frozen_string_literal: true")
-        });
 
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -127,10 +125,7 @@ impl Cop for RedundantFetchBlock {
                 let body_stmts: Vec<_> = stmts.body().iter().collect();
                 if body_stmts.len() == 1 {
                     let expr = &body_stmts[0];
-                    // String literals require frozen_string_literal: true
-                    if expr.as_string_node().is_some() && !frozen_string_literal {
-                        false
-                    } else if Self::is_simple_literal(expr) {
+                    if Self::is_simple_literal(expr) {
                         true
                     } else if safe_for_constants {
                         expr.as_constant_read_node().is_some()
