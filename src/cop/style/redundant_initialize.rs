@@ -3,6 +3,14 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// FP fix: `has_comment_in_body` was skipping the first line (def line), missing inline
+/// comments like `def initialize # comment`. RuboCop's `contains_comments?` checks the
+/// full node range from the def line through (but not including) the end line.
+///
+/// FN fix: The cop only detected `super()` with zero args as redundant when both def and
+/// super had no args. Now also detects `super(a, b)` as redundant when the explicit args
+/// match the def's required parameters by name and order (e.g., `def initialize(a, b);
+/// super(a, b); end`). This matches RuboCop's `same_args?` behavior.
 pub struct RedundantInitialize;
 
 impl Cop for RedundantInitialize {
@@ -106,27 +114,10 @@ impl Cop for RedundantInitialize {
             }
         }
 
-        // For explicit `super(...)`: only redundant if both the def and super have 0 args
+        // For explicit `super(...)`: redundant if args match def's required params exactly
         if is_explicit_super {
             if let Some(super_node) = body_nodes[0].as_super_node() {
-                let super_has_args = super_node.arguments().is_some()
-                    && super_node
-                        .arguments()
-                        .unwrap()
-                        .arguments()
-                        .iter()
-                        .next()
-                        .is_some();
-                let def_has_params = def_node.parameters().is_some()
-                    && def_node
-                        .parameters()
-                        .unwrap()
-                        .requireds()
-                        .iter()
-                        .next()
-                        .is_some();
-                // super() is only redundant if the def also has no params
-                if super_has_args || def_has_params {
+                if !super_args_match_params(&def_node, &super_node) {
                     return;
                 }
             }
@@ -153,16 +144,26 @@ impl Cop for RedundantInitialize {
 }
 
 fn has_comment_in_body(body_bytes: &[u8]) -> bool {
-    // Skip the first line (def line) and check for comments
+    // Check all lines except the last (end keyword line) for comments.
+    // RuboCop's `contains_comments?` checks the node range from start_line
+    // to end_line (exclusive), so the `end` line is excluded but the `def`
+    // line is included.
     let mut in_string = false;
-    let mut first_line = true;
+    let line_count = body_bytes.iter().filter(|&&b| b == b'\n').count();
+    // If there are no newlines, this is a single-line def (e.g., `def initialize; end`)
+    // and there are no interior lines to check — the end line IS the def line.
+    if line_count == 0 {
+        return false;
+    }
+    let mut current_line = 0;
     for &b in body_bytes {
         if b == b'\n' {
-            first_line = false;
+            current_line += 1;
             in_string = false;
             continue;
         }
-        if first_line {
+        // Skip the last line (the `end` keyword line)
+        if current_line == line_count {
             continue;
         }
         if b == b'#' && !in_string {
@@ -173,6 +174,56 @@ fn has_comment_in_body(body_bytes: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// Check if super's explicit arguments match the def's required parameters exactly.
+/// Returns true if they match (making the method redundant), false otherwise.
+fn super_args_match_params(
+    def_node: &ruby_prism::DefNode<'_>,
+    super_node: &ruby_prism::SuperNode<'_>,
+) -> bool {
+    let super_args: Vec<_> = match super_node.arguments() {
+        Some(args) => args.arguments().iter().collect(),
+        None => vec![],
+    };
+
+    let params = def_node.parameters();
+
+    // Collect required parameter names from the def
+    let param_names: Vec<_> = match &params {
+        Some(p) => {
+            // Must have only required params (no optionals, rest, keywords, block, posts)
+            if !p.optionals().is_empty()
+                || p.rest().is_some()
+                || !p.keywords().is_empty()
+                || p.keyword_rest().is_some()
+                || p.block().is_some()
+                || p.posts().iter().next().is_some()
+            {
+                return false;
+            }
+            p.requireds()
+                .iter()
+                .filter_map(|r| r.as_required_parameter_node().map(|n| n.name()))
+                .collect()
+        }
+        None => vec![],
+    };
+
+    // Must have the same count
+    if super_args.len() != param_names.len() {
+        return false;
+    }
+
+    // Each super arg must be a local variable read matching the corresponding param name
+    for (arg, param_name) in super_args.iter().zip(param_names.iter()) {
+        match arg.as_local_variable_read_node() {
+            Some(lvar) if lvar.name().as_slice() == param_name.as_slice() => {}
+            _ => return false,
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]

@@ -34,3 +34,23 @@ end
 def initialize(_assistant); end
 def initialize(arg)
 end
+
+# Inline comment on def line — allowed with AllowComments: true (default)
+def initialize # some comment
+  super
+end
+
+# super with different number of args — not redundant
+def initialize(a, b)
+  super(a)
+end
+
+# super with different arg names — not redundant
+def initialize(a, b)
+  super(b, a)
+end
+
+# super with extra args — not redundant
+def initialize(a)
+  super(a, b)
+end
