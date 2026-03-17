@@ -15,3 +15,5 @@ end
 ->(x, y) { puts x }
 ->() { puts "a" }
 ->a { puts a }
+[1].each { |a; x| x }
+[1].each { |a; x, y| x }
