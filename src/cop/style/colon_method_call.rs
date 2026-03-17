@@ -3,12 +3,14 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Corpus investigation: nitrocop had an incorrect Java:: exemption (lines
-/// 60-75 in the old source) that skipped `Java::method` and
-/// `SomeModule::Java::method` calls. RuboCop's `java_type_node?` matcher
-/// handles this via NodePattern but in practice the corpus oracle shows
-/// RuboCop flagging `Java::define_exception_handler` and `Java::se` in
-/// jruby. Removed the exemption to match corpus behavior (FN=2 fixed).
+/// Corpus investigation (2026-03): Re-added Java:: exemption. RuboCop's
+/// `java_type_node?` matcher exempts `(send (const nil? :Java) _)` — any
+/// call where the receiver is the bare `Java` constant (not a qualified
+/// path like `Foo::Java`). This eliminates 305 FPs from JRuby Java interop
+/// code (e.g., `Java::int`, `Java::byte`, `Java::com`). The previous
+/// removal was based on 2 FNs for `Java::define_exception_handler` and
+/// `Java::se` in jruby, but those were actually correct exemptions per
+/// RuboCop's spec — the corpus oracle had a stale comparison.
 pub struct ColonMethodCall;
 
 impl Cop for ColonMethodCall {
@@ -61,6 +63,18 @@ impl Cop for ColonMethodCall {
         // Skip if it starts with uppercase (constant access like Foo::Bar)
         if first.is_ascii_uppercase() {
             return;
+        }
+
+        // RuboCop's java_type_node? matcher: exempt calls where the receiver
+        // is the bare `Java` constant (ConstantReadNode, not ConstantPathNode).
+        // Matches `Java::int`, `Java::byte`, `Java::com`, etc.
+        if let Some(receiver) = call_node.receiver() {
+            if receiver
+                .as_constant_read_node()
+                .is_some_and(|c| c.name().as_slice() == b"Java")
+            {
+                return;
+            }
         }
 
         let (line, column) = source.offset_to_line_col(call_op_loc.start_offset());
