@@ -12,6 +12,18 @@ use crate::parse::source::SourceFile;
 /// NOT flagged (because `alias` keyword doesn't work in dynamic eval contexts).
 /// Fix: removed special-casing of `class_eval`/`module_eval` as `Lexical` — they now
 /// correctly use `Dynamic` scope like all other non-instance_eval blocks.
+///
+/// Investigation (2026-03-17): FP=154 from two root causes:
+/// 1. `class << self` (SingletonClassNode) was treated as Lexical scope boundary,
+///    but RuboCop's scope_type does NOT match `:sclass` — only `:class` and `:module`.
+///    This caused `alias_method` inside `class << self` inside a block/def to appear
+///    as Lexical scope, hiding the enclosing Dynamic scope. Fix: removed
+///    `visit_singleton_class_node` so singleton class is transparent to scope.
+/// 2. RuboCop's `alias_method_possible?` returns false when there is any `:def`
+///    ancestor (but NOT `:defs`). This means `alias` keyword inside a `def` method
+///    is never flagged for "use alias_method", even with blocks in between. Fix: added
+///    `def_depth` counter incremented only for non-singleton DefNodes (`def foo`, not
+///    `def self.foo`), and `alias_method_possible()` returns false when def_depth > 0.
 pub struct Alias;
 
 /// Scope type for determining whether alias or alias_method should be used.
@@ -45,6 +57,7 @@ impl Cop for Alias {
             source,
             enforced_style,
             scope_stack: vec![ScopeType::Lexical],
+            def_depth: 0,
             diagnostics: Vec::new(),
         };
         visitor.visit(&parse_result.node());
@@ -57,6 +70,9 @@ struct AliasVisitor<'a, 'src> {
     source: &'src SourceFile,
     enforced_style: &'a str,
     scope_stack: Vec<ScopeType>,
+    /// Tracks nesting depth inside `def` (not `def self.foo`).
+    /// RuboCop's `alias_method_possible?` returns false when any `:def` ancestor exists.
+    def_depth: u32,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -89,8 +105,11 @@ impl AliasVisitor<'_, '_> {
     }
 
     /// Check if alias keyword can be replaced with alias_method.
+    /// Returns false inside instance_eval (alias_method doesn't work there)
+    /// or when inside a `def` (not `defs`) — matching RuboCop's
+    /// `node.each_ancestor(:def).none?` check.
     fn alias_method_possible(&self) -> bool {
-        self.current_scope() != ScopeType::InstanceEval
+        self.current_scope() != ScopeType::InstanceEval && self.def_depth == 0
     }
 }
 
@@ -107,16 +126,24 @@ impl Visit<'_> for AliasVisitor<'_, '_> {
         self.scope_stack.pop();
     }
 
-    fn visit_singleton_class_node(&mut self, node: &ruby_prism::SingletonClassNode<'_>) {
-        self.scope_stack.push(ScopeType::Lexical);
-        ruby_prism::visit_singleton_class_node(self, node);
-        self.scope_stack.pop();
-    }
+    // NOTE: No visit_singleton_class_node override — `class << self` is NOT a scope
+    // boundary in RuboCop (`:sclass` is not matched in scope_type). The enclosing
+    // scope passes through transparently.
 
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'_>) {
+        // Only track def_depth for regular `def` (no receiver), not `def self.foo`.
+        // This matches RuboCop's `node.each_ancestor(:def).none?` which only checks
+        // `:def`, not `:defs`.
+        let is_regular_def = node.receiver().is_none();
+        if is_regular_def {
+            self.def_depth += 1;
+        }
         self.scope_stack.push(ScopeType::Dynamic);
         ruby_prism::visit_def_node(self, node);
         self.scope_stack.pop();
+        if is_regular_def {
+            self.def_depth -= 1;
+        }
     }
 
     fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'_>) {

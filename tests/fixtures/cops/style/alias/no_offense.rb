@@ -64,3 +64,35 @@ receiver.alias_method :ala, :bala
 def self.setup
   alias_method :ala, :bala
 end
+
+# alias_method inside class << self inside a def (dynamic scope from def)
+def configure
+  class << self
+    alias_method :parse_orig, :parse
+    alias_method :parse, :parse_with_timeout
+  end
+end
+
+# alias_method inside class << self inside a block (dynamic scope from block)
+SomeClass.class_eval do
+  class << self
+    alias_method :connection_orig, :connection
+    alias_method :connection, :connection_patched
+  end
+end
+
+# alias_method inside class << obj inside a def (dynamic scope from def)
+def test_something
+  class << @connection
+    alias_method :old_method, :table_method
+    alias_method :table_method, :test_method
+  end
+end
+
+# alias inside class_eval block that is inside a def should not be flagged
+# (alias_method_possible? returns false because of def ancestor)
+def test_transactions
+  Topic.connection.class_eval do
+    alias :real_commit :commit_transaction
+  end
+end
