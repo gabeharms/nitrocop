@@ -6,3 +6,6 @@ ENV.fetch('HOME', nil)
 
 ENV.fetch('HOME')
 ^^^^^^^^^^^^^^^^^ Style/EnvHome: Use `Dir.home` instead.
+
+ENV['HOME'] ||= Dir.pwd
+^^^^^^^^^^^ Style/EnvHome: Use `Dir.home` instead.

@@ -7,3 +7,5 @@ ENV['PATH']
 ENV.fetch('USER')
 
 ENV['LANG']
+
+ENV['HOMEPATH'] ||= Dir.pwd
