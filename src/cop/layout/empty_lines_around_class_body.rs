@@ -10,6 +10,13 @@ use crate::parse::source::SourceFile;
 /// `on_sclass` in addition to `on_class`. Fixed by adding
 /// `SINGLETON_CLASS_NODE` to `interested_node_types` and extracting
 /// keyword/end offsets from `SingletonClassNode`.
+///
+/// Investigation: 28 FN (24 from pat__thinking-sphinx) caused by multiline
+/// class declarations (`class Foo <\n  Bar`). The body start was calculated
+/// from the `class` keyword line, not the superclass end line. Fixed by
+/// using `superclass.location().end_offset()` as the keyword offset when
+/// a superclass is present, so the utility correctly identifies the first
+/// body line after the superclass.
 pub struct EmptyLinesAroundClassBody;
 
 impl Cop for EmptyLinesAroundClassBody {
@@ -36,10 +43,14 @@ impl Cop for EmptyLinesAroundClassBody {
     ) {
         let style = config.get_str("EnforcedStyle", "no_empty_lines");
         let (kw_offset, end_offset) = if let Some(class_node) = node.as_class_node() {
-            (
-                class_node.class_keyword_loc().start_offset(),
-                class_node.end_keyword_loc().start_offset(),
-            )
+            // For multiline class declarations (class Foo <\n  Bar), use the
+            // superclass end line so the utility correctly identifies the body start.
+            let kw = if let Some(superclass) = class_node.superclass() {
+                superclass.location().end_offset().saturating_sub(1)
+            } else {
+                class_node.class_keyword_loc().start_offset()
+            };
+            (kw, class_node.end_keyword_loc().start_offset())
         } else if let Some(sclass_node) = node.as_singleton_class_node() {
             (
                 sclass_node.class_keyword_loc().start_offset(),

@@ -19,3 +19,9 @@ class Qux
     end
   end
 end
+
+class MultilineParent <
+  BaseClass
+  def method
+  end
+end

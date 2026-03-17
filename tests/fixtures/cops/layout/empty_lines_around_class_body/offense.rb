@@ -31,3 +31,26 @@ class Qux
     end
   end
 end
+class MultilineParent <
+  BaseClass
+
+^ Layout/EmptyLinesAroundClassBody: Extra empty line detected at class body beginning.
+  def method
+  end
+end
+class MultilineParentEnd <
+  BaseClass
+  def method
+  end
+
+^ Layout/EmptyLinesAroundClassBody: Extra empty line detected at class body end.
+end
+class MultilineBoth <
+  BaseClass
+
+^ Layout/EmptyLinesAroundClassBody: Extra empty line detected at class body beginning.
+  def method
+  end
+
+^ Layout/EmptyLinesAroundClassBody: Extra empty line detected at class body end.
+end

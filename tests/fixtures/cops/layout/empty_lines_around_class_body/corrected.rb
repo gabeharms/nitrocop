@@ -17,3 +17,18 @@ class Qux
     end
   end
 end
+class MultilineParent <
+  BaseClass
+  def method
+  end
+end
+class MultilineParentEnd <
+  BaseClass
+  def method
+  end
+end
+class MultilineBoth <
+  BaseClass
+  def method
+  end
+end
