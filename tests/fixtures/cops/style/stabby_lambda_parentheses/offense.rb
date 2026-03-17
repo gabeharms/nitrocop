@@ -8,3 +8,6 @@ h = -> a do
     ^^ Style/StabbyLambdaParentheses: Use parentheses for stabby lambda arguments.
   a * 2
 end
+
+f = -> a=a() { a }
+    ^^ Style/StabbyLambdaParentheses: Use parentheses for stabby lambda arguments.

@@ -19,6 +19,13 @@ use crate::parse::source::SourceFile;
 /// Additionally, `->() {}` (empty explicit parens, no actual arguments) has
 /// `arguments? = false` in RuboCop, so we must also check that the
 /// `BlockParametersNode` contains actual parameters.
+///
+/// ## FN fix: method call parens in default values
+///
+/// The paren detection used `between.contains('(')` which matched method call
+/// parentheses in default values like `-> a=a() { }`. Fixed to check if the
+/// first non-whitespace character after `->` is `(`, which correctly
+/// distinguishes parameter parens from default value method calls.
 pub struct StabbyLambdaParentheses;
 
 impl Cop for StabbyLambdaParentheses {
@@ -89,7 +96,13 @@ impl Cop for StabbyLambdaParentheses {
         } else {
             &[]
         };
-        let has_paren = between.contains(&b'(');
+        // Check if the first non-whitespace character after `->` is `(`.
+        // This distinguishes parameter parentheses `->(x)` from method call
+        // parentheses in default values `-> a=a() { }`.
+        let has_paren = between
+            .iter()
+            .find(|&&b| b != b' ' && b != b'\t' && b != b'\n' && b != b'\r')
+            .is_some_and(|&b| b == b'(');
 
         match enforced_style {
             "require_parentheses" => {
