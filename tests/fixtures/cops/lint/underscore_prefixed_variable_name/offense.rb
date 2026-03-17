@@ -67,3 +67,35 @@ def loop_items(items)
     process(_item)
   end
 end
+
+# Block param used inside block body (nested in def with no underscore vars)
+def draw(name)
+  path = @draw_paths.find do |_path|
+                              ^^^^^ Lint/UnderscorePrefixedVariableName: Do not use prefix `_` for a variable that is used.
+    File.exist?(_path)
+  end
+end
+
+# Local variable in block body used later in same block
+def sync
+  items.inject(0) do |sum, field|
+    _size = compute(field)
+    ^^^^^ Lint/UnderscorePrefixedVariableName: Do not use prefix `_` for a variable that is used.
+    _size + sum
+  end
+end
+
+# Bare underscore used as block param
+items.each { |_| _ }
+              ^ Lint/UnderscorePrefixedVariableName: Do not use prefix `_` for a variable that is used.
+
+# Bare underscore used as method param
+def load_data(_)
+              ^ Lint/UnderscorePrefixedVariableName: Do not use prefix `_` for a variable that is used.
+  process(_)
+end
+
+# Destructured block param with underscore prefix
+children.each { |(_page, _children)| add(_page, _children) }
+                  ^^^^^ Lint/UnderscorePrefixedVariableName: Do not use prefix `_` for a variable that is used.
+                         ^^^^^^^^^ Lint/UnderscorePrefixedVariableName: Do not use prefix `_` for a variable that is used.

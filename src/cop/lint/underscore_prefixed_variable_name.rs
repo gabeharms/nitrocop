@@ -15,12 +15,14 @@ use ruby_prism::Visit;
 /// Key behaviors matching RuboCop:
 /// - Flags underscore-prefixed method params, block params, and local variable
 ///   assignments that are subsequently read in the same scope.
+/// - Includes bare `_` — if `_` is used (read), it's an offense.
 /// - Respects block parameter shadowing: if a block redefines a param with the
 ///   same name, reads inside the block are attributed to the block param, not
 ///   the outer scope variable.
 /// - Handles `AllowKeywordBlockArguments` config to skip keyword block params.
 /// - Skips variables implicitly forwarded via bare `super` or `binding`.
 /// - Handles top-level scope (variables outside any def/block).
+/// - Handles destructured block parameters (e.g., `|(a, _b)|`).
 ///
 /// Supported variable declaration types (matching RuboCop's VariableForce):
 /// - Required, optional, rest, keyword, keyword-rest, and block-pass parameters
@@ -31,10 +33,24 @@ use ruby_prism::Visit;
 /// - Operator writes (`_x += 1`, `_x ||= 1`, `_x &&= 1`) count as both
 ///   writes and reads (they read the variable before writing)
 ///
-/// Historical FP root cause: The ReadCollector traversed into blocks without
-/// respecting scope boundaries, causing reads of block-local params to be
-/// misattributed to outer scope variables with the same name. Also, block and
-/// lambda scopes were not checked at all, causing FNs.
+/// Scoping model: In Ruby, blocks share the enclosing def's variable scope.
+/// A local variable first assigned inside a block belongs to the enclosing
+/// def scope, not the block. Lambdas and defs create new scopes.
+/// Therefore:
+/// - `check_def` collects writes from the body AND nested blocks (crossing
+///   block boundaries). It does NOT cross into lambdas/defs.
+/// - `check_block` only checks block parameters (not local var writes, which
+///   belong to the enclosing scope).
+/// - `check_lambda` checks lambda params and local var writes within the
+///   lambda (lambdas create new scopes).
+///
+/// Historical bugs fixed:
+/// - `check_def` returned early when no underscore vars in def scope, skipping
+///   visit of nested blocks/lambdas. Fixed to always visit body for nested scopes.
+/// - Bare `_` was excluded from checks. RuboCop checks it.
+/// - Destructured block params (MultiTargetNode) were not collected.
+/// - Block-scope WriteCollector picked up reassignments of outer scope variables,
+///   causing FP double-reporting.
 pub struct UnderscorePrefixedVariableName;
 
 impl Cop for UnderscorePrefixedVariableName {
@@ -63,7 +79,7 @@ impl Cop for UnderscorePrefixedVariableName {
             diagnostics: Vec::new(),
         };
         // Check top-level scope first
-        visitor.check_scope_body(&parse_result.node(), None, false);
+        visitor.check_scope_body(&parse_result.node());
         // Then visit nested scopes
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -101,33 +117,37 @@ impl ScopeFinder<'_, '_> {
             collect_underscore_params(&params, &mut underscore_vars, false);
         }
 
-        // Collect underscore-prefixed local variable writes in the body
+        // Collect underscore-prefixed local variable writes in the body.
+        // WriteCollector crosses into blocks (blocks share the def scope)
+        // but stops at lambdas and nested defs.
         if let Some(body) = def_node.body() {
             let mut write_collector = WriteCollector { writes: Vec::new() };
             write_collector.visit(&body);
             underscore_vars.extend(write_collector.writes);
         }
 
-        if underscore_vars.is_empty() {
-            return;
+        if !underscore_vars.is_empty() {
+            // Collect all local variable reads in the body, respecting block scoping
+            let mut reads = HashSet::new();
+            if let Some(body) = def_node.body() {
+                collect_reads_scope_aware(&body, &mut reads);
+            }
+            // Also collect reads from parameter default values (e.g., locale: _locale)
+            if let Some(params) = def_node.parameters() {
+                collect_reads_from_param_defaults(&params, &mut reads);
+            }
+
+            // Check for implicit forwarding (bare `super` or `binding`)
+            let has_forwarding = if let Some(body) = def_node.body() {
+                check_forwarding(&body)
+            } else {
+                false
+            };
+
+            self.emit_diagnostics(&underscore_vars, &reads, has_forwarding);
         }
 
-        // Collect all local variable reads in the body, respecting block scoping
-        let mut reads = HashSet::new();
-        if let Some(body) = def_node.body() {
-            collect_reads_scope_aware(&body, &mut reads);
-        }
-
-        // Check for implicit forwarding (bare `super` or `binding`)
-        let has_forwarding = if let Some(body) = def_node.body() {
-            check_forwarding(&body)
-        } else {
-            false
-        };
-
-        self.emit_diagnostics(&underscore_vars, &reads, has_forwarding);
-
-        // Visit body for nested scopes (blocks, lambdas, nested defs)
+        // Always visit body for nested scopes (blocks, lambdas, nested defs)
         if let Some(body) = def_node.body() {
             self.visit(&body);
         }
@@ -136,6 +156,8 @@ impl ScopeFinder<'_, '_> {
     fn check_block(&mut self, block_node: &ruby_prism::BlockNode<'_>) {
         let mut underscore_vars: Vec<UnderscoreVar> = Vec::new();
 
+        // Only check block parameters — local variable writes inside blocks
+        // belong to the enclosing def/top-level scope and are checked there.
         if let Some(params) = block_node.parameters() {
             if let Some(params_node) = params.as_block_parameters_node() {
                 if let Some(inner_params) = params_node.parameters() {
@@ -144,33 +166,20 @@ impl ScopeFinder<'_, '_> {
             }
         }
 
-        // Collect local variable writes in the block body
-        if let Some(body) = block_node.body() {
-            let mut write_collector = WriteCollector { writes: Vec::new() };
-            write_collector.visit(&body);
-            underscore_vars.extend(write_collector.writes);
-        }
-
-        if underscore_vars.is_empty() {
-            // Still need to visit body for nested scopes
+        if !underscore_vars.is_empty() {
+            // Collect reads in body, respecting nested block scoping
+            let mut reads = HashSet::new();
             if let Some(body) = block_node.body() {
-                self.visit(&body);
+                collect_reads_scope_aware(&body, &mut reads);
             }
-            return;
-        }
 
-        // Collect reads in body, respecting nested block scoping
-        let mut reads = HashSet::new();
-        if let Some(body) = block_node.body() {
-            collect_reads_scope_aware(&body, &mut reads);
-        }
+            // Filter out allowed keyword block arguments
+            if self.allow_keyword_block_args {
+                underscore_vars.retain(|v| !v.is_keyword_block_arg);
+            }
 
-        // Filter out allowed keyword block arguments
-        if self.allow_keyword_block_args {
-            underscore_vars.retain(|v| !v.is_keyword_block_arg);
+            self.emit_diagnostics(&underscore_vars, &reads, false);
         }
-
-        self.emit_diagnostics(&underscore_vars, &reads, false);
 
         // Visit body for nested scopes
         if let Some(body) = block_node.body() {
@@ -189,32 +198,27 @@ impl ScopeFinder<'_, '_> {
             }
         }
 
-        // Collect local variable writes in the lambda body
+        // Lambdas create new scopes, so collect local variable writes here
         if let Some(body) = lambda_node.body() {
             let mut write_collector = WriteCollector { writes: Vec::new() };
             write_collector.visit(&body);
             underscore_vars.extend(write_collector.writes);
         }
 
-        if underscore_vars.is_empty() {
+        if !underscore_vars.is_empty() {
+            // Collect reads in body
+            let mut reads = HashSet::new();
             if let Some(body) = lambda_node.body() {
-                self.visit(&body);
+                collect_reads_scope_aware(&body, &mut reads);
             }
-            return;
-        }
 
-        // Collect reads in body
-        let mut reads = HashSet::new();
-        if let Some(body) = lambda_node.body() {
-            collect_reads_scope_aware(&body, &mut reads);
-        }
+            // Filter out allowed keyword block arguments (lambdas are block-like)
+            if self.allow_keyword_block_args {
+                underscore_vars.retain(|v| !v.is_keyword_block_arg);
+            }
 
-        // Filter out allowed keyword block arguments (lambdas are block-like)
-        if self.allow_keyword_block_args {
-            underscore_vars.retain(|v| !v.is_keyword_block_arg);
+            self.emit_diagnostics(&underscore_vars, &reads, false);
         }
-
-        self.emit_diagnostics(&underscore_vars, &reads, false);
 
         // Visit body for nested scopes
         if let Some(body) = lambda_node.body() {
@@ -223,13 +227,8 @@ impl ScopeFinder<'_, '_> {
     }
 
     /// Check top-level scope: variables outside any def/block/lambda.
-    fn check_scope_body(
-        &mut self,
-        node: &ruby_prism::Node<'_>,
-        _params: Option<&ruby_prism::ParametersNode<'_>>,
-        _is_block: bool,
-    ) {
-        // Collect top-level local variable writes
+    fn check_scope_body(&mut self, node: &ruby_prism::Node<'_>) {
+        // Collect top-level local variable writes (crosses into blocks)
         let mut underscore_vars: Vec<UnderscoreVar> = Vec::new();
         let mut write_collector = WriteCollector { writes: Vec::new() };
         write_collector.visit(node);
@@ -287,10 +286,9 @@ struct UnderscoreVar {
 
 /// Check if a name is an underscore-prefixed variable that should be unused.
 /// Matches RuboCop's `should_be_unused?` which returns true for any name
-/// starting with `_`. We exclude bare `_` to avoid FPs on the common Ruby
-/// convention of using `_` as a throwaway variable.
-fn is_underscore_prefixed(name: &str) -> bool {
-    name.starts_with('_') && name != "_"
+/// starting with `_`, including bare `_`.
+fn should_be_unused(name: &str) -> bool {
+    name.starts_with('_')
 }
 
 fn collect_underscore_params(
@@ -301,7 +299,7 @@ fn collect_underscore_params(
     for param in params.requireds().iter() {
         if let Some(req) = param.as_required_parameter_node() {
             let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
-            if is_underscore_prefixed(name) {
+            if should_be_unused(name) {
                 out.push(UnderscoreVar {
                     name: name.to_string(),
                     offset: req.location().start_offset(),
@@ -309,12 +307,16 @@ fn collect_underscore_params(
                 });
             }
         }
+        // Handle destructured parameters (MultiTargetNode)
+        if let Some(mt) = param.as_multi_target_node() {
+            collect_underscore_multi_target(&mt, out);
+        }
     }
 
     for param in params.optionals().iter() {
         if let Some(opt) = param.as_optional_parameter_node() {
             let name = std::str::from_utf8(opt.name().as_slice()).unwrap_or("");
-            if is_underscore_prefixed(name) {
+            if should_be_unused(name) {
                 out.push(UnderscoreVar {
                     name: name.to_string(),
                     offset: opt.name_loc().start_offset(),
@@ -328,7 +330,7 @@ fn collect_underscore_params(
         if let Some(rest_param) = rest.as_rest_parameter_node() {
             if let Some(name_const) = rest_param.name() {
                 let name = std::str::from_utf8(name_const.as_slice()).unwrap_or("");
-                if is_underscore_prefixed(name) {
+                if should_be_unused(name) {
                     if let Some(name_loc) = rest_param.name_loc() {
                         out.push(UnderscoreVar {
                             name: name.to_string(),
@@ -347,7 +349,7 @@ fn collect_underscore_params(
             let name = std::str::from_utf8(req_kw.name().as_slice()).unwrap_or("");
             // Keyword param names include trailing colon in some representations
             let clean_name = name.trim_end_matches(':');
-            if is_underscore_prefixed(clean_name) {
+            if should_be_unused(clean_name) {
                 out.push(UnderscoreVar {
                     name: clean_name.to_string(),
                     offset: req_kw.name_loc().start_offset(),
@@ -358,7 +360,7 @@ fn collect_underscore_params(
         if let Some(opt_kw) = param.as_optional_keyword_parameter_node() {
             let name = std::str::from_utf8(opt_kw.name().as_slice()).unwrap_or("");
             let clean_name = name.trim_end_matches(':');
-            if is_underscore_prefixed(clean_name) {
+            if should_be_unused(clean_name) {
                 out.push(UnderscoreVar {
                     name: clean_name.to_string(),
                     offset: opt_kw.name_loc().start_offset(),
@@ -373,7 +375,7 @@ fn collect_underscore_params(
         if let Some(kw_rest_param) = kw_rest.as_keyword_rest_parameter_node() {
             if let Some(name_const) = kw_rest_param.name() {
                 let name = std::str::from_utf8(name_const.as_slice()).unwrap_or("");
-                if is_underscore_prefixed(name) {
+                if should_be_unused(name) {
                     if let Some(name_loc) = kw_rest_param.name_loc() {
                         out.push(UnderscoreVar {
                             name: name.to_string(),
@@ -390,7 +392,7 @@ fn collect_underscore_params(
     if let Some(block_param) = params.block() {
         if let Some(name_const) = block_param.name() {
             let name = std::str::from_utf8(name_const.as_slice()).unwrap_or("");
-            if is_underscore_prefixed(name) {
+            if should_be_unused(name) {
                 if let Some(name_loc) = block_param.name_loc() {
                     out.push(UnderscoreVar {
                         name: name.to_string(),
@@ -403,7 +405,60 @@ fn collect_underscore_params(
     }
 }
 
+/// Collect underscore-prefixed names from a destructured parameter (MultiTargetNode).
+fn collect_underscore_multi_target(
+    mt: &ruby_prism::MultiTargetNode<'_>,
+    out: &mut Vec<UnderscoreVar>,
+) {
+    for target in mt.lefts().iter() {
+        if let Some(req) = target.as_required_parameter_node() {
+            let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
+            if should_be_unused(name) {
+                out.push(UnderscoreVar {
+                    name: name.to_string(),
+                    offset: req.location().start_offset(),
+                    is_keyword_block_arg: false,
+                });
+            }
+        } else if let Some(inner) = target.as_multi_target_node() {
+            collect_underscore_multi_target(&inner, out);
+        }
+    }
+    if let Some(rest) = mt.rest() {
+        if let Some(splat) = rest.as_splat_node() {
+            if let Some(expr) = splat.expression() {
+                if let Some(req) = expr.as_required_parameter_node() {
+                    let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
+                    if should_be_unused(name) {
+                        out.push(UnderscoreVar {
+                            name: name.to_string(),
+                            offset: req.location().start_offset(),
+                            is_keyword_block_arg: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    for target in mt.rights().iter() {
+        if let Some(req) = target.as_required_parameter_node() {
+            let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
+            if should_be_unused(name) {
+                out.push(UnderscoreVar {
+                    name: name.to_string(),
+                    offset: req.location().start_offset(),
+                    is_keyword_block_arg: false,
+                });
+            }
+        } else if let Some(inner) = target.as_multi_target_node() {
+            collect_underscore_multi_target(&inner, out);
+        }
+    }
+}
+
 /// Collects underscore-prefixed local variable writes.
+/// Crosses into blocks (blocks share enclosing scope) but stops at
+/// defs, classes, modules, and lambdas (which create new scopes).
 struct WriteCollector {
     writes: Vec<UnderscoreVar>,
 }
@@ -411,14 +466,14 @@ struct WriteCollector {
 impl<'pr> Visit<'pr> for WriteCollector {
     fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
         let name = std::str::from_utf8(node.name().as_slice()).unwrap_or("");
-        if is_underscore_prefixed(name) {
+        if should_be_unused(name) {
             self.writes.push(UnderscoreVar {
                 name: name.to_string(),
                 offset: node.name_loc().start_offset(),
                 is_keyword_block_arg: false,
             });
         }
-        // Visit the value expression (but not for collecting writes in nested scopes)
+        // Visit the value expression
         self.visit(&node.value());
     }
 
@@ -429,7 +484,7 @@ impl<'pr> Visit<'pr> for WriteCollector {
         node: &ruby_prism::LocalVariableTargetNode<'pr>,
     ) {
         let name = std::str::from_utf8(node.name().as_slice()).unwrap_or("");
-        if is_underscore_prefixed(name) {
+        if should_be_unused(name) {
             self.writes.push(UnderscoreVar {
                 name: name.to_string(),
                 offset: node.location().start_offset(),
@@ -439,16 +494,11 @@ impl<'pr> Visit<'pr> for WriteCollector {
     }
 
     /// Handle MatchWriteNode: named capture regex `/(?<_name>\w+)/ =~ str`.
-    /// The targets contain LocalVariableTargetNode instances which will be
-    /// visited by visit_local_variable_target_node above. But we need to
-    /// override the offset to point at the regex (matching RuboCop behavior
-    /// which uses `node.children.first.source_range` for match_with_lvasgn).
     fn visit_match_write_node(&mut self, node: &ruby_prism::MatchWriteNode<'pr>) {
-        // Check each target for underscore-prefixed names
         for target in node.targets().iter() {
             if let Some(target_node) = target.as_local_variable_target_node() {
                 let name = std::str::from_utf8(target_node.name().as_slice()).unwrap_or("");
-                if is_underscore_prefixed(name) {
+                if should_be_unused(name) {
                     // Point at the regex (first child of the call), matching RuboCop
                     let call = node.call();
                     let offset = if let Some(receiver) = call.receiver() {
@@ -468,13 +518,12 @@ impl<'pr> Visit<'pr> for WriteCollector {
     }
 
     /// Handle operator writes: _x += 1, _x ||= 1, _x &&= 1
-    /// These are writes but also implicitly read the variable.
     fn visit_local_variable_operator_write_node(
         &mut self,
         node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
     ) {
         let name = std::str::from_utf8(node.name().as_slice()).unwrap_or("");
-        if is_underscore_prefixed(name) {
+        if should_be_unused(name) {
             self.writes.push(UnderscoreVar {
                 name: name.to_string(),
                 offset: node.name_loc().start_offset(),
@@ -489,7 +538,7 @@ impl<'pr> Visit<'pr> for WriteCollector {
         node: &ruby_prism::LocalVariableOrWriteNode<'pr>,
     ) {
         let name = std::str::from_utf8(node.name().as_slice()).unwrap_or("");
-        if is_underscore_prefixed(name) {
+        if should_be_unused(name) {
             self.writes.push(UnderscoreVar {
                 name: name.to_string(),
                 offset: node.name_loc().start_offset(),
@@ -504,7 +553,7 @@ impl<'pr> Visit<'pr> for WriteCollector {
         node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
     ) {
         let name = std::str::from_utf8(node.name().as_slice()).unwrap_or("");
-        if is_underscore_prefixed(name) {
+        if should_be_unused(name) {
             self.writes.push(UnderscoreVar {
                 name: name.to_string(),
                 offset: node.name_loc().start_offset(),
@@ -514,26 +563,42 @@ impl<'pr> Visit<'pr> for WriteCollector {
         self.visit(&node.value());
     }
 
-    // Don't cross into nested defs/classes/modules/blocks/lambdas
+    // Blocks share the enclosing scope — DO cross into them (default visit)
+    // Don't cross into nested defs/classes/modules/lambdas — they create new scopes
     fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
     fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
     fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
-    fn visit_block_node(&mut self, _node: &ruby_prism::BlockNode<'pr>) {}
     fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
 }
 
 /// Collects local variable reads while respecting block/lambda parameter scoping.
-///
-/// When a block or lambda declares a parameter with the same name as an outer
-/// variable, reads of that name inside the block refer to the block parameter,
-/// not the outer variable. This collector tracks such shadowed names and excludes
-/// them from the outer scope's read set.
 fn collect_reads_scope_aware(node: &ruby_prism::Node<'_>, reads: &mut HashSet<String>) {
     let mut collector = ScopeAwareReadCollector {
         reads,
         shadowed: HashSet::new(),
     };
     collector.visit(node);
+}
+
+/// Collect local variable reads from parameter default values.
+/// E.g., `def foo(_locale = nil, locale: _locale)` — the `_locale` in the
+/// keyword default is a read.
+fn collect_reads_from_param_defaults(
+    params: &ruby_prism::ParametersNode<'_>,
+    reads: &mut HashSet<String>,
+) {
+    // Optional positional params: their default values may read other params
+    for param in params.optionals().iter() {
+        if let Some(opt) = param.as_optional_parameter_node() {
+            collect_reads_scope_aware(&opt.value(), reads);
+        }
+    }
+    // Optional keyword params: their default values may read other params
+    for param in params.keywords().iter() {
+        if let Some(opt_kw) = param.as_optional_keyword_parameter_node() {
+            collect_reads_scope_aware(&opt_kw.value(), reads);
+        }
+    }
 }
 
 struct ScopeAwareReadCollector<'a> {
@@ -650,6 +715,10 @@ fn collect_all_param_names(params: &ruby_prism::ParametersNode<'_>, names: &mut 
             let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
             names.insert(name.to_string());
         }
+        // Handle destructured parameters
+        if let Some(mt) = param.as_multi_target_node() {
+            collect_multi_target_names(&mt, names);
+        }
     }
     for param in params.optionals().iter() {
         if let Some(opt) = param.as_optional_parameter_node() {
@@ -687,6 +756,36 @@ fn collect_all_param_names(params: &ruby_prism::ParametersNode<'_>, names: &mut 
         if let Some(name_const) = block_param.name() {
             let name = std::str::from_utf8(name_const.as_slice()).unwrap_or("");
             names.insert(name.to_string());
+        }
+    }
+}
+
+/// Collect all names from a destructured MultiTargetNode.
+fn collect_multi_target_names(mt: &ruby_prism::MultiTargetNode<'_>, names: &mut HashSet<String>) {
+    for target in mt.lefts().iter() {
+        if let Some(req) = target.as_required_parameter_node() {
+            let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
+            names.insert(name.to_string());
+        } else if let Some(inner) = target.as_multi_target_node() {
+            collect_multi_target_names(&inner, names);
+        }
+    }
+    if let Some(rest) = mt.rest() {
+        if let Some(splat) = rest.as_splat_node() {
+            if let Some(expr) = splat.expression() {
+                if let Some(req) = expr.as_required_parameter_node() {
+                    let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+    for target in mt.rights().iter() {
+        if let Some(req) = target.as_required_parameter_node() {
+            let name = std::str::from_utf8(req.name().as_slice()).unwrap_or("");
+            names.insert(name.to_string());
+        } else if let Some(inner) = target.as_multi_target_node() {
+            collect_multi_target_names(&inner, names);
         }
     }
 }
@@ -732,4 +831,97 @@ mod tests {
         UnderscorePrefixedVariableName,
         "cops/lint/underscore_prefixed_variable_name"
     );
+
+    #[test]
+    fn test_block_param_used_in_method_call() {
+        let cop = UnderscorePrefixedVariableName;
+        let source = b"def foo\n  proxy = @proxies.detect do |_proxy|\n    _proxy.params.has_key?(param_key)\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&cop, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for _proxy, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_local_var_in_block_used() {
+        let cop = UnderscorePrefixedVariableName;
+        let source = b"def foo\n  items.each do |item|\n    _val = item.process\n    puts _val\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&cop, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for _val, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_bare_underscore_used() {
+        let cop = UnderscorePrefixedVariableName;
+        let source = b"items.each { |_| _ }\n";
+        let diags = crate::testutil::run_cop_full(&cop, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for bare _, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_no_double_report_outer_reassignment() {
+        let cop = UnderscorePrefixedVariableName;
+        // _finder is first assigned outside block, then reassigned inside.
+        // Should only report once (at first assignment), not twice.
+        let source = b"def foo\n  _finder = Model.all\n  items.each do |col|\n    _finder = _finder.where(col => val)\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&cop, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense (at first assignment only), got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_var_in_nested_block() {
+        let cop = UnderscorePrefixedVariableName;
+        let source = b"def test_data\n  assert_raise(Error) do\n    _data = data.dup\n    _data[_data.size - 4] = 'X'\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&cop, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for _data, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_param_default_value_read() {
+        let cop = UnderscorePrefixedVariableName;
+        let source =
+            b"def exists?(key, _locale = nil, locale: _locale)\n  locale || config.locale\nend\n";
+        let diags = crate::testutil::run_cop_full(&cop, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for _locale, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_destructured_block_param() {
+        let cop = UnderscorePrefixedVariableName;
+        let source = b"children.each { |(_page, _children)| add(_page, _children) }\n";
+        let diags = crate::testutil::run_cop_full(&cop, source);
+        assert!(
+            diags.len() >= 1,
+            "Expected at least 1 offense for destructured params, got: {:?}",
+            diags
+        );
+    }
 }

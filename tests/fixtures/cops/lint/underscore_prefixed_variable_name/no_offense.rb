@@ -15,11 +15,6 @@ def third_method(bar)
   puts bar
 end
 
-# Bare underscore is always OK
-def fourth_method(_)
-  puts _
-end
-
 # Variable captured and reassigned by block (not a reference)
 _captured = 1
 1.times do
