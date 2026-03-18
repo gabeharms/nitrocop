@@ -123,3 +123,37 @@ rescue => e
 
   true
 end
+
+# FN fix: guard clause followed by if block with multi-line raise
+def guard_then_if_multiline_raise
+  return if !argv
+
+  if argv.empty? || argv.length > 2
+    raise Errors::CLIInvalidUsage,
+      help: opts.help.chomp
+  end
+end
+
+# FN fix: guard followed by if-block with modifier-form return (NOT a guard per RuboCop)
+def guard_then_if_modifier_return
+  return unless doc.blocks?
+
+  if (first_block = doc.blocks[0]).context == :preamble
+    return unless (first_block = first_block.blocks[0])
+  elsif first_block.context == :section
+    return
+  end
+end
+
+# FN fix: block-form guard `unless..raise..end` followed by non-guard code
+def block_guard_then_nonguard
+  unless valid?(level)
+    raise "invalid"
+  end
+
+  if logger.respond_to?(:add)
+    logger.add(level, message)
+  else
+    raise "invalid logger"
+  end
+end

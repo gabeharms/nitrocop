@@ -745,9 +745,7 @@ fn is_bare_guard_in_block(trimmed: &[u8], lines: &[&[u8]], line_idx: usize) -> b
     // If the line starts with a guard keyword but also has a modifier `if`/`unless`,
     // it's NOT a bare guard statement — it's a modifier-form if/unless wrapping the
     // guard. RuboCop's `guard_clause?` does NOT match these.
-    if has_guard_keyword
-        && (contains_word(trimmed, b"if") || contains_word(trimmed, b"unless"))
-    {
+    if has_guard_keyword && (contains_word(trimmed, b"if") || contains_word(trimmed, b"unless")) {
         return false;
     }
 

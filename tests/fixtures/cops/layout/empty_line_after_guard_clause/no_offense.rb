@@ -434,3 +434,56 @@ def guard_comment_blank_guard
   # FIXME: Remove when we stop testing old version
   next if file =~ /pattern_b/ && VERSION <= Gem::Version.new('1.7.13')
 end
+
+# FP fix: Guard followed by ternary with guard in if-branch
+def guard_then_ternary_guard
+  return unless broken_rule
+  fail_build ? fail(message) : warn(message)
+end
+
+# FP fix: Guard followed by ternary with break/next
+def guard_then_ternary_break_next
+  items.each do |item|
+    next unless item.check_port
+    item.run || error ? break : next
+  end
+end
+
+# FP fix: Guard followed by comment then blank then if-block with guard
+def guard_comment_blank_if_guard
+  return true if result
+  # comment about the next check
+  # more details
+
+  if BCrypt::Password.new(enc) == [password].join
+    return true
+  end
+end
+
+# FP fix: Block guard followed by if-block with `&& return`
+def block_guard_then_and_return
+  unless @work
+    raise "not found"
+  end
+  if @collection
+    redirect_to(@work) && return
+  end
+end
+
+# Guard before if-block with single-line raise (IS a guard clause)
+def guard_then_if_single_line_raise
+  return if !argv
+  if argv.empty?
+    raise "error"
+  end
+end
+
+# Multi-line raise guard continuation with parens in condition
+def multiline_raise_continuation_parens
+  raise "failed to create test zip" \
+    unless system("zip -q test.zip test/data/file.txt")
+  raise "failed to remove entry" \
+    unless system(
+      "zip -q test.zip -d test/data/file.txt"
+    )
+end
