@@ -13,4 +13,5 @@ end
 module Baz
   extend self
   ^^^^^^^^^^^ Style/ModuleFunction: Use `module_function` instead of `extend self`.
+  def helper; end
 end

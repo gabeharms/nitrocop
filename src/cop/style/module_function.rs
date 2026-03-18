@@ -4,25 +4,23 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// ## Corpus investigation (2026-03-11, updated 2026-03-16)
+/// ## Corpus investigation (2026-03-11, updated 2026-03-18)
 ///
 /// Corpus oracle: FP=2, FN=0, Match=99.6% (538 matches).
 ///
 /// FP=2: Both false positives are `spec/.../fixtures/singleton_methods.rb` files in
-/// jruby and natalie containing `extend self` inside a small `SelfExtending` module.
-/// RuboCop does not flag these because nested `.rubocop.yml` files under `spec/ruby/`
-/// set `AllCops.DisabledByDefault: true`, disabling the cop for those paths.
+/// jruby and natalie containing `extend self` inside a small `SelfExtending` module
+/// whose body is only `extend self` (one statement).
 ///
-/// Previous fix attempt (2026-03-11): Tried skipping single-statement module bodies
-/// whose only statement is `extend self`. This cleared the 2 FPs but introduced 3
-/// real FNs elsewhere (excess went from 2 to 0, but missing went from 0 to 3).
-/// Reverted — the pattern `extend self` in a small module body is a legitimate
-/// offense when the cop is enabled.
+/// Root cause: RuboCop's `on_module` has `return unless node.body&.begin_type?`.
+/// In Parser AST, a module body with a single statement is NOT a `begin` node —
+/// only 2+ statements produce `begin_type?`. So RuboCop skips single-statement
+/// module bodies entirely. nitrocop was processing all `StatementsNode` bodies
+/// regardless of child count.
 ///
-/// Root cause: This is a config resolution issue, not a cop logic bug. The cop's
-/// matcher is correct. The FPs will resolve when the config layer properly handles
-/// nested `.rubocop.yml` with `AllCops.DisabledByDefault: true` in these repos.
-/// No code change needed in this cop.
+/// Fix: Skip module bodies with fewer than 2 statements, matching RuboCop's
+/// `begin_type?` guard. This also correctly handles the nested `SelfExtending`
+/// module in the corpus FP pattern.
 pub struct ModuleFunction;
 
 impl Cop for ModuleFunction {
@@ -65,6 +63,15 @@ impl<'pr> Visit<'pr> for ModuleFunctionVisitor<'_> {
         if let Some(body) = node.body() {
             // Scan the body for `extend self` or `module_function`
             if let Some(stmts) = body.as_statements_node() {
+                // RuboCop requires begin_type? (2+ statements in the module body).
+                // A module with only one statement (e.g. `module M; extend self; end`)
+                // is not flagged because the body is not a begin node in Parser AST.
+                let stmt_count = stmts.body().iter().count();
+                if stmt_count < 2 {
+                    self.visit(&body);
+                    return;
+                }
+
                 // For module_function style, skip if any private directive exists
                 let has_private = self.style == "module_function"
                     && stmts.body().iter().any(|stmt| is_private_directive(&stmt));

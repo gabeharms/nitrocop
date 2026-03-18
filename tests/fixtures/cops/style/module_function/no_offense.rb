@@ -31,3 +31,21 @@ module WithPrivateDef
   def greet; end
   private def helper; end
 end
+# extend self as the only statement — RuboCop requires begin_type? (2+ statements)
+module SelfExtendingOnly
+  extend self
+end
+# nested module with extend self as only statement (corpus FP pattern)
+module SingletonMethodsSpecs
+  module Prepended
+    def mspec_test_kernel_singleton_methods
+    end
+    public :mspec_test_kernel_singleton_methods
+  end
+
+  ::Module.prepend Prepended
+
+  module SelfExtending
+    extend self
+  end
+end
