@@ -27,9 +27,12 @@ use crate::parse::source::SourceFile;
 /// Fix: Extended post-closing-paren check to also skip `)` or `,`, and added pre-receiver
 /// check scanning backwards for `(` or `,`.
 ///
-/// Remaining FPs (~3): cases where the operator call is an argument to another operator
-/// (e.g., `should == bd.%(x)`) or a no-paren unary call (e.g., `assert_nil @c2.<=>(x)`).
-/// These are rare and would require AST parent pointers to fix.
+/// Investigation (2026-03-18): Remaining 3 FPs from parenthesized operator calls that
+/// are arguments to space-separated method calls (`assert_nil @c1.<=>(x)`) or RHS of
+/// another operator (`should == bd.%(x)`). Root cause: check B only looked for `(` or `,`
+/// before the receiver, missing method-name and operator contexts. Fix: broadened check B
+/// to skip any parenthesized operator call whose receiver is NOT at a statement start
+/// (i.e., preceded by something other than line-start, `=` assignment, or `;`).
 pub struct OperatorMethodCall;
 
 const OPERATOR_METHODS: &[&[u8]] = &[
@@ -153,7 +156,10 @@ impl Cop for OperatorMethodCall {
                 }
 
                 // Check B: what precedes the receiver (scan backwards, skip whitespace)
-                // Catches `assert_equal 0, @c2.<=>(@c2)` where `,` is before receiver
+                // If the parenthesized operator call is NOT at a statement start, it's
+                // nested inside another expression and should be skipped.
+                // Statement starts: beginning of line, after `=` (assignment), after `;`
+                // Everything else (identifiers, operators, `,`, `(`) means nested.
                 let recv_start = receiver.location().start_offset();
                 if recv_start > 0 {
                     let mut rpos = recv_start - 1;
@@ -166,7 +172,38 @@ impl Cop for OperatorMethodCall {
                         rpos -= 1;
                     }
                     let prev_ch = src[rpos];
-                    if prev_ch == b'(' || prev_ch == b',' {
+                    // If at start of file or on a whitespace-only prefix, allow
+                    if rpos == 0
+                        && (prev_ch == b' '
+                            || prev_ch == b'\t'
+                            || prev_ch == b'\n'
+                            || prev_ch == b'\r')
+                    {
+                        // At start of file with only whitespace — statement start, allow
+                    } else if prev_ch == b'\n' || prev_ch == b'\r' {
+                        // Start of line — statement start, allow
+                    } else if prev_ch == b';' {
+                        // After semicolon — statement start, allow
+                    } else if prev_ch == b'=' {
+                        // Could be assignment (=, +=, -=, etc.) or comparison (==, !=, >=, <=)
+                        // Assignment: allow flagging. Comparison: skip (nested).
+                        // Check if it's a compound operator like ==, !=, >=, <=, ===
+                        if rpos > 0 {
+                            let before_eq = src[rpos - 1];
+                            if before_eq == b'='
+                                || before_eq == b'!'
+                                || before_eq == b'>'
+                                || before_eq == b'<'
+                            {
+                                // ==, !=, >=, <= — comparison operator, nested
+                                return;
+                            }
+                            // Otherwise it's an assignment (=, +=, -=, etc.) — allow
+                        }
+                        // Bare `=` at start — assignment, allow
+                    } else {
+                        // Any other character (identifier, operator, comma, paren, etc.)
+                        // means the operator call is nested
                         return;
                     }
                 }

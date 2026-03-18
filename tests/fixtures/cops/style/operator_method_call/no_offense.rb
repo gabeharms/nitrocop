@@ -31,6 +31,15 @@ assert_equal 0, a.<=>(b)
 assert_equal 1, c.<=>(@item)
 be_close(6543.21.%(137), tolerance)
 
+# Parenthesized operator call as sole space-separated arg (no comma before receiver)
+# RuboCop skips because grandparent is a send node
+assert_nil @c1.<=>(other)
+assert_nil @c2.<=>(Gem.loaded_specs.values.first)
+
+# Parenthesized operator call as RHS of another operator
+# Grandparent is == send node, so RuboCop skips
+result.should == value.%(0xffffffff)
+
 # Splat, block_pass, kwsplat arguments — removing dot would be invalid syntax
 foo.+(*args)
 foo.-(**kwargs)
