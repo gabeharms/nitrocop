@@ -36,3 +36,9 @@ redirect_to [:admin, @edition], { flash: { alert: "This is historic content" } }
 # FN fix: redirect_to with splatted ternary containing alert
 redirect_to root_path, **(condition ? { warning: "Text" } : { alert: "Other" })
                                                                      ^^^^^^^ Rails/I18nLocaleTexts: Move locale texts to the locale files in the `config/locales` directory.
+
+# FN fix: backslash line continuation strings don't contain actual newlines
+flash[:error] =
+  "Please specify a valid image name comprised of lowercase letters, digits, and \
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/I18nLocaleTexts: Move locale texts to the locale files in the `config/locales` directory.
+   underscores. You may use one forward slash separator."

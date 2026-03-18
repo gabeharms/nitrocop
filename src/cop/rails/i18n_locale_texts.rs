@@ -25,25 +25,30 @@ use crate::parse::source::SourceFile;
 /// interpolation as `dstr` (dynamic string) nodes, so RuboCop's `$str` NodePattern does not
 /// match them. Prism correctly parses them as `StringNode`. Fixed by checking whether the
 /// string node spans multiple source lines and excluding multi-line strings.
+///
+/// **FN root cause (1 FN, fixed 2026-03-18):** Backslash (`\`) line continuation strings
+/// span multiple physical source lines but do NOT contain actual newline characters in
+/// their content. The Parser gem treats these as plain `str` nodes (not `dstr`), so
+/// RuboCop's `$str` pattern matches them. Fixed by checking unescaped string content for
+/// `\n` instead of comparing source line numbers — this correctly excludes strings with
+/// real newlines while including `\` continuation strings.
 pub struct I18nLocaleTexts;
 
 const MSG: &str = "Move locale texts to the locale files in the `config/locales` directory.";
 
-/// Check if a node is a plain, single-line string literal (not a symbol, not interpolated).
+/// Check if a node is a plain string literal (not a symbol, not interpolated) whose
+/// content does not contain actual newline characters.
 ///
-/// Multi-line string literals are excluded because the Parser gem (used by RuboCop) parses
-/// them as `dstr` (dynamic string) nodes even without interpolation, so RuboCop's `$str`
-/// NodePattern does not match them. Prism correctly parses them as `StringNode`, but we
-/// need to match RuboCop's behavior for corpus conformance.
-fn is_string_literal(source: &SourceFile, node: &ruby_prism::Node<'_>) -> bool {
+/// Multi-line string literals whose content contains newlines are excluded because the
+/// Parser gem (used by RuboCop) parses them as `dstr` (dynamic string) nodes even without
+/// interpolation, so RuboCop's `$str` NodePattern does not match them. However, strings
+/// using `\` line continuation do NOT have newlines in their content — the Parser gem
+/// treats them as plain `str` nodes, so RuboCop DOES match them. We check the unescaped
+/// content rather than source line span to correctly handle both cases.
+fn is_string_literal(_source: &SourceFile, node: &ruby_prism::Node<'_>) -> bool {
     if let Some(s) = node.as_string_node() {
-        let loc = s.location();
-        // Exclude multi-line strings: Parser gem treats them as `dstr`, not `str`
-        let start_line = source.offset_to_line_col(loc.start_offset()).0;
-        let end_line = source
-            .offset_to_line_col(loc.end_offset().saturating_sub(1))
-            .0;
-        return start_line == end_line;
+        // Exclude strings with actual newlines in content: Parser gem treats them as `dstr`
+        return !s.unescaped().contains(&b'\n');
     }
     false
 }
