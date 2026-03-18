@@ -57,3 +57,30 @@ module Extensions
     end
   end
 end
+
+# FN fix: qualified constant path superclass (e.g. Synchronization::Object)
+# should NOT match stateless "Object" — full name must be compared
+class Record < Synchronization::Object
+  def initialize(value)
+  ^^^^^^^^^^^^^^^^^^^^^ Lint/MissingSuper: Call `super` to initialize state of the parent class.
+    @value = value
+  end
+end
+
+# FN fix: qualified constant path superclass nested in modules
+module Concurrent
+  class Container < Synchronization::Object
+    def initialize(opts = {})
+    ^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/MissingSuper: Call `super` to initialize state of the parent class.
+      @opts = opts
+    end
+  end
+end
+
+# FN fix: deeply qualified constant path superclass
+class Handler < Utils::Sync::BasicObject
+  def initialize(name)
+  ^^^^^^^^^^^^^^^^^^^^ Lint/MissingSuper: Call `super` to initialize state of the parent class.
+    @name = name
+  end
+end

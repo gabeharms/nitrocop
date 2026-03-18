@@ -56,6 +56,18 @@ use ruby_prism::Visit;
 ///    `each_ancestor(:class, :sclass, :module)` which does NOT find blocks.
 ///    Fixed by making ClassNew* contexts transparent (continue) in the callback
 ///    ancestor check.
+///
+/// ## Corpus investigation round 4 (2026-03-18)
+///
+/// Corpus oracle reported FP=0, FN=5. All 5 FNs from concurrent-ruby where
+/// classes inherit from `Synchronization::Object`.
+///
+/// FN root cause: `is_stateless_or_allowed()` extracted the last segment of
+/// qualified constant paths (e.g., `Object` from `Synchronization::Object`)
+/// and compared against STATELESS_CLASSES. RuboCop's `allowed_class?` uses
+/// `node.const_name` which returns the full path — so `Synchronization::Object`
+/// does NOT match "Object". Fixed by comparing the full parent name instead
+/// of just the last segment.
 pub struct MissingSuper;
 
 /// Lifecycle callback method names that require `super`.
@@ -140,20 +152,17 @@ struct MissingSuperVisitor<'a, 'src> {
 
 impl MissingSuperVisitor<'_, '_> {
     fn is_stateless_or_allowed(&self, parent_name: &[u8]) -> bool {
-        // Extract the last segment of the constant path for comparison
-        let last_segment = if let Some(pos) = parent_name.iter().rposition(|&b| b == b':') {
-            &parent_name[pos + 1..]
-        } else {
-            parent_name
-        };
-
-        if STATELESS_CLASSES.contains(&last_segment) {
+        // RuboCop's allowed_class? compares the full const_name (e.g.
+        // "Synchronization::Object") against the allowed list. Only bare
+        // "Object" and "BasicObject" are stateless — qualified paths like
+        // "Synchronization::Object" are NOT stateless.
+        if STATELESS_CLASSES.contains(&parent_name) {
             return true;
         }
         if self
             .allowed_parent_classes
             .iter()
-            .any(|s| s.as_slice() == last_segment)
+            .any(|s| s.as_slice() == parent_name)
         {
             return true;
         }
