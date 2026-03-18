@@ -118,3 +118,18 @@ if foo == 1
 elsif foo.match(/(?<capture>\d+)/)
 elsif foo == 3
 end
+
+# kind_of? should NOT trigger case-when conversion (RuboCop only handles is_a?)
+if range.kind_of?(Array)
+elsif range.kind_of?(Time)
+elsif range.kind_of?(String)
+else
+  raise "invalid"
+end
+
+# kind_of? mixed with other patterns should not be flagged either
+if x.kind_of?(Integer)
+elsif x.kind_of?(Float)
+elsif x.kind_of?(String)
+elsif x.kind_of?(Symbol)
+end

@@ -29,9 +29,10 @@ use crate::parse::source::SourceFile;
 ///   if the last segment is all-uppercase (>1 char). This matches RuboCop's
 ///   `const_reference?` which checks `const_type?` nodes.
 ///
-/// - **`match?` vs `is_a?`**: These are handled differently. `is_a?`/`kind_of?`
-///   always use the receiver as target. `match?`/`match`/`=~` require one side
-///   to be a regexp literal.
+/// - **`match?` vs `is_a?`**: These are handled differently. `is_a?`
+///   always uses the receiver as target. `match?`/`match`/`=~` require one side
+///   to be a regexp literal. Note: `kind_of?` is intentionally excluded —
+///   RuboCop's `find_target_in_send_node` only handles `:is_a?`, not `:kind_of?`.
 ///
 /// ## Corpus findings:
 /// - 352 FPs were from: (1) `match?` grouped with `is_a?` causing non-regexp
@@ -40,6 +41,10 @@ use crate::parse::source::SourceFile;
 /// - 37 FNs were from: (1) `ConstantPathNode` not treated as const_reference,
 ///   (2) parenthesized conditions not deparenthesized, (3) `include?`/`cover?`
 ///   with range not supported.
+/// - 12 FPs (third round): nitrocop handled `kind_of?` as equivalent to `is_a?`,
+///   but RuboCop's `find_target_in_send_node` and `condition_from_send_node` only
+///   handle `:is_a?`. Fix: remove `kind_of?` from both `find_target` and
+///   `is_condition_convertible`.
 /// - 398 FPs (second round): nitrocop was processing `elsif` IfNodes as
 ///   top-level `if` nodes. In Prism, `elsif` branches are nested IfNodes.
 ///   A chain of N branches produced up to N-2 extra offenses when N>=4
@@ -274,8 +279,10 @@ fn find_target(node: &ruby_prism::Node<'_>) -> Option<Vec<u8>> {
     if let Some(call) = node.as_call_node() {
         let method = std::str::from_utf8(call.name().as_slice()).unwrap_or("");
         match method {
-            "is_a?" | "kind_of?" => {
+            "is_a?" => {
                 // Target is receiver: x.is_a?(Foo) -> target = x
+                // Note: RuboCop only handles is_a?, NOT kind_of?, even though they
+                // are aliases. kind_of? calls should not trigger case-when conversion.
                 if let Some(receiver) = call.receiver() {
                     return Some(receiver.location().as_slice().to_vec());
                 }
@@ -363,8 +370,9 @@ fn is_condition_convertible(node: &ruby_prism::Node<'_>, target: &[u8]) -> bool 
     if let Some(call) = node.as_call_node() {
         let method = std::str::from_utf8(call.name().as_slice()).unwrap_or("");
         match method {
-            "is_a?" | "kind_of?" => {
+            "is_a?" => {
                 // Receiver must be the target
+                // Note: kind_of? is intentionally excluded — RuboCop only handles is_a?
                 if let Some(receiver) = call.receiver() {
                     return receiver.location().as_slice() == target;
                 }
