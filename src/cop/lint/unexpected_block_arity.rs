@@ -109,6 +109,16 @@ fn count_block_args(block: &ruby_prism::BlockNode<'_>) -> usize {
         None => return 0,
     };
 
+    // NumberedParametersNode (Ruby 2.7+): `values.reduce { _1 }` — maximum() gives the highest _N used
+    if let Some(numbered) = params.as_numbered_parameters_node() {
+        return numbered.maximum() as usize;
+    }
+
+    // ItParametersNode (Ruby 3.4+): `values.reduce { it }` — always counts as 1 arg
+    if params.as_it_parameters_node().is_some() {
+        return 1;
+    }
+
     let block_params = match params.as_block_parameters_node() {
         Some(bp) => bp,
         None => return 0,
@@ -125,6 +135,8 @@ fn count_block_args(block: &ruby_prism::BlockNode<'_>) -> usize {
     }
 
     // Count positional args (required + optional)
+    // Destructured parameters like |(a, b)| count as 1 positional arg (they appear in requireds())
+    // Keyword-only parameters (a:, b:, **kwargs) are NOT positional args
     parameters.requireds().len() + parameters.optionals().len()
 }
 
