@@ -74,9 +74,9 @@ use ruby_prism::Visit;
 ///   in `requireds()` / `posts()` were not traversed (~42 FN).
 /// - Block-pass params `&block` (`BlockParameterNode`) were not collected (~23 FN).
 /// - Keyword rest params `**opts` (`KeywordRestParameterNode`) were not collected (~30 FN).
-/// Fixed by adding `collect_multi_target_params` for destructured params, and
-/// handling `params.keyword_rest()` and `params.block()` in both param collection
-/// and shadowing name collection.
+///   Fixed by adding `collect_multi_target_params` for destructured params, and
+///   handling `params.keyword_rest()` and `params.block()` in both param collection
+///   and shadowing name collection.
 pub struct UnusedBlockArgument;
 
 impl Cop for UnusedBlockArgument {
