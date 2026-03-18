@@ -1,4 +1,7 @@
-use crate::cop::node_type::{CALL_NODE, EMBEDDED_STATEMENTS_NODE, INTERPOLATED_STRING_NODE};
+use crate::cop::node_type::{
+    CALL_NODE, EMBEDDED_STATEMENTS_NODE, INTERPOLATED_REGULAR_EXPRESSION_NODE,
+    INTERPOLATED_STRING_NODE, INTERPOLATED_SYMBOL_NODE, INTERPOLATED_X_STRING_NODE,
+};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
@@ -12,6 +15,20 @@ use crate::parse::source::SourceFile;
 /// - RuboCop's `on_send` checks `node.receiver` is nil, so `$stdout.puts x.to_s`
 ///   and `obj.print x.to_s` are NOT flagged.
 /// - The FN=103 from the corpus were all `puts x.to_s` patterns in bare calls.
+///
+/// ## FN fixes (2026-03)
+/// Three root causes for FN=50:
+/// 1. Bare `.to_s` (implicit receiver / no receiver) in interpolation and print
+///    calls was not detected — `to_s` without a receiver is a CallNode with
+///    `receiver().is_none()`. RuboCop uses a different message: "Use `self`
+///    instead of `Object#to_s`".
+/// 2. Interpolation in regex (`/#{x.to_s}/`), backtick xstring (`` `#{x.to_s}` ``),
+///    and symbol (`:"#{x.to_s}"`) was not checked — only InterpolatedStringNode
+///    was handled. Added InterpolatedRegularExpressionNode, InterpolatedXStringNode,
+///    and InterpolatedSymbolNode.
+/// 3. Multi-expression interpolation `#{top; result.to_s}` — RuboCop checks the
+///    *last* statement, not requiring exactly one statement. Fixed by checking
+///    body.last() instead of requiring body.len() == 1.
 pub struct RedundantStringCoercion;
 
 const PRINT_METHODS: &[&[u8]] = &[b"puts", b"print", b"warn"];
@@ -29,7 +46,10 @@ impl Cop for RedundantStringCoercion {
         &[
             CALL_NODE,
             EMBEDDED_STATEMENTS_NODE,
+            INTERPOLATED_REGULAR_EXPRESSION_NODE,
             INTERPOLATED_STRING_NODE,
+            INTERPOLATED_SYMBOL_NODE,
+            INTERPOLATED_X_STRING_NODE,
         ]
     }
 
@@ -43,6 +63,21 @@ impl Cop for RedundantStringCoercion {
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if let Some(interp) = node.as_interpolated_string_node() {
+            self.check_interpolation(source, &interp.parts(), diagnostics);
+            return;
+        }
+
+        if let Some(interp) = node.as_interpolated_regular_expression_node() {
+            self.check_interpolation(source, &interp.parts(), diagnostics);
+            return;
+        }
+
+        if let Some(interp) = node.as_interpolated_x_string_node() {
+            self.check_interpolation(source, &interp.parts(), diagnostics);
+            return;
+        }
+
+        if let Some(interp) = node.as_interpolated_symbol_node() {
             self.check_interpolation(source, &interp.parts(), diagnostics);
             return;
         }
@@ -72,16 +107,17 @@ impl RedundantStringCoercion {
             };
 
             let body = statements.body();
-            if body.len() != 1 {
+            if body.is_empty() {
                 continue;
             }
 
-            let first = match body.first() {
+            // RuboCop checks the last expression in multi-statement interpolation
+            let last = match body.last() {
                 Some(n) => n,
                 None => continue,
             };
 
-            let call = match first.as_call_node() {
+            let call = match last.as_call_node() {
                 Some(c) => c,
                 None => continue,
             };
@@ -94,14 +130,15 @@ impl RedundantStringCoercion {
                 continue;
             }
 
+            let implicit_receiver = call.receiver().is_none();
             let loc = call.message_loc().unwrap_or(call.location());
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
-                source,
-                line,
-                column,
-                "Redundant use of `Object#to_s` in interpolation.".to_string(),
-            ));
+            let message = if implicit_receiver {
+                "Use `self` instead of `Object#to_s` in interpolation.".to_string()
+            } else {
+                "Redundant use of `Object#to_s` in interpolation.".to_string()
+            };
+            diagnostics.push(self.diagnostic(source, line, column, message));
         }
     }
 
@@ -143,14 +180,15 @@ impl RedundantStringCoercion {
                 continue;
             }
 
+            let implicit_receiver = arg_call.receiver().is_none();
             let loc = arg_call.message_loc().unwrap_or(arg_call.location());
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
-                source,
-                line,
-                column,
-                format!("Redundant use of `Object#to_s` in `{method_name_str}`."),
-            ));
+            let message = if implicit_receiver {
+                format!("Use `self` instead of `Object#to_s` in `{method_name_str}`.")
+            } else {
+                format!("Redundant use of `Object#to_s` in `{method_name_str}`.")
+            };
+            diagnostics.push(self.diagnostic(source, line, column, message));
         }
     }
 }
