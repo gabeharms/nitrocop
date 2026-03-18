@@ -61,5 +61,17 @@ do_something(<<~"EOS")
   text with #$global_var patterns
 EOS
 
+code = <<-"CODE"
+1 2\n3
+      CODE
+
+code = <<-"CODE"
+"x\\\\u{1f452}y"
+      CODE
+
+code = <<-"CODE"
+# \u{0400}\na
+      CODE
+
 x = 1
 y = 2
