@@ -6,6 +6,14 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// FP investigation (2026-03):
+/// - Root cause: block parameters were not tracked as local variables. When a block
+///   parameter shadowed a method name (e.g., `|state|` shadowing a `state` method),
+///   `self.state` inside the block was incorrectly flagged as redundant.
+/// - Fix: added `visit_block_node` and `visit_lambda_node` to push a new scope with
+///   block/lambda parameters, so `self.x` is allowed when block param `x` is in scope.
+/// - Common pattern: `define_method` blocks where the outer block parameter shadows the
+///   method being defined (e.g., `STATUSES.each { |status| define_method(...) { self.status } }`).
 pub struct RedundantSelf;
 
 /// Methods where self. is always required (Ruby keywords).
@@ -473,6 +481,46 @@ impl<'pr> Visit<'pr> for RedundantSelfVisitor<'_> {
             self.visit(&body);
         }
         self.allowed_self_methods = saved;
+        self.local_scopes.pop();
+    }
+
+    fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
+        // Block parameters shadow method names — `self.x` is required for
+        // disambiguation when a block parameter `x` is in scope.
+        // Push a new scope for block params (they are block-local).
+        self.local_scopes.push(HashSet::new());
+
+        if let Some(params) = node.parameters() {
+            if let Some(block_params) = params.as_block_parameters_node() {
+                if let Some(inner_params) = block_params.parameters() {
+                    self.collect_params_from_node(&inner_params);
+                }
+            }
+        }
+
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+
+        self.local_scopes.pop();
+    }
+
+    fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
+        // Lambda parameters work the same as block parameters for scoping.
+        self.local_scopes.push(HashSet::new());
+
+        if let Some(params) = node.parameters() {
+            if let Some(block_params) = params.as_block_parameters_node() {
+                if let Some(inner_params) = block_params.parameters() {
+                    self.collect_params_from_node(&inner_params);
+                }
+            }
+        }
+
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+
         self.local_scopes.pop();
     }
 }

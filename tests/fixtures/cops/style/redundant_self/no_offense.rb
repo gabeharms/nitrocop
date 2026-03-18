@@ -111,6 +111,26 @@ def test_kernel_methods
   self.Rational(1, 3)
 end
 
+# Block parameter shadows method name - self is required for disambiguation
+%w[draft preview moderation approved rejected].each do |state|
+  self.state == state
+  define_method "#{state}?" do
+    self.state == state
+  end
+end
+
+# define_method block param shadows method name
+STATUSES.each do |status|
+  define_method("is_#{status}?") do
+    self.status == status
+  end
+end
+
+# Block param shadows method in simple iteration
+BLOCKED_OBJECT_TYPES.each_value do |object_type|
+  define_method("#{object_type}?") { self.object_type == object_type }
+end
+
 # Uppercase method names - could be confused with constants
 def test_uppercase_methods
   self.Foo
