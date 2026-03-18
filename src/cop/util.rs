@@ -1459,8 +1459,26 @@ pub fn is_private_or_protected(source: &SourceFile, def_offset: usize) -> bool {
     // Only consider lines at the same indentation level as the def.
     // When we see `class`, `module`, or `end` at lower indentation, reset state
     // (those indicate scope boundaries).
+    //
+    // Peer scope tracking: when we see `class`/`module`/`class <<` at indent == def_col,
+    // we're entering a peer scope (another class/module at the same level as the def).
+    // Any `private` inside that peer scope should NOT affect our def. We track this with
+    // `peer_scope_depth`: when > 0, we're inside a peer scope and skip visibility updates.
+    //
+    // Example (mongomapper pattern):
+    //   module ClassMethods  ← peer scope opener at def_col
+    //     private            ← inside peer scope, ignored
+    //   end                  ← peer scope closer, depth→0
+    //   def associations     ← NOT private
+    //
+    // Compare with: `private` before a peer class/module still applies:
+    //   private              ← depth=0, sets in_private
+    //   class Inner          ← depth=1 (but we already set in_private)
+    //   end                  ← depth=0
+    //   def method           ← IS private (private was set before Inner)
     let lines: Vec<&[u8]> = source.lines().collect();
     let mut in_private = false;
+    let mut peer_scope_depth = 0usize;
     for line in &lines[..def_line] {
         let indent = line
             .iter()
@@ -1476,34 +1494,55 @@ pub fn is_private_or_protected(source: &SourceFile, def_offset: usize) -> bool {
             .map_or(0, |p| p + 1);
         let trimmed: &[u8] = &raw_trimmed[..end_pos];
 
-        // Scope boundary: class/module at STRICTLY lower indent resets private state.
-        // A nested class/module at the same indent is a peer within the current scope
-        // and does NOT reset visibility — e.g., `private` followed by `class Inner` then
-        // `def method` at the same indent level keeps the method private.
-        // `end` also resets only at strictly lower indent.
-        if indent < def_col && (trimmed.starts_with(b"class ") || trimmed.starts_with(b"module ")) {
-            in_private = false;
-        }
-        if indent < def_col
-            && (trimmed == b"end" || trimmed.starts_with(b"end ") || trimmed.starts_with(b"end;"))
-        {
-            in_private = false;
+        // Track peer scope depth for class/module/class<< bodies at indent == def_col.
+        // These are sibling scopes — their internal `private` doesn't affect our def.
+        if indent == def_col {
+            if trimmed.starts_with(b"class ") || trimmed.starts_with(b"module ") {
+                peer_scope_depth += 1;
+            } else if peer_scope_depth > 0
+                && (trimmed == b"end"
+                    || trimmed.starts_with(b"end ")
+                    || trimmed.starts_with(b"end;"))
+            {
+                peer_scope_depth -= 1;
+            }
         }
 
-        // Consider private/protected/public at the same or lower indent level
-        // within the same scope. Ruby allows `private` at a lower indent than
-        // the methods it affects (e.g., `private` + indented `def`). Scope
-        // boundaries (class/module/end) already reset `in_private` above.
-        // Note: trailing whitespace is already stripped from `trimmed`.
-        if indent <= def_col {
-            if trimmed == b"private"
-                || trimmed.starts_with(b"private #")
-                || trimmed == b"protected"
-                || trimmed.starts_with(b"protected #")
+        // Only update visibility state when NOT inside a peer scope.
+        if peer_scope_depth == 0 {
+            // Scope boundary: class/module at STRICTLY lower indent resets private state.
+            // A nested class/module at the same indent is a peer within the current scope
+            // and does NOT reset visibility — e.g., `private` followed by `class Inner` then
+            // `def method` at the same indent level keeps the method private.
+            // `end` also resets only at strictly lower indent.
+            if indent < def_col
+                && (trimmed.starts_with(b"class ") || trimmed.starts_with(b"module "))
             {
-                in_private = true;
-            } else if trimmed == b"public" || trimmed.starts_with(b"public #") {
                 in_private = false;
+            }
+            if indent < def_col
+                && (trimmed == b"end"
+                    || trimmed.starts_with(b"end ")
+                    || trimmed.starts_with(b"end;"))
+            {
+                in_private = false;
+            }
+
+            // Consider private/protected/public at the same or lower indent level
+            // within the same scope. Ruby allows `private` at a lower indent than
+            // the methods it affects (e.g., `private` + indented `def`). Scope
+            // boundaries (class/module/end) already reset `in_private` above.
+            // Note: trailing whitespace is already stripped from `trimmed`.
+            if indent <= def_col {
+                if trimmed == b"private"
+                    || trimmed.starts_with(b"private #")
+                    || trimmed == b"protected"
+                    || trimmed.starts_with(b"protected #")
+                {
+                    in_private = true;
+                } else if trimmed == b"public" || trimmed.starts_with(b"public #") {
+                    in_private = false;
+                }
             }
         }
     }
