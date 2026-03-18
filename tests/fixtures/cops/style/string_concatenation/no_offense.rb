@@ -15,3 +15,18 @@ request.path + "?sort=#{field}&order=#{order}"
 # Interpolated string on LHS with non-literal RHS
 "#{index} " + user.email
 rule_message + "\n#{explanation}"
+
+# Heredoc concatenation — not flagged (can't convert to interpolation)
+code = <<EOM + code
+hostname = Socket.gethostname
+EOM
+
+conf = @basic_conf + <<CONF
+<match fluent.**>
+  @type stdout
+</match>
+CONF
+
+result = header + <<~HEREDOC
+  some content here
+HEREDOC

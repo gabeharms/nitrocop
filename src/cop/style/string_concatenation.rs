@@ -3,6 +3,11 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (FP=119): nitrocop was flagging string concatenation where one
+/// operand is a heredoc (e.g., `<<EOM + code`, `@conf + <<CONF`). RuboCop does not flag
+/// these because heredocs cannot be converted to string interpolation. Fixed by checking
+/// if either operand is a heredoc (StringNode or InterpolatedStringNode with `<<` opening)
+/// and skipping the offense.
 pub struct StringConcatenation;
 
 impl StringConcatenation {
@@ -11,6 +16,23 @@ impl StringConcatenation {
         // RuboCop's node matcher uses str_type? which excludes dstr, so `foo + "#{bar}"`
         // is not flagged when neither side is a plain string literal.
         node.as_string_node().is_some()
+    }
+
+    /// Check if either operand is a heredoc. In Prism, heredocs are StringNode or
+    /// InterpolatedStringNode whose opening starts with `<<`. RuboCop does not flag
+    /// concatenation involving heredocs because they can't be converted to interpolation.
+    fn is_heredoc(node: &ruby_prism::Node<'_>) -> bool {
+        if let Some(s) = node.as_string_node() {
+            return s
+                .opening_loc()
+                .is_some_and(|loc| loc.as_slice().starts_with(b"<<"));
+        }
+        if let Some(s) = node.as_interpolated_string_node() {
+            return s
+                .opening_loc()
+                .is_some_and(|loc| loc.as_slice().starts_with(b"<<"));
+        }
+        false
     }
 
     /// Check if the + call spans multiple lines (line-end concatenation)
@@ -109,6 +131,19 @@ impl Cop for StringConcatenation {
                 if Self::is_string_concat(&recv_call) {
                     return;
                 }
+            }
+        }
+
+        // Skip concatenation involving heredocs — can't convert to interpolation
+        if let Some(receiver) = call.receiver() {
+            if Self::is_heredoc(&receiver) {
+                return;
+            }
+        }
+        if let Some(args) = call.arguments() {
+            let arg_list: Vec<_> = args.arguments().iter().collect();
+            if !arg_list.is_empty() && Self::is_heredoc(&arg_list[0]) {
+                return;
             }
         }
 
