@@ -51,6 +51,14 @@ use crate::parse::source::SourceFile;
 ///   (with MinBranchesCount=3). Fix: skip nodes whose `if_keyword_loc`
 ///   starts with "elsif" or "unless", and skip modifier if (no end keyword)
 ///   and ternary (no if_keyword_loc). This matches RuboCop's `should_check?`.
+/// - 4 FPs / 6 FNs (fourth round): (1) FPs from safe navigation (`&.`) —
+///   Prism merges `send` and `csend` into `CallNode`, but RuboCop's
+///   `find_target_in_send_node` and `condition_from_send_node` only handle
+///   `:send`, not `:csend`. Fix: skip CallNodes with `call_operator()` containing
+///   `&.`. (2) FNs from interpolated regexps — Prism uses separate
+///   `InterpolatedRegularExpressionNode` for `/#{...}/`, but Parser AST uses
+///   `:regexp` for both. Fix: check `as_interpolated_regular_expression_node()`
+///   alongside `as_regular_expression_node()` in all regexp checks.
 pub struct CaseLikeIf;
 
 impl Cop for CaseLikeIf {
@@ -268,6 +276,26 @@ fn with_unwrapped<R>(node: &ruby_prism::Node<'_>, f: &dyn Fn(&ruby_prism::Node<'
     f(node)
 }
 
+/// Check if a node is any kind of regexp (regular or interpolated).
+/// In Parser AST, both are `:regexp`. In Prism, they're separate node types.
+fn is_regexp_node(node: &ruby_prism::Node<'_>) -> bool {
+    node.as_regular_expression_node().is_some()
+        || node.as_interpolated_regular_expression_node().is_some()
+}
+
+/// Check if a CallNode uses safe navigation (`&.`).
+/// RuboCop treats `csend` (safe navigation) as a different node type from `send`,
+/// and `find_target_in_send_node`/`condition_from_send_node` only handle `:send`.
+fn is_safe_navigation(call: &ruby_prism::CallNode<'_>) -> bool {
+    if let Some(op_loc) = call.call_operator_loc() {
+        let op =
+            &call.location().as_slice()[op_loc.start_offset() - call.location().start_offset()..];
+        op.starts_with(b"&.")
+    } else {
+        false
+    }
+}
+
 /// Extract the target from a condition node (RuboCop's `find_target`).
 /// Returns the source bytes of the target expression.
 fn find_target(node: &ruby_prism::Node<'_>) -> Option<Vec<u8>> {
@@ -277,6 +305,10 @@ fn find_target(node: &ruby_prism::Node<'_>) -> Option<Vec<u8>> {
     }
 
     if let Some(call) = node.as_call_node() {
+        // Skip safe navigation (&.) — RuboCop only handles :send, not :csend
+        if is_safe_navigation(&call) {
+            return None;
+        }
         let method = std::str::from_utf8(call.name().as_slice()).unwrap_or("");
         match method {
             "is_a?" => {
@@ -327,7 +359,7 @@ fn find_target_in_equality_node(call: &ruby_prism::CallNode<'_>) -> Option<Vec<u
 }
 
 /// For `=~`/`match`/`match?`, find the target (non-regexp side).
-/// Requires one side to be a regexp literal.
+/// Requires one side to be a regexp literal (regular or interpolated).
 fn find_target_in_match_node(call: &ruby_prism::CallNode<'_>) -> Option<Vec<u8>> {
     let receiver = call.receiver()?;
     let args = call.arguments();
@@ -335,9 +367,9 @@ fn find_target_in_match_node(call: &ruby_prism::CallNode<'_>) -> Option<Vec<u8>>
 
     // For all match methods: one side must be a regexp, the other is the target
     if let Some(ref arg) = first_arg {
-        if receiver.as_regular_expression_node().is_some() {
+        if is_regexp_node(&receiver) {
             return Some(arg.location().as_slice().to_vec());
-        } else if arg.as_regular_expression_node().is_some() {
+        } else if is_regexp_node(arg) {
             return Some(receiver.location().as_slice().to_vec());
         }
     }
@@ -368,6 +400,10 @@ fn is_condition_convertible(node: &ruby_prism::Node<'_>, target: &[u8]) -> bool 
     }
 
     if let Some(call) = node.as_call_node() {
+        // Skip safe navigation (&.) — RuboCop only handles :send, not :csend
+        if is_safe_navigation(&call) {
+            return false;
+        }
         let method = std::str::from_utf8(call.name().as_slice()).unwrap_or("");
         match method {
             "is_a?" => {
@@ -474,7 +510,7 @@ fn is_literal(node: &ruby_prism::Node<'_>) -> bool {
         || node.as_nil_node().is_some()
         || node.as_true_node().is_some()
         || node.as_false_node().is_some()
-        || node.as_regular_expression_node().is_some()
+        || is_regexp_node(node)
         || node.as_array_node().is_some()
 }
 

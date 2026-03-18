@@ -58,3 +58,24 @@ elsif x == 3
 elsif x == 4
 elsif x == 5
 end
+
+# Interpolated regexp with =~ should be detected
+if method =~ /^#{prefix}s$/
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/CaseLikeIf: Convert `if-elsif` to `case-when`.
+elsif method =~ /^#{prefix}$/
+elsif method =~ /^first_#{prefix}$/
+end
+
+# Interpolated regexp with match? should be detected
+if /#{pattern}/.match?(str)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/CaseLikeIf: Convert `if-elsif` to `case-when`.
+elsif str.match?(/#{other}/)
+elsif str.match?(/plain/)
+end
+
+# Mix of interpolated and non-interpolated regexp
+if /foo/ =~ line
+^^^^^^^^^^^^^^^^ Style/CaseLikeIf: Convert `if-elsif` to `case-when`.
+elsif line =~ /#{pattern}/
+elsif /baz/ =~ line
+end

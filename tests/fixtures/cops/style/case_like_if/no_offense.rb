@@ -133,3 +133,18 @@ elsif x.kind_of?(Float)
 elsif x.kind_of?(String)
 elsif x.kind_of?(Symbol)
 end
+
+# Safe navigation (&.) conditions are not convertible (RuboCop treats csend differently from send)
+if default_pre == "'"
+  :string
+elsif default_pre&.match?(/^\d+$/)
+  :integer
+elsif default_pre&.match?(/^[A-z]+$/)
+  :function
+end
+
+# Safe navigation in equality is also not convertible
+if x == 1
+elsif x&.==(2)
+elsif x == 3
+end
