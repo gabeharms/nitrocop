@@ -70,7 +70,10 @@ fn is_empty_array_value(value: &ruby_prism::Node<'_>) -> bool {
             // `Array.new` or `Array.new([])`  or  `Array[]`
             let is_array_const = receiver
                 .as_constant_read_node()
-                .is_some_and(|c| c.name().as_slice() == b"Array");
+                .is_some_and(|c| c.name().as_slice() == b"Array")
+                || receiver
+                    .as_constant_path_node()
+                    .is_some_and(|cp| cp.name().is_some_and(|n| n.as_slice() == b"Array"));
             if is_array_const {
                 if method == b"new" {
                     // Array.new or Array.new([])
