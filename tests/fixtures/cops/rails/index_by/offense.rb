@@ -22,3 +22,7 @@ x.to_h { [_1.to_sym, _1] }
 
 Hash[x.map { [_1.to_sym, _1] }]
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/IndexBy: Use `index_by` instead of `Hash[map { ... }]`.
+
+# `it` implicit parameter with bracket-access key — ubicloud corpus pattern
+labels.to_h { [it["name"], it] }
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/IndexBy: Use `index_by` instead of `to_h { ... }`.

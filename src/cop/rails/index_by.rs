@@ -22,6 +22,15 @@ use crate::parse::source::SourceFile;
 /// Added `is_index_by_block_numbered` and `is_index_by_block_it` helpers to cover these cases.
 /// The `each_with_object` pattern only applies to explicit two-argument blocks (no numblock/itblock
 /// support needed since you can't destructure two params as numbered params).
+///
+/// ## Investigation (2026-03-18) — FN=2
+///
+/// Root cause: `is_index_by_block_it` checked for `LocalVariableReadNode` named `it` for the
+/// second element, but Prism 1.9.0 (the Rust crate version) represents the `it` implicit
+/// parameter body usage as `ItLocalVariableReadNode`, NOT `LocalVariableReadNode`. Corpus FNs
+/// were both `to_h { [it["name"], it] }` patterns in ubicloud/ubicloud (Ruby 3.4+ syntax).
+/// Fix: check for `ItLocalVariableReadNode` first, with fallback to `LocalVariableReadNode`
+/// named `it` for older Prism versions.
 pub struct IndexBy;
 
 /// Check if the block body is an array literal `[key_expr, block_param]`
@@ -517,59 +526,5 @@ mod tests {
             "to_h {{ [it[key], it] }} should be flagged: {:?}",
             diags
         );
-    }
-
-    #[test]
-    fn debug_it_params() {
-        // Debug test to understand how Prism parses { [it["name"], it] }
-        use ruby_prism::Visit;
-        struct Dbg {
-            has_it_params: bool,
-            second_is_it_local_node: bool,
-            second_elem_is_lvar_it: bool,
-            second_elem_is_call_it: bool,
-        }
-        impl<'pr> Visit<'pr> for Dbg {
-            fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
-                let params = node.parameters();
-                if let Some(p) = params {
-                    self.has_it_params = p.as_it_parameters_node().is_some();
-                }
-                if let Some(body) = node.body() {
-                    if let Some(stmts) = body.as_statements_node() {
-                        for stmt in stmts.body().iter() {
-                            if let Some(arr) = stmt.as_array_node() {
-                                let elems: Vec<_> = arr.elements().iter().collect();
-                                if elems.len() == 2 {
-                                    let second = &elems[1];
-                                    if let Some(lv) = second.as_local_variable_read_node() {
-                                        self.second_elem_is_lvar_it = lv.name().as_slice() == b"it";
-                                    }
-                                    if let Some(c) = second.as_call_node() {
-                                        self.second_elem_is_call_it = c.name().as_slice() == b"it";
-                                    }
-                                    // Check for ItLocalVariableReadNode
-                                    self.second_is_it_local_node = second.as_it_local_variable_read_node().is_some();
-                                }
-                            }
-                        }
-                    }
-                }
-                ruby_prism::visit_block_node(self, node);
-            }
-        }
-        let source = b"labels.to_h { [it[\"name\"], it] }\n";
-        let pr = ruby_prism::parse(source);
-        let mut dbg = Dbg {
-            has_it_params: false,
-            second_is_it_local_node: false,
-            second_elem_is_lvar_it: false,
-            second_elem_is_call_it: false,
-        };
-        dbg.visit(&pr.node());
-
-        // Print Prism parse structure for debugging
-        println!("has_it_params={}, second_is_it_local_node={}, second_elem_is_lvar_it={}, second_elem_is_call_it={}",
-            dbg.has_it_params, dbg.second_is_it_local_node, dbg.second_elem_is_lvar_it, dbg.second_elem_is_call_it);
     }
 }
