@@ -123,6 +123,23 @@ use crate::parse::source::SourceFile;
 /// Fix: Changed `if_has_empty_body_and_empty_else` to `if_has_empty_body_and_empty_else`,
 /// which only skips when both branches are empty. This fixes 11 FNs across
 /// jruby (9 nested `if true;` with empty else) and rufo (2 `if 1; 2; else; end`).
+///
+/// ## Corpus investigation (2026-03-18, round 2)
+///
+/// Corpus oracle reported FP=4, FN=0.
+///
+/// FP root cause: RuboCop 1.84.2 crashes on ANY `if`/`unless` with a literal
+/// condition and an explicit `else` clause with an empty body, regardless of
+/// whether the then-body is empty or non-empty. The previous fix was wrong:
+/// it only skipped when BOTH branches were empty, but the crash occurs whenever
+/// the else-body is empty.
+///
+/// Examples from corpus:
+/// - jruby/natalie: `if false; 123; else; end.should == nil`
+/// - rufo: `unless 1; 2; else; end`
+///
+/// Fix: Changed `if_has_empty_body_and_empty_else` to `if_has_empty_else`,
+/// which skips whenever the explicit else branch has an empty body.
 pub struct LiteralAsCondition;
 
 /// Check if a node is a literal value (matches RuboCop's `literal?`).
@@ -256,14 +273,11 @@ fn statements_are_empty(statements: Option<ruby_prism::StatementsNode<'_>>) -> b
     }
 }
 
-/// RuboCop 1.84.2 crashes (emits no offense) only when BOTH the then-body
-/// AND the else-body are empty, e.g. `if true; else; end`.
-/// When the then-body is non-empty (e.g. `if true; nested; else; end`), RuboCop
-/// correctly flags the literal condition.
-fn if_has_empty_body_and_empty_else(if_node: &ruby_prism::IfNode<'_>) -> bool {
-    if !statements_are_empty(if_node.statements()) {
-        return false;
-    }
+/// RuboCop 1.84.2 crashes (emits no offense) when an `if`/`unless` has a
+/// literal condition and an explicit `else` branch with an empty body,
+/// regardless of whether the then-body is empty or non-empty.
+/// Examples: `if true; else; end`, `if false; 123; else; end`.
+fn if_has_empty_else(if_node: &ruby_prism::IfNode<'_>) -> bool {
     if let Some(subsequent) = if_node.subsequent() {
         if let Some(else_node) = subsequent.as_else_node() {
             return statements_are_empty(else_node.statements());
@@ -272,10 +286,7 @@ fn if_has_empty_body_and_empty_else(if_node: &ruby_prism::IfNode<'_>) -> bool {
     false
 }
 
-fn unless_has_empty_body_and_empty_else(unless_node: &ruby_prism::UnlessNode<'_>) -> bool {
-    if !statements_are_empty(unless_node.statements()) {
-        return false;
-    }
+fn unless_has_empty_else(unless_node: &ruby_prism::UnlessNode<'_>) -> bool {
     if let Some(else_node) = unless_node.else_clause() {
         return statements_are_empty(else_node.statements());
     }
@@ -372,7 +383,7 @@ impl Cop for LiteralAsCondition {
             if is_pattern_matching_guard(source, node) {
                 return;
             }
-            if if_has_empty_body_and_empty_else(&if_node) {
+            if if_has_empty_else(&if_node) {
                 return;
             }
             let predicate = if_node.predicate();
@@ -389,7 +400,7 @@ impl Cop for LiteralAsCondition {
             if is_pattern_matching_guard(source, node) {
                 return;
             }
-            if unless_has_empty_body_and_empty_else(&unless_node) {
+            if unless_has_empty_else(&unless_node) {
                 return;
             }
             let predicate = unless_node.predicate();
@@ -589,12 +600,14 @@ mod tests {
     }
 
     #[test]
-    fn test_if_literal_semicolon_else_end() {
+    fn test_if_literal_semicolon_else_end_no_offense() {
+        // RuboCop 1.84.2 crashes on literal condition with empty else body
         let cop = LiteralAsCondition;
         let diags = crate::testutil::run_cop_full(&cop, b"if 1; 2; else; end\n");
         assert!(
-            !diags.is_empty(),
-            "should detect literal in 'if 1; 2; else; end' but got no diagnostics"
+            diags.is_empty(),
+            "should NOT detect literal in 'if 1; 2; else; end' (RuboCop crash) but got: {:?}",
+            diags
         );
     }
 }

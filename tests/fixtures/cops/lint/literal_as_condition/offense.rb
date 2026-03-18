@@ -154,19 +154,6 @@ if :"#{a}"
   top
 end
 
-# Literal with non-empty body and empty else (RuboCop flags these)
-if false
-   ^^^^^ Lint/LiteralAsCondition: Literal `false` appeared as a condition.
-  123
-else
-end
-
-unless 1
-       ^ Lint/LiteralAsCondition: Literal `1` appeared as a condition.
-  2
-else
-end
-
 # Semicolons after condition: if true; nested; else; end
 if true;
    ^^^^ Lint/LiteralAsCondition: Literal `true` appeared as a condition.
@@ -176,6 +163,3 @@ if true;
   end
 end
 
-# Single-line if with literal, body, and empty else
-if 1; 2; else; end
-   ^ Lint/LiteralAsCondition: Literal `1` appeared as a condition.
