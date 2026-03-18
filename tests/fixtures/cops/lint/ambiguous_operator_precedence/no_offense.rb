@@ -13,3 +13,7 @@ a && (b | c)
 a || (b & c)
 array << i and return
 array << i or return
+a or b and c
+a and b and c
+a or b or c
+(a and b) or c

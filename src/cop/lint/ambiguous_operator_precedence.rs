@@ -16,6 +16,14 @@ use crate::parse::source::SourceFile;
 /// - In Prism, `||`/`&&` produce `OrNode`/`AndNode` (not `CallNode`), so we
 ///   check from the parent side: when visiting `OrNode`/`AndNode`, flag any
 ///   `CallNode` children that are arithmetic/bitwise operators.
+/// - FN fix (2026-03): Keyword `and`/`or` mixing was missed because the cop
+///   skipped keyword forms entirely. RuboCop's `on_and` flags an `and` node
+///   (keyword or symbolic) when its parent is an `or` node. We now handle this
+///   by checking for AndNode children inside keyword `or` nodes. Keyword `or`
+///   only checks for logical children (not arithmetic), matching RuboCop's
+///   behavior where `array << i or return` is allowed but `a and b or c` is
+///   flagged. Also added OrNode to child detection (for completeness, though
+///   OR_PREC is already the highest so it never triggers `cp < parent_prec`).
 pub struct AmbiguousOperatorPrecedence;
 
 // Precedence levels (lower index = higher precedence).
@@ -69,30 +77,36 @@ impl Cop for AmbiguousOperatorPrecedence {
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if let Some(or_node) = node.as_or_node() {
-            // Skip keyword `or` — only symbolic `||` triggers this cop
-            if or_node.operator_loc().as_slice() == b"||" {
-                self.check_logical_children(
-                    source,
-                    or_node.left(),
-                    or_node.right(),
-                    OR_PREC,
-                    diagnostics,
-                );
-            }
+            let is_symbolic = or_node.operator_loc().as_slice() == b"||";
+            // Both symbolic `||` and keyword `or` check for AndNode children
+            // (mixed logical precedence). Only symbolic `||` also checks for
+            // arithmetic CallNode children (mixed arithmetic/logical).
+            self.check_logical_children(
+                source,
+                or_node.left(),
+                or_node.right(),
+                OR_PREC,
+                is_symbolic,
+                diagnostics,
+            );
             return;
         }
 
         if let Some(and_node) = node.as_and_node() {
-            // Skip keyword `and` — only symbolic `&&` triggers this cop
-            if and_node.operator_loc().as_slice() == b"&&" {
-                self.check_logical_children(
-                    source,
-                    and_node.left(),
-                    and_node.right(),
-                    AND_PREC,
-                    diagnostics,
-                );
-            }
+            let is_symbolic = and_node.operator_loc().as_slice() == b"&&";
+            // Symbolic `&&` checks for arithmetic CallNode children.
+            // Keyword `and` has no higher-precedence logical children to check
+            // (it's already the highest keyword logical precedence), so
+            // is_symbolic=false means no children will be flagged here.
+            // Its mixing with `or` is caught when the parent OrNode is visited.
+            self.check_logical_children(
+                source,
+                and_node.left(),
+                and_node.right(),
+                AND_PREC,
+                is_symbolic,
+                diagnostics,
+            );
             return;
         }
 
@@ -150,19 +164,29 @@ impl Cop for AmbiguousOperatorPrecedence {
 impl AmbiguousOperatorPrecedence {
     /// Check children of an OrNode or AndNode for higher-precedence operators.
     /// `parent_prec` is OR_PREC (7) for OrNode, AND_PREC (6) for AndNode.
+    /// `check_arithmetic` controls whether CallNode (arithmetic/bitwise) children
+    /// are checked. Keyword `and`/`or` only flag logical mixing (AndNode inside
+    /// OrNode), while symbolic `&&`/`||` also flag arithmetic children.
     fn check_logical_children(
         &self,
         source: &SourceFile,
         left: ruby_prism::Node<'_>,
         right: ruby_prism::Node<'_>,
         parent_prec: usize,
+        check_arithmetic: bool,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         for child in [left, right] {
             let child_prec = if child.as_and_node().is_some() {
                 Some(AND_PREC)
-            } else if let Some(call) = child.as_call_node() {
-                precedence_level(call.name().as_slice())
+            } else if child.as_or_node().is_some() {
+                Some(OR_PREC)
+            } else if check_arithmetic {
+                if let Some(call) = child.as_call_node() {
+                    precedence_level(call.name().as_slice())
+                } else {
+                    None
+                }
             } else {
                 None
             };
