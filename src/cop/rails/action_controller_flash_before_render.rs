@@ -28,6 +28,19 @@
 ///   nested node's remaining siblings within its current branch context instead.
 /// - Root cause 9 (FN): `UnlessNode` was not handled — Prism has separate `UnlessNode` and
 ///   `IfNode` types. Added unless handling in all places that handle if.
+/// - Root cause 10 (FP=13): In respond_to format blocks (format.html do...end), the
+///   is_if_rescue_branch flag was propagated through blocks, causing render in sibling format
+///   blocks (e.g. format.api) to be treated as the if ancestor's right_siblings. Fixed by
+///   making blocks transparent: when in if/rescue context, blocks inherit the if/rescue's
+///   outer_siblings rather than the block's own sibling format blocks.
+/// - Root cause 11 (FN=11): Else clauses in check_if_node_impl were passed empty outer_siblings
+///   (&[]) instead of the if node's outer_siblings. Flash in else branches couldn't see render
+///   in the if node's right siblings (e.g. respond_to with render after if/else). Fixed by
+///   passing outer_siblings through to else clause processing.
+/// - Root cause 12 (FN): Implicit render in block bodies (flash alone in each/tap blocks) was
+///   not detected. When inner_remaining is empty in a block, used outer_has_render instead of
+///   the implicit render check (!outer_has_redirect). Fixed to match RuboCop's
+///   context.right_siblings.empty? && !use_redirect_to?(context.parent) logic.
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
@@ -286,7 +299,9 @@ impl FlashVisitor<'_> {
                             }
                         }
                     }
-                    self.check_branch_stmts_with_outer(&body_nodes, &[], true);
+                    // Pass outer_siblings so else branch can see the if node's
+                    // outer context (e.g., render/respond_to after the if/else).
+                    self.check_branch_stmts_with_outer(&body_nodes, outer_siblings, true);
                 }
             }
         }
@@ -382,8 +397,11 @@ impl FlashVisitor<'_> {
                     if inner_has_render {
                         true
                     } else if inner_remaining.is_empty() {
-                        // Flash is alone in block — use outer context
-                        outer_has_render
+                        // Flash is alone/last in block — implicit render.
+                        // RuboCop checks context.parent.right_siblings for redirect.
+                        let outer_has_redirect =
+                            outer_siblings.iter().any(|s| is_redirect_sibling(s));
+                        !outer_has_redirect
                     } else {
                         false
                     }
@@ -408,7 +426,15 @@ impl FlashVisitor<'_> {
             }
             if let Some(call_node) = stmt.as_call_node() {
                 if let Some(block) = call_node.block() {
-                    self.check_block_body_with_outer(&block, inner_remaining, is_if_rescue_branch);
+                    // In RuboCop, blocks are transparent to each_ancestor(:if, :rescue).
+                    // When inside an if/rescue context, the block inherits the if/rescue's
+                    // outer siblings, not the block's own siblings within the parent scope.
+                    let block_outer = if is_if_rescue_branch {
+                        outer_siblings
+                    } else {
+                        inner_remaining
+                    };
+                    self.check_block_body_with_outer(&block, block_outer, is_if_rescue_branch);
                 }
             }
         }

@@ -158,3 +158,43 @@ class PreferencesController < ApplicationController
     end
   end
 end
+
+# FN fix: flash in else branch before respond_to with render
+class CommentsController < ApplicationController
+  def create
+    if @comment.save
+      process_comment
+    else
+      flash[:error] = "Comment cannot be empty"
+      ^^^^^ Rails/ActionControllerFlashBeforeRender: Use `flash.now` before `render`.
+    end
+    respond_to do |format|
+      format.html { redirect_to listing_path }
+      format.js { render layout: false }
+    end
+  end
+end
+
+# FN fix: flash in else branch with render as direct outer sibling
+class AspectController < ApplicationController
+  def update
+    if @aspect.update(params)
+      flash[:notice] = "Updated"
+      ^^^^^ Rails/ActionControllerFlashBeforeRender: Use `flash.now` before `render`.
+    else
+      flash[:error] = "Failed to update"
+      ^^^^^ Rails/ActionControllerFlashBeforeRender: Use `flash.now` before `render`.
+    end
+    render json: { id: @aspect.id }
+  end
+end
+
+# FN fix: flash alone in each block — implicit render
+class NotificationsController < ApplicationController
+  def flash_messages
+    get_messages.each do |message|
+      flash[message[:type]] = { body: message[:body] }
+      ^^^^^ Rails/ActionControllerFlashBeforeRender: Use `flash.now` before `render`.
+    end
+  end
+end

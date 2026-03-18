@@ -151,6 +151,42 @@ class ArchivesController < ApplicationController
   end
 end
 
+# respond_to with flash in format.html (with custom redirect) and render in sibling format.api
+# RuboCop walks up to the if ancestor; its right_siblings are empty, so no offense.
+class CategoriesController < ApplicationController
+  def create
+    if @category.save
+      respond_to do |format|
+        format.html do
+          flash[:notice] = "Created"
+          redirect_to_settings_in_projects
+        end
+        format.api do
+          render action: 'show', status: :created
+        end
+      end
+    end
+  end
+end
+
+# respond_to with flash in format.html, format.js (no block), format.api with render
+class VersionsController < ApplicationController
+  def create
+    if @version.save
+      respond_to do |format|
+        format.html do
+          flash[:notice] = "Created"
+          redirect_to_settings_in_projects
+        end
+        format.js
+        format.api do
+          render action: 'show', status: :created
+        end
+      end
+    end
+  end
+end
+
 # Flash in else branch of if/elsif/else — RuboCop checks first if ancestor's
 # right siblings which are empty (elsif is nested inside the outer if)
 class AccountsController < ApplicationController
