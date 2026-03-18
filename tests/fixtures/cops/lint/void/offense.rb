@@ -258,3 +258,49 @@ end
     other_result
   end
 end
+
+# Hash with splat in void context
+def void_hash_splat
+  { **x }
+  ^^^^^^ Lint/Void: Void value expression detected.
+  do_something
+end
+
+# Hash with interpolated string key in void context
+def void_hash_interp_key
+  { "foo #{ 2 }": 1 }
+  ^^^^^^^^^^^^^^^^^^^^ Lint/Void: Void value expression detected.
+  do_something
+end
+
+def void_hash_interp_key2
+  { "foo #{2}": 1 }
+  ^^^^^^^^^^^^^^^^^^ Lint/Void: Void value expression detected.
+  do_something
+end
+
+# Interpolated word array in void context
+def void_interp_word_array
+  %W(one two #{1})
+  ^^^^^^^^^^^^^^^^ Lint/Void: Void value expression detected.
+  do_something
+end
+
+def void_interp_word_array2
+  %W( one  two #{ 1 } )
+  ^^^^^^^^^^^^^^^^^^^^^^ Lint/Void: Void value expression detected.
+  do_something
+end
+
+def void_interp_word_array3
+  %W(#{1}2)
+  ^^^^^^^^^ Lint/Void: Void value expression detected.
+  do_something
+end
+
+# Interpolated symbol array in void context
+def void_interp_symbol_array
+  %I( one  two #{ 1 } )
+  ^^^^^^^^^^^^^^^^^^^^^^ Lint/Void: Void value expression detected.
+  do_something
+end

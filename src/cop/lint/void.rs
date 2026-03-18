@@ -110,7 +110,8 @@ use ruby_prism::Visit;
 ///
 /// Remaining gaps (~0 FP, ~453 FN): FNs are diverse across jruby, eye, natalie
 /// repos — mostly location mismatches for complex multiline patterns and missing
-/// operator detection in deeply nested contexts.
+/// operator detection in deeply nested contexts. 9 FNs from rufo repo are
+/// hash/array with interpolation in void context (fixed in round 2).
 ///
 /// ## Investigation findings (2026-03-17, round 2)
 ///
@@ -138,6 +139,21 @@ use ruby_prism::Visit;
 /// methods (`def self.foo=`). RuboCop's `void_context?` returns true for setter
 /// methods via `assignment_method?` regardless of receiver; only `initialize`
 /// requires no receiver. Fixed by only excluding receiver for `initialize`.
+///
+/// ## Investigation findings (2026-03-18)
+///
+/// **FN: `is_entirely_literal` missing interpolated nodes** — `is_entirely_literal`
+/// (used recursively by container checks) did not include `InterpolatedStringNode`,
+/// `InterpolatedSymbolNode`, or `InterpolatedRegularExpressionNode`. RuboCop's
+/// `entirely_literal?` falls through to `node.literal?` which returns true for
+/// `dstr`/`dsym`/`dregx`. This caused `%W(foo #{1})` and `{ "foo #{2}": 1 }` to
+/// not be detected as void literals when used as array/hash element types.
+///
+/// **FN: `AssocSplatNode` rejected in hash literal check** —
+/// `is_entirely_literal_container` for hashes only recognized `AssocNode` elements,
+/// returning false for `AssocSplatNode` (`{ **x }`). RuboCop's `each_key`/`each_value`
+/// skip `kwsplat` nodes (only iterate over `pair` children), so `{ **x }` vacuously
+/// passes `entirely_literal?`. Fixed by treating `AssocSplatNode` as vacuously true.
 pub struct Void;
 
 impl Cop for Void {
@@ -527,6 +543,10 @@ fn is_entirely_literal_container(node: &ruby_prism::Node<'_>) -> bool {
         hash.elements().iter().all(|e| {
             if let Some(assoc) = e.as_assoc_node() {
                 is_entirely_literal(&assoc.key()) && is_entirely_literal(&assoc.value())
+            } else if e.as_assoc_splat_node().is_some() {
+                // RuboCop's each_key/each_value skip kwsplat nodes — they only
+                // iterate over pair children. So { **x } vacuously passes.
+                true
             } else {
                 false
             }
@@ -545,6 +565,8 @@ fn is_entirely_literal_container(node: &ruby_prism::Node<'_>) -> bool {
 }
 
 /// Recursively check if a node is entirely literal (no variables, method calls, etc.)
+/// Matches RuboCop's `entirely_literal?` which uses `node.literal?` in the else branch.
+/// `literal?` returns true for interpolated strings/symbols/regexps (dstr/dsym/dregx).
 fn is_entirely_literal(node: &ruby_prism::Node<'_>) -> bool {
     node.as_integer_node().is_some()
         || node.as_float_node().is_some()
@@ -556,6 +578,9 @@ fn is_entirely_literal(node: &ruby_prism::Node<'_>) -> bool {
         || node.as_rational_node().is_some()
         || node.as_imaginary_node().is_some()
         || node.as_regular_expression_node().is_some()
+        || node.as_interpolated_string_node().is_some()
+        || node.as_interpolated_symbol_node().is_some()
+        || node.as_interpolated_regular_expression_node().is_some()
         || is_entirely_literal_container(node)
         || is_literal_freeze(node)
 }
