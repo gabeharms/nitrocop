@@ -157,3 +157,23 @@ def block_guard_then_nonguard
     raise "invalid logger"
   end
 end
+
+# FN fix: simple guard clause patterns missing empty line
+def ask_user(question)
+  return true if args['-y']
+  ^ Layout/EmptyLineAfterGuardClause: Add empty line after guard clause.
+  $stderr.print question
+  $stdin.gets =~ /\Aye?s?\Z/i
+end
+
+def format_time(time)
+  return '' unless time.respond_to?(:strftime)
+  ^ Layout/EmptyLineAfterGuardClause: Add empty line after guard clause.
+  time.strftime('%H:%M:%S')
+end
+
+def parse_entry(entry)
+  next unless entry.end
+  ^ Layout/EmptyLineAfterGuardClause: Add empty line after guard clause.
+  entry.update :sheet => "_value"
+end
