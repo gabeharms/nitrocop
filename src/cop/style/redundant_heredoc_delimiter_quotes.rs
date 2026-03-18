@@ -3,6 +3,19 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (2026-03-18):
+/// - FP (4): Double-quoted heredocs (`<<-"CODE"`) whose body contains backslash
+///   sequences (e.g. `\n`, `\\u{...}`). RuboCop's regex `/\\/` exempts ANY heredoc
+///   body with a backslash regardless of quote style, but nitrocop only checked for
+///   backslashes in single-quoted heredocs. Fixed by applying the backslash check to
+///   all quoted heredocs (both `'` and `"`).
+/// - FN (15): Heredocs used as method arguments with additional args on the same line
+///   (e.g. `process(<<~'END', option: true)`). When Prism wraps these as
+///   `InterpolatedStringNode`, the byte range between `opening_loc` end and
+///   `closing_loc` start includes the rest of the opening line (method args), not
+///   just the heredoc body. This caused false backslash/interpolation matches from
+///   the argument text. Fixed by iterating over the node's `parts` to get only the
+///   actual heredoc body content.
 pub struct RedundantHeredocDelimiterQuotes;
 
 impl Cop for RedundantHeredocDelimiterQuotes {
@@ -76,37 +89,41 @@ impl Cop for RedundantHeredocDelimiterQuotes {
             return;
         }
 
-        if quote_char == b'\'' || quote_char == b'"' {
-            // Single-quoted heredocs suppress interpolation and backslash escapes.
-            // The quotes are only redundant if the body doesn't use any interpolation
-            // patterns or backslash escapes that would be active in a double-quoted heredoc.
-            //
-            // Double-quoted heredocs with interpolation in the body: the quotes document
-            // intent that interpolation is expected. RuboCop skips these.
-            let body_bytes = if let Some(s) = node.as_string_node() {
-                s.content_loc().as_slice()
-            } else if let Some(s) = node.as_interpolated_string_node() {
-                // For interpolated strings, check the raw source between opening and closing
-                match (s.opening_loc(), s.closing_loc()) {
-                    (Some(open), Some(close)) => {
-                        &source.as_bytes()[open.end_offset()..close.start_offset()]
-                    }
-                    _ => &[] as &[u8],
-                }
-            } else {
-                &[] as &[u8]
-            };
-            // Check for interpolation patterns: #{, #@, #@@, #$
-            if body_bytes
-                .windows(2)
-                .any(|w| w == b"#{" || w == b"#@" || w == b"#$")
-            {
+        // RuboCop exempts heredocs whose body contains interpolation patterns
+        // (#{, #@, #$) or backslash escapes. The check applies to both single-
+        // and double-quoted delimiters.
+        //
+        // For InterpolatedStringNode heredocs, we must use the node's parts to
+        // get the actual body content, not the byte range between opening_loc and
+        // closing_loc, because the latter includes the rest of the opening line
+        // (method args etc.) which may contain false-positive backslash/interpolation
+        // matches.
+        if let Some(s) = node.as_string_node() {
+            let body = s.content_loc().as_slice();
+            if body_has_interpolation_or_escape(body) {
                 return;
             }
-            // Check for backslash escapes — in single-quoted heredocs, backslashes
-            // are literal. Removing quotes would make them escape sequences.
-            if quote_char == b'\'' && body_bytes.contains(&b'\\') {
-                return;
+        } else if let Some(s) = node.as_interpolated_string_node() {
+            // Check each part's raw source for interpolation/escape patterns.
+            // Parts contain only the actual heredoc body, not trailing args.
+            for part in s.parts().iter() {
+                let part_bytes = if let Some(str_node) = part.as_string_node() {
+                    str_node.content_loc().as_slice()
+                } else if let Some(emb) = part.as_embedded_statements_node() {
+                    // Embedded statements node means #{...} interpolation exists
+                    let _ = emb;
+                    return;
+                } else if let Some(ev) = part.as_embedded_variable_node() {
+                    // Embedded variable node means #@var or #$var interpolation
+                    let _ = ev;
+                    return;
+                } else {
+                    // Unknown part type — conservatively skip
+                    return;
+                };
+                if body_has_interpolation_or_escape(part_bytes) {
+                    return;
+                }
             }
         }
 
@@ -126,6 +143,21 @@ impl Cop for RedundantHeredocDelimiterQuotes {
             ),
         ));
     }
+}
+
+/// Check if heredoc body bytes contain interpolation patterns or backslash escapes.
+/// Matches RuboCop's `STRING_INTERPOLATION_OR_ESCAPED_CHARACTER_PATTERN = /#(\{|@|\$)|\\/.freeze`
+fn body_has_interpolation_or_escape(body: &[u8]) -> bool {
+    // Check for interpolation patterns: #{, #@, #$
+    if body
+        .windows(2)
+        .any(|w| w == b"#{" || w == b"#@" || w == b"#$")
+    {
+        return true;
+    }
+    // Check for backslash — RuboCop exempts ALL quoted heredocs (single or double)
+    // whose body contains a backslash, not just single-quoted ones.
+    body.contains(&b'\\')
 }
 
 #[cfg(test)]
