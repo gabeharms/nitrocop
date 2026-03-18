@@ -222,6 +222,30 @@ impl<'pr> Visit<'pr> for OutputVisitor<'_> {
         ruby_prism::visit_rescue_modifier_node(self, node);
         self.parent_is_call = was;
     }
+
+    // Array literals reset parent_is_call so that output calls inside nested arrays
+    // (which are arguments of calls) are properly detected. Without this, `p` in
+    //   [["key", p], ...].map { ... }
+    // would be suppressed because `parent_is_call` is set when visiting the array as the
+    // receiver of `.map`, and the flag propagates into nested array elements.
+    //
+    // RuboCop's check `node.parent&.call_type?` checks the DIRECT parent, so `p` inside
+    // an array literal is NOT considered "parent is call" (array is parent, not the call).
+    fn visit_array_node(&mut self, node: &ruby_prism::ArrayNode<'pr>) {
+        let was = self.parent_is_call;
+        self.parent_is_call = false;
+        ruby_prism::visit_array_node(self, node);
+        self.parent_is_call = was;
+    }
+
+    // Hash literals similarly reset parent_is_call so output calls inside hash values
+    // (passed as arguments to calls) are detected.
+    fn visit_hash_node(&mut self, node: &ruby_prism::HashNode<'pr>) {
+        let was = self.parent_is_call;
+        self.parent_is_call = false;
+        ruby_prism::visit_hash_node(self, node);
+        self.parent_is_call = was;
+    }
 }
 
 /// Check if any argument is a hash (keyword args) or block_pass
@@ -239,5 +263,20 @@ fn has_hash_or_block_pass_args(node: &ruby_prism::CallNode<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::run_cop_full;
     crate::cop_fixture_tests!(Output, "cops/rails/output");
+
+    #[test]
+    fn p_inside_array_inside_method_chain_fires() {
+        // p inside an array inside a method chain receiver should fire
+        // (matches ransack/nodes/condition.rb corpus FN pattern)
+        let source = b"data = [['pred', p], ['attr', a]].map { |k, v| k }.join\n";
+        let diags = run_cop_full(&Output, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "p inside nested array inside method chain should fire: {:?}",
+            diags
+        );
+    }
 }
