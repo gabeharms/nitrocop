@@ -245,3 +245,33 @@ class BackfillMigration
     42
   end
 end
+
+# Comment with <<WORD before private should not break visibility tracking
+class CommentWithHeredocSyntax
+  # This comment mentions <<EOF heredoc syntax
+  private
+
+  def method_after_comment_with_heredoc
+    42
+  end
+end
+
+# Trailing comment with <<WORD should not trigger heredoc tracking
+class TrailingCommentHeredoc
+  x = 1 # use <<HEREDOC for multiline
+  private
+
+  def method_after_trailing_comment
+    42
+  end
+end
+
+# Line starting with # that has <<WORD should not trigger heredoc
+class CommentLineHeredoc
+  # Heredocs use <<~RUBY or <<-SQL syntax
+  private
+
+  def method_after_comment_line
+    42
+  end
+end

@@ -1440,10 +1440,38 @@ fn is_single_line_class_or_module(trimmed: &[u8]) -> bool {
 
 /// Find a heredoc start marker in a line. Returns the end marker bytes if found.
 /// Matches: `<<WORD`, `<<-WORD`, `<<~WORD`, `<<-'WORD'`, `<<~"WORD"`.
+///
+/// Conservative matching to avoid false positives from `<<` in non-heredoc contexts:
+/// - Only matches `<<` preceded by a valid heredoc-start position: start of line, or
+///   one of `=`, `(`, `,`, `[`, ` `, `\t` (assignment, argument, array element).
+/// - Stops scanning at `#` to avoid matching `<<` in trailing comments.
 fn find_heredoc_start(line: &[u8]) -> Option<Vec<u8>> {
+    // Find the first `#` that starts a trailing comment — don't scan past it.
+    // This is a heuristic: `#` inside strings won't be correctly handled, but
+    // that's acceptable since heredocs don't start inside string literals anyway.
+    let scan_end = line.iter().position(|&b| b == b'#').unwrap_or(line.len());
+
     let mut i = 0;
-    while i + 2 < line.len() {
+    while i + 2 < scan_end {
         if line[i] == b'<' && line[i + 1] == b'<' {
+            // Check that the character before `<<` is a valid heredoc-start position.
+            // Reject `<<` preceded by word characters (e.g., `x<<BITS` is left-shift),
+            // `)`, `]`, `>` (e.g., `arr>>WORD`), or other non-heredoc positions.
+            if i > 0 {
+                let prev = line[i - 1];
+                if !(prev == b' '
+                    || prev == b'\t'
+                    || prev == b'='
+                    || prev == b'('
+                    || prev == b','
+                    || prev == b'['
+                    || prev == b';')
+                {
+                    i += 2;
+                    continue;
+                }
+            }
+
             let mut j = i + 2;
             // Skip optional `-` or `~`
             if j < line.len() && (line[j] == b'-' || line[j] == b'~') {
@@ -1557,8 +1585,11 @@ pub fn is_private_or_protected(source: &SourceFile, def_offset: usize) -> bool {
         }
 
         // Detect heredoc start: <<-WORD, <<~WORD, <<WORD, <<-'WORD', <<~"WORD"
-        if let Some(pos) = find_heredoc_start(trimmed) {
-            heredoc_end_marker = Some(pos);
+        // Skip comment lines entirely — they can mention heredoc syntax without being one.
+        if !trimmed.starts_with(b"#") {
+            if let Some(pos) = find_heredoc_start(trimmed) {
+                heredoc_end_marker = Some(pos);
+            }
         }
 
         // Track peer scope depth for class/module/class<< bodies at indent == def_col.
@@ -1709,6 +1740,36 @@ mod private_tests {
         check(
             "class Foo\n  private\n    def bar\n    end\n    def baz\n    end\nend\n",
             "def baz",
+            true,
+        );
+    }
+
+    #[test]
+    fn comment_with_heredoc_syntax_does_not_break_private() {
+        // A comment mentioning <<EOF should not trigger false heredoc tracking
+        check(
+            "class Foo\n  # Use <<EOF for heredocs\n  private\n  def secret\n  end\nend\n",
+            "def secret",
+            true,
+        );
+    }
+
+    #[test]
+    fn trailing_comment_with_heredoc_does_not_break_private() {
+        // A trailing comment with <<WORD should not trigger heredoc tracking
+        check(
+            "class Foo\n  x = 1 # use <<HEREDOC\n  private\n  def secret\n  end\nend\n",
+            "def secret",
+            true,
+        );
+    }
+
+    #[test]
+    fn comment_line_with_heredoc_syntax_does_not_break_private() {
+        // A full comment line mentioning <<~RUBY should not trigger heredoc tracking
+        check(
+            "class Foo\n  # Heredocs use <<~RUBY or <<-SQL\n  private\n  def secret\n  end\nend\n",
+            "def secret",
             true,
         );
     }
