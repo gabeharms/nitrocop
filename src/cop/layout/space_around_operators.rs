@@ -445,15 +445,9 @@ fn check_text_scanner_extra_space(
     diagnostics.push(diag);
 }
 
-/// Standalone alignment check used by both text scanner and AST visitor.
-/// Checks if the operator at byte offset `start` is aligned with an operator
-/// on an adjacent non-blank, non-comment line. Supports:
-/// 1. Same operator at same byte column
-/// 2. Word/space boundary at same column (aligned_words in RuboCop)
-/// 3. Cross-operator alignment (operators ending at same column)
 /// Count UTF-8 codepoints from the start of `line` up to `byte_col` bytes.
 /// For ASCII-only lines this equals `byte_col`; for lines with multi-byte chars
-/// (e.g. curly quotes `'`/`'`) it returns the visual character column.
+/// (e.g. curly quotes) it returns the visual character column.
 fn bytes_to_char_col(line: &[u8], byte_col: usize) -> usize {
     let capped = byte_col.min(line.len());
     let mut chars = 0usize;
@@ -500,6 +494,12 @@ fn char_col_to_bytes(line: &[u8], char_col: usize) -> Option<usize> {
     if chars == char_col { Some(i) } else { None }
 }
 
+/// Check if the operator at byte offset `start` is aligned with an operator
+/// on an adjacent non-blank, non-comment line. Supports:
+///
+/// 1. Same operator at same char column
+/// 2. Word/space boundary at same column (aligned_words in RuboCop)
+/// 3. Cross-operator alignment (operators ending at same column)
 fn is_aligned_standalone(source: &SourceFile, start: usize, op_bytes: &[u8]) -> bool {
     let bytes = source.as_bytes();
     let mut ls = start;
