@@ -20,3 +20,24 @@ foo([
       :baz
   ])
   ^ Layout/FirstArrayElementIndentation: Indent the right bracket the same as the first position after the preceding left parenthesis.
+# FN fix: Splat *[ should still use paren-relative
+List.new(:BULLET, *[
+  ListItem.new(nil, Paragraph.new('l1')),
+  ^^ Layout/FirstArrayElementIndentation: Use 2 spaces for indentation in an array, relative to the first position after the preceding left parenthesis.
+  ListItem.new(nil, Paragraph.new('l2'))
+])
+^ Layout/FirstArrayElementIndentation: Indent the right bracket the same as the first position after the preceding left parenthesis.
+# FN fix: Single-pair hash should use line-relative, not hash-key-relative
+requires_login except: [
+                 :index,
+                 ^^^^^^ Layout/FirstArrayElementIndentation: Use 2 spaces for indentation in an array, relative to the start of the line where the left square bracket is.
+                 :show
+               ]
+               ^ Layout/FirstArrayElementIndentation: Indent the right bracket the same as the start of the line where the left bracket is.
+# FN fix: String containing / should use paren-relative
+Page.of_raw_data(site, '/', [
+  { name: "products" },
+  ^^ Layout/FirstArrayElementIndentation: Use 2 spaces for indentation in an array, relative to the first position after the preceding left parenthesis.
+  { name: "categories" }
+])
+^ Layout/FirstArrayElementIndentation: Indent the right bracket the same as the first position after the preceding left parenthesis.

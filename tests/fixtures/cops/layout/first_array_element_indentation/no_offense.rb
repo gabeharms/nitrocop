@@ -137,3 +137,27 @@ regex = [
     '\[([^\\]]*)\]',
   ].join('|')})"
 ].join('|')
+
+# FP fix: String argument containing - should not prevent paren-relative indent
+check_order(".section__in-favor", [
+              highest_voted,
+              lowest_voted
+            ])
+
+# FP fix: Lambda -> should not be treated as binary operator
+reduce_until(->(ctx) { ctx.number == 3 }, [
+               AddOneAction,
+               AddTwoAction
+             ])
+
+# FP fix: String containing / should not prevent paren-relative indent
+site.pages << JsonPage.of_raw_data(site, '/', [
+                                     { name: "products" },
+                                     { name: "categories" }
+                                   ])
+
+# FP fix: Splat *[ inside method call parens (paren-relative)
+List.new(:BULLET, *[
+           ListItem.new(nil, Paragraph.new('l1')),
+           ListItem.new(nil, Paragraph.new('l2'))
+         ])

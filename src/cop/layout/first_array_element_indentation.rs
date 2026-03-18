@@ -54,6 +54,27 @@ fn first_non_whitespace_column(line: &[u8]) -> usize {
 /// c) Hash-key-relative indentation: `{ ruby: [...], js: [...] }` — elements
 ///    indented relative to hash key, not line start. Fix: detect hash key before
 ///    `[` and accept `key_col + width` / `key_col` as valid indentation.
+///
+/// **FP/FN root cause #5 (2026-03-18, 34 FP + 82 FN):** Three sub-causes:
+/// a) String literal contents not skipped: `find_left_paren_on_line` scanned raw
+///    bytes without skipping string literals. Characters like `-`, `/`, `*`, `+`
+///    inside strings (e.g., `".section__in-favor"`, `'/'`) were misidentified as
+///    binary operators, causing incorrect fallback to line-relative indent.
+///    Fix: backward scan now skips `'...'` and `"..."` string literals.
+///    This fixed ~20 FPs (decidim, vagrant, zammad, etc.) and ~10 FNs (CocoaPods,
+///    endoflife, fae, oga, fluent).
+/// b) Lambda `->` treated as binary minus: The `-` in `->` lambda literal was
+///    detected as a subtraction operator. Fix: check if `-` is followed by `>`.
+///    This fixed 12 FPs in light-service (nested `reduce_until(->(...), [...])` patterns).
+/// c) Splat `*` treated as multiplication: `*[...]` and `*%w[...]` splat operators
+///    were detected as binary `*`, preventing paren-relative indent.
+///    Fix: `is_splat_before_array()` checks if `*` is followed by `[` or `%`.
+///    This fixed ~40 FNs (rdoc, image_optim, geocoder, danbooru).
+/// d) Hash-key-relative too permissive for single-pair hashes: `matches_hash_key`
+///    accepted any hash-key-relative indentation, but RuboCop only accepts it for
+///    multi-pair hashes. Fix: `is_multi_pair_hash()` checks for `,` + another key
+///    after `]` or before the hash key on the opening line.
+///    This fixed ~16 FNs (discourse single-key patterns like `requires_login except: [...]`).
 pub struct FirstArrayElementIndentation;
 
 /// Describes what the expected indentation is relative to.
@@ -96,7 +117,24 @@ fn find_left_paren_on_line(line_bytes: &[u8], bracket_col: usize) -> ParenScanRe
     let mut brace_depth: i32 = 0;
     let mut has_unmatched_brace = false;
     let mut has_binary_op = false;
-    for i in (0..end).rev() {
+    let mut i = end;
+    while i > 0 {
+        i -= 1;
+        // Skip string literals (scanning backward: when we hit a closing quote,
+        // scan backward to the matching opening quote). This prevents characters
+        // inside strings (like `-`, `/`, `*`, `+`) from being misidentified as
+        // binary operators.
+        if line_bytes[i] == b'\'' || line_bytes[i] == b'"' {
+            let quote = line_bytes[i];
+            if i > 0 {
+                i -= 1;
+                while i > 0 && line_bytes[i] != quote {
+                    i -= 1;
+                }
+                // i now points at the opening quote (or 0 if not found); skip it
+                continue;
+            }
+        }
         match line_bytes[i] {
             b')' => paren_depth += 1,
             b'(' => {
@@ -125,10 +163,26 @@ fn find_left_paren_on_line(line_bytes: &[u8], bracket_col: usize) -> ParenScanRe
             }
             // Detect binary operators at depth 0 (not inside nested parens/brackets/braces).
             // These indicate the `(` is a grouping paren, e.g., `(CONST + [...])`.
-            b'+' | b'-' | b'*' | b'/' | b'|' | b'&' | b'^'
+            b'+' | b'/' | b'|' | b'&' | b'^'
                 if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 =>
             {
                 has_binary_op = true;
+            }
+            // `-` at depth 0: only treat as binary operator if NOT part of `->` lambda.
+            b'-' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                if !(i + 1 < end && line_bytes[i + 1] == b'>') {
+                    has_binary_op = true;
+                }
+            }
+            // `*` at depth 0: only treat as binary operator if NOT a splat before
+            // `[` or `%` (array literal). Splat `*[...]` or `*%w[...]` means the
+            // array is still a direct argument, not part of a binary expression.
+            // Use full line length (not `end`) since the `[` at bracket_col is the
+            // target we need to check against.
+            b'*' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                if !is_splat_before_array(line_bytes, i) {
+                    has_binary_op = true;
+                }
             }
             _ => {}
         }
@@ -138,6 +192,21 @@ fn find_left_paren_on_line(line_bytes: &[u8], bracket_col: usize) -> ParenScanRe
         has_unmatched_brace,
         has_binary_operator_at_depth_zero: has_binary_op,
     }
+}
+
+/// Check if `*` at position `star_pos` is a splat operator before an array literal.
+/// Returns true if the bytes after `*` (skipping whitespace) are `[` or `%` (for `%w[`, `%i[`).
+fn is_splat_before_array(line_bytes: &[u8], star_pos: usize) -> bool {
+    let len = line_bytes.len();
+    let mut j = star_pos + 1;
+    while j < len && (line_bytes[j] == b' ' || line_bytes[j] == b'\t') {
+        j += 1;
+    }
+    if j >= len {
+        return false;
+    }
+    // `*[` or `*%w[`, `*%i[`, `*%W[`, `*%I[`
+    line_bytes[j] == b'[' || line_bytes[j] == b'%'
 }
 
 /// Find the column of a hash key that precedes `[` on the same line.
@@ -333,6 +402,63 @@ fn is_direct_argument(source_bytes: &[u8], closing_end_offset: usize, inside_has
     }
 }
 
+/// Check if the array is a value in a hash literal with multiple key-value pairs.
+/// RuboCop only accepts hash-key-relative indentation for multi-pair hashes; single-pair
+/// hashes use the normal indent mode (line-relative or paren-relative).
+///
+/// Checks by scanning forward from the array's closing bracket position in the source:
+/// if `]` is followed (possibly on the next line) by `,` and then another hash key
+/// pattern (e.g. `key:` or `key =>`), it's a multi-pair hash.
+///
+/// Also checks backward from the array's opening `[` on its line: if there's a `,`
+/// before the hash key (indicating a preceding pair), it's multi-pair.
+fn is_multi_pair_hash(
+    source_bytes: &[u8],
+    closing_end_offset: usize,
+    open_line_bytes: &[u8],
+    hash_key_col: usize,
+) -> bool {
+    // Check forward from `]`: look for `, key:` or `, key =>`
+    let len = source_bytes.len();
+    let mut i = closing_end_offset;
+    // Skip whitespace after `]`
+    while i < len && (source_bytes[i] == b' ' || source_bytes[i] == b'\t') {
+        i += 1;
+    }
+    // After `]`, check for `,` or `}`
+    if i < len && source_bytes[i] == b',' {
+        // There's a comma after `]`. If followed by another hash key, it's multi-pair.
+        i += 1;
+        // Skip whitespace and newlines to find next token
+        while i < len && matches!(source_bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+        }
+        if i < len
+            && (source_bytes[i].is_ascii_alphanumeric()
+                || source_bytes[i] == b'_'
+                || source_bytes[i] == b':'
+                || source_bytes[i] == b'"'
+                || source_bytes[i] == b'\'')
+        {
+            return true;
+        }
+    }
+
+    // Check backward on the opening line: if there's a `,` before the hash key
+    // (after skipping whitespace), it means there's a preceding pair.
+    if hash_key_col > 0 {
+        let mut j = hash_key_col;
+        while j > 0 && (open_line_bytes[j - 1] == b' ' || open_line_bytes[j - 1] == b'\t') {
+            j -= 1;
+        }
+        if j > 0 && open_line_bytes[j - 1] == b',' {
+            return true;
+        }
+    }
+
+    false
+}
+
 impl Cop for FirstArrayElementIndentation {
     fn name(&self) -> &'static str {
         "Layout/FirstArrayElementIndentation"
@@ -433,11 +559,26 @@ impl Cop for FirstArrayElementIndentation {
 
         let expected_elem = indent_base + width;
 
+        // Compute closing_end for multi-pair hash detection
+        let closing_end_offset = array_node
+            .closing_loc()
+            .map(|loc| loc.end_offset())
+            .unwrap_or(0);
+
         if elem_col != expected_elem {
             // Check if indentation matches hash-key-relative style.
             // RuboCop accepts elements indented relative to the parent
-            // hash key when the array is a hash value.
-            let matches_hash_key = hash_key_col.is_some_and(|key_col| elem_col == key_col + width);
+            // hash key when the array is a hash value, but ONLY for
+            // multi-pair hashes (not single-pair like `method key: [...]`).
+            let matches_hash_key = hash_key_col.is_some_and(|key_col| {
+                elem_col == key_col + width
+                    && is_multi_pair_hash(
+                        source.as_bytes(),
+                        closing_end_offset,
+                        open_line_bytes,
+                        key_col,
+                    )
+            });
             if !matches_hash_key {
                 let base_description = match base_type {
                     IndentBaseType::LeftBracket => "the position of the opening bracket",
@@ -480,9 +621,17 @@ impl Cop for FirstArrayElementIndentation {
             };
 
             if only_whitespace_before && effective_close_col != indent_base {
-                // Check if closing bracket matches hash-key-relative style.
-                let matches_hash_key =
-                    hash_key_col.is_some_and(|key_col| effective_close_col == key_col);
+                // Check if closing bracket matches hash-key-relative style
+                // (only for multi-pair hashes).
+                let matches_hash_key = hash_key_col.is_some_and(|key_col| {
+                    effective_close_col == key_col
+                        && is_multi_pair_hash(
+                            source.as_bytes(),
+                            closing_end_offset,
+                            open_line_bytes,
+                            key_col,
+                        )
+                });
                 if !matches_hash_key {
                     let msg = match base_type {
                         IndentBaseType::LeftBracket => {
