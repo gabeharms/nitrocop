@@ -9,6 +9,11 @@ use ruby_prism::Visit;
 /// operator write node visitors (`+=`, `-=`, `*=`, `/=`, `**=`) which Prism represents
 /// as `*OperatorWriteNode` types. RuboCop handles these via `on_op_asgn`. The fix adds
 /// visitors for all operator write node variants.
+///
+/// Additional 210 FNs from missing and-write (`&&=`), method call assignment
+/// (`CallAndWriteNode`, `CallOrWriteNode`, `CallOperatorWriteNode`), index assignment
+/// (`IndexAndWriteNode`, `IndexOrWriteNode`, `IndexOperatorWriteNode`), and global
+/// variable or-write (`GlobalVariableOrWriteNode`) node types.
 pub struct NoReturnInBeginEndBlocks;
 
 impl Cop for NoReturnInBeginEndBlocks {
@@ -112,6 +117,93 @@ impl<'pr> Visit<'pr> for NoReturnVisitor<'_, '_> {
         &mut self,
         node: &ruby_prism::ClassVariableOrWriteNode<'pr>,
     ) {
+        self.check_assignment_value(&node.value());
+    }
+
+    // And-assignment: x &&= begin ... end
+    fn visit_local_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
+    ) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_instance_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableAndWriteNode<'pr>,
+    ) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_class_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::ClassVariableAndWriteNode<'pr>,
+    ) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_global_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::GlobalVariableAndWriteNode<'pr>,
+    ) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_constant_and_write_node(&mut self, node: &ruby_prism::ConstantAndWriteNode<'pr>) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_constant_path_and_write_node(
+        &mut self,
+        node: &ruby_prism::ConstantPathAndWriteNode<'pr>,
+    ) {
+        self.check_assignment_value(&node.value());
+    }
+
+    // Global variable or-assignment
+    fn visit_global_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::GlobalVariableOrWriteNode<'pr>,
+    ) {
+        self.check_assignment_value(&node.value());
+    }
+
+    // Constant or-assignment
+    fn visit_constant_or_write_node(&mut self, node: &ruby_prism::ConstantOrWriteNode<'pr>) {
+        self.check_assignment_value(&node.value());
+    }
+
+    // Constant path or-assignment / operator-assignment
+    fn visit_constant_path_or_write_node(
+        &mut self,
+        node: &ruby_prism::ConstantPathOrWriteNode<'pr>,
+    ) {
+        self.check_assignment_value(&node.value());
+    }
+
+    // Method call assignments: obj.foo &&= / ||= / += begin ... end
+    fn visit_call_and_write_node(&mut self, node: &ruby_prism::CallAndWriteNode<'pr>) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_call_or_write_node(&mut self, node: &ruby_prism::CallOrWriteNode<'pr>) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_call_operator_write_node(&mut self, node: &ruby_prism::CallOperatorWriteNode<'pr>) {
+        self.check_assignment_value(&node.value());
+    }
+
+    // Index/subscript assignments: arr[i] &&= / ||= / += begin ... end
+    fn visit_index_and_write_node(&mut self, node: &ruby_prism::IndexAndWriteNode<'pr>) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_index_or_write_node(&mut self, node: &ruby_prism::IndexOrWriteNode<'pr>) {
+        self.check_assignment_value(&node.value());
+    }
+
+    fn visit_index_operator_write_node(&mut self, node: &ruby_prism::IndexOperatorWriteNode<'pr>) {
         self.check_assignment_value(&node.value());
     }
 

@@ -48,3 +48,89 @@ CONST = begin
   return 1
   ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
 end
+
+# And-assignments (&&=)
+x = 1
+x &&= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+@ivar &&= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+@@cvar &&= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+$gvar &&= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+CONST2 &&= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+# Global variable or-assignment
+$gvar ||= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+# Constant or-assignment
+CONST3 ||= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+# Constant path and-write / or-write / operator-write
+Foo::BAR &&= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+Foo::BAZ ||= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+# Method call assignments
+obj = Object.new
+
+obj.foo &&= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+obj.foo ||= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+obj.foo += begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+# Index/subscript assignments
+arr = [1, 2, 3]
+
+arr[0] &&= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+arr[0] ||= begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end
+
+arr[0] += begin
+  return 1
+  ^^^^^^ Lint/NoReturnInBeginEndBlocks: Do not `return` in `begin..end` blocks in assignment contexts.
+end

@@ -21,3 +21,49 @@ end
 some_value -= begin
   2
 end
+
+# And-assignments without return are fine
+x = 1
+x &&= begin
+  42
+end
+
+@ivar &&= begin
+  42
+end
+
+$gvar &&= begin
+  42
+end
+
+$gvar ||= begin
+  42
+end
+
+# Method call assignments without return are fine
+obj = Object.new
+obj.foo &&= begin
+  42
+end
+
+obj.foo ||= begin
+  42
+end
+
+obj.foo += begin
+  42
+end
+
+# Index assignments without return are fine
+arr = [1, 2, 3]
+arr[0] &&= begin
+  42
+end
+
+arr[0] ||= begin
+  42
+end
+
+arr[0] += begin
+  42
+end
