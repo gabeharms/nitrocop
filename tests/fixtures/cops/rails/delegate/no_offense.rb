@@ -155,3 +155,56 @@ class Bar
     @range.size
   end
 end
+
+# module_function in outer ancestor module (after nested class) suppresses delegation.
+# RuboCop's module_function_declared? checks ALL ancestors, including outer modules.
+# Pattern from antiwork/gumroad: module_function in StripePaymentMethodHelper (outer)
+# suppresses delegation defs in nested ExtensionMethods module.
+module StripeHelper
+  module ExtensionMethods
+    def to_customer_id
+      to_customer.id
+    end
+  end
+
+  class StripeUtils
+    def self.build_error(msg)
+      {error: msg}
+    end
+  end
+
+  module_function
+
+  def build(token:)
+    card = {token:}
+    card.extend(ExtensionMethods)
+    card
+  end
+end
+
+# module_function in outer module after nested class << self suppresses delegation.
+# Pattern from palkan/anyway_config: class Trace inside module Tracing, with
+# module_function declared in Tracing after the class << self singleton block.
+module Tracing
+  class Trace
+    def clear() = value.clear
+  end
+
+  class << self
+    def capture
+      yield
+    end
+
+    private
+
+    def source_stack
+      []
+    end
+  end
+
+  module_function
+
+  def trace!(type, **opts)
+    yield
+  end
+end
