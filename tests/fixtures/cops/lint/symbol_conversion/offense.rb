@@ -114,3 +114,15 @@ instance_variable_get :"@ivar"
 # Unnecessarily quoted special global symbol ($!)
 :"$!"
 ^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `:$!` instead.
+
+# UTF-8 symbol that can be unquoted (Ruby allows multi-byte identifiers)
+:"résumé"
+^^^^^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `:résumé` instead.
+
+# UTF-8 single-quoted symbol
+:'café'
+^^^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `:café` instead.
+
+# UTF-8 hash key (colon-style)
+{ 'naïve': 1 }
+  ^^^^^^^^ Lint/SymbolConversion: Unnecessary symbol conversion; use `naïve:` instead.

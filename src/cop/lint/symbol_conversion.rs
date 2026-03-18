@@ -102,6 +102,24 @@ use crate::parse::source::SourceFile;
 /// to detect the `alias` keyword. This matches RuboCop's behavior: alias
 /// arguments are not flagged because a symbol requiring quoting is not a valid
 /// method identifier.
+///
+/// ## FN fix (2026-03-18)
+///
+/// Corpus oracle reported FP=0, FN=92. 92 FNs concentrated in jruby (37),
+/// asciidoctor-pdf (33), natalie (18) — all repos with significant UTF-8 content.
+///
+/// Root cause: `is_identifier_start` and `is_identifier_continue` only recognized
+/// ASCII letters/digits/underscore, but Ruby allows any multi-byte UTF-8 character
+/// as an identifier character. Symbols like `:"résumé"` can be written as `:résumé`
+/// in Ruby, but nitrocop was not flagging them because it didn't recognize UTF-8
+/// bytes (>= 0x80) as valid identifier characters.
+///
+/// Fix: extended `is_identifier_start` and `is_identifier_continue` to accept
+/// bytes >= 0x80 (UTF-8 continuation/leading bytes). This correctly handles
+/// multi-byte characters since all bytes in a UTF-8 multi-byte sequence are >= 0x80.
+/// The `value_starts_with_identifier` function (used for rocket-style hash key
+/// filtering) is intentionally NOT changed — it matches RuboCop's `/\A[a-z0-9_]/i`
+/// which is ASCII-only.
 pub struct SymbolConversion;
 
 const BARE_OPERATOR_SYMBOLS: &[&[u8]] = &[
@@ -110,11 +128,11 @@ const BARE_OPERATOR_SYMBOLS: &[&[u8]] = &[
 ];
 
 fn is_identifier_start(b: u8) -> bool {
-    b.is_ascii_alphabetic() || b == b'_'
+    b.is_ascii_alphabetic() || b == b'_' || b >= 0x80
 }
 
 fn is_identifier_continue(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+    b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
 }
 
 fn is_method_name_symbol(value: &[u8]) -> bool {
@@ -954,6 +972,57 @@ mod tests {
             "alias bar :\"foo\"",
             "alias :'foo' :'bar'",
             "alias :\"foo\" :\"bar\"",
+        ];
+        for source in &no_offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                diags.is_empty(),
+                "Expected no offense for {:?} but got: {:?}",
+                source,
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn utf8_symbol_conversion() {
+        let cop = SymbolConversion;
+        // Ruby allows multi-byte (UTF-8) identifiers, so quoted UTF-8 symbols
+        // that consist entirely of valid identifier characters should be flagged.
+        let offense_cases = [
+            // Standalone quoted UTF-8 symbols
+            (":\"résumé\"", ":résumé"),
+            (":'résumé'", ":résumé"),
+            (":\"café\"", ":café"),
+            (":'naïve'", ":naïve"),
+            (":\"日本語\"", ":日本語"),
+            // Colon-style hash keys with UTF-8
+            ("{ 'résumé': 1 }", "résumé:"),
+            ("{ \"café\": 1 }", "café:"),
+            // .to_sym on UTF-8 string
+            ("\"résumé\".to_sym", ":résumé"),
+            ("'café'.to_sym", ":café"),
+        ];
+        for (source, expected) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+            assert!(
+                diags[0].message.contains(&format!("`{expected}`")),
+                "Expected `{}` in message for {:?}, got: {}",
+                expected,
+                source,
+                diags[0].message
+            );
+        }
+
+        // UTF-8 symbols that still require quoting (non-identifier chars mixed in)
+        let no_offense_cases = [
+            ":\"foo-café\"",   // hyphen
+            ":\"résumé bar\"", // space
         ];
         for source in &no_offense_cases {
             let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());

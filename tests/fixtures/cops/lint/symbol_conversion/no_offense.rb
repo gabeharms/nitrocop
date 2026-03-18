@@ -65,3 +65,9 @@ alias :"foo" :"bar"
 :"\#{foo}"
 :"\#@ivar"
 :"\#$global"
+# UTF-8 symbols that still require quoting (contain non-identifier chars)
+:"foo-café"
+:"résumé bar"
+# Bare UTF-8 symbols (already unquoted, no offense)
+:résumé
+:café
