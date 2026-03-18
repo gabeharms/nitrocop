@@ -8,3 +8,7 @@ num = 0
 num = 0_30
 num = 1_00
 num = 0_50
+# Complex/rational number literals should NOT be flagged (042i = Complex(0,34))
+num = 042i
+num = -042i
+num = 042r

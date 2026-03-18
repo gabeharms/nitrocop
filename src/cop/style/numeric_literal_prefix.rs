@@ -20,6 +20,14 @@ use crate::parse::source::SourceFile;
 /// so `src_str` started with `-` and none of the `starts_with("0...")` checks matched.
 /// RuboCop's `integer_part` helper strips leading `+`/`-` before checking.
 /// Fix: strip leading sign before prefix matching, adjust column offset by 1.
+///
+/// **FP root cause (complex/rational suffixes):** `042i` and `042r` are complex and
+/// rational number literals, not plain octals. Prism parses these as `ImaginaryNode`
+/// or `RationalNode` wrapping an `IntegerNode`. The AST walker visits the inner
+/// `IntegerNode`, which has source text `042` (without suffix), matching the octal
+/// pattern. RuboCop's `on_int` only fires for standalone `:int` nodes (Parser gem uses
+/// distinct `:complex`/`:rational` types). Fix: check the byte after the `IntegerNode`
+/// location — if it's `i` or `r`, skip the node.
 pub struct NumericLiteralPrefix;
 
 impl Cop for NumericLiteralPrefix {
@@ -47,6 +55,19 @@ impl Cop for NumericLiteralPrefix {
 
         let loc = int_node.location();
         let src = loc.as_slice();
+
+        // Skip integer literals that are part of complex (042i) or rational (042r) literals.
+        // Prism visits the IntegerNode child inside ImaginaryNode/RationalNode, but RuboCop's
+        // on_int callback only fires for standalone int nodes (Parser gem uses :complex/:rational
+        // node types, not :int). Check the byte after the IntegerNode location.
+        let source_bytes = source.as_bytes();
+        let end = loc.start_offset() + src.len();
+        if end < source_bytes.len() {
+            let next_byte = source_bytes[end];
+            if next_byte == b'i' || next_byte == b'r' {
+                return;
+            }
+        }
         let src_str = match std::str::from_utf8(src) {
             Ok(s) => s,
             Err(_) => return,
