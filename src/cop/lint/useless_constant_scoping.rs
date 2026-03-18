@@ -8,10 +8,16 @@ use crate::parse::source::SourceFile;
 /// Private constants must be defined using `private_constant`, not `private`.
 ///
 /// ## Corpus investigation (FN=41, FP=0)
-/// Root cause: only handled `ConstantWriteNode` (e.g., `CONST = value`), missed
+/// Root cause 1: only handled `ConstantWriteNode` (e.g., `CONST = value`), missed
 /// `ConstantPathWriteNode` for qualified assignments like `self::CONST = value`.
-/// In Prism, `self::DPKG_QUERY = "..."` parses as `ConstantPathWriteNode`.
 /// Fix: added `as_constant_path_write_node()` handling alongside `as_constant_write_node()`.
+///
+/// ## Corpus investigation (FN=40, FP=0)
+/// Root cause 2: only visited `ClassNode` and `ModuleNode` bodies, missing
+/// `SingletonClassNode` (`class << self`, 27 FNs), `BlockNode` (DSL blocks, 12 FNs),
+/// `IfNode`/`ElseNode` branches (2 FNs), and top-level program scope (1 FN).
+/// Fix: replaced per-node-type visitors with `visit_statements_node` to check all
+/// statement lists uniformly, matching RuboCop's `on_casgn` which fires everywhere.
 pub struct UselessConstantScoping;
 
 impl Cop for UselessConstantScoping {
@@ -49,28 +55,14 @@ struct ConstScopingVisitor<'a, 'src> {
 }
 
 impl<'pr> Visit<'pr> for ConstScopingVisitor<'_, '_> {
-    fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
-        if let Some(body) = node.body() {
-            self.check_body(&body);
-        }
-        ruby_prism::visit_class_node(self, node);
-    }
-
-    fn visit_module_node(&mut self, node: &ruby_prism::ModuleNode<'pr>) {
-        if let Some(body) = node.body() {
-            self.check_body(&body);
-        }
-        ruby_prism::visit_module_node(self, node);
+    fn visit_statements_node(&mut self, node: &ruby_prism::StatementsNode<'pr>) {
+        self.check_statements(node);
+        ruby_prism::visit_statements_node(self, node);
     }
 }
 
 impl ConstScopingVisitor<'_, '_> {
-    fn check_body(&mut self, body: &ruby_prism::Node<'_>) {
-        let stmts = match body.as_statements_node() {
-            Some(s) => s,
-            None => return,
-        };
-
+    fn check_statements(&mut self, stmts: &ruby_prism::StatementsNode<'_>) {
         let body_nodes: Vec<_> = stmts.body().iter().collect();
 
         // Track private modifier and constant assignments

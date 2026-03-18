@@ -17,3 +17,15 @@ class Provider
   self::QUERY_FORMAT = "'${Status}\\n'"
   private_constant :QUERY_FORMAT
 end
+
+# Constant in singleton class without private — no offense
+module Helpers
+  class << self
+    TARGETS = [:both, :enforced]
+  end
+end
+
+# Constant in block without private — no offense
+Something.setup do
+  CONST = 42
+end
