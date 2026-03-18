@@ -97,6 +97,35 @@ use ruby_prism::Visit;
 ///
 /// Remaining FN (19): Require `variable_used_in_declaration_of_outer?`
 /// or deeper VariableForce tracking that nitrocop doesn't implement.
+///
+/// ## Corpus fix (2026-03-18): FP=2 unchanged, FN=19→8
+///
+/// Fixed 11 of 19 FNs via three changes:
+///
+/// 1. **Single-stmt-aware conditional suppression**: Refactored
+///    `conditional_branch_stack` from tuples to `CondBranchEntry` structs
+///    tracking `is_if_type` and `single_stmt` per branch. This allows
+///    Check 1 (same-conditional different-branch) and Check 2 (adjacent
+///    elsif) to correctly distinguish single-stmt vs multi-stmt branches.
+///    For if/unless: always suppress (block.parent = if regardless of
+///    statement count). For case/when: only suppress when block is in a
+///    single-stmt when body (block.parent = when → case; multi-stmt →
+///    begin ≠ case). For elsif Check 2: only suppress single-stmt bodies.
+///    Fixes FNs in: ManageIQ, antiwork/gumroad, basecamp/kamal,
+///    chrisseaton/rhizome (3), faye/faye-websocket, manyfold3d,
+///    pickhardt/betty, sharetribe/sharetribe.
+///
+/// 2. **Splat rest param in destructured block params**: Added
+///    `rest()` node check in `check_multi_target_shadow` — splat params
+///    inside `|(car, *fruits)|` were not being checked for shadowing.
+///
+/// 3. **BlockContext refactor**: Bundled block context params into
+///    `BlockContext` struct for cleaner parameter threading.
+///
+/// Remaining FP (2): unchanged (opal Thread.new, xiki nested block).
+/// Remaining FN (8): Shopify/tapioca, holman/boom (2),
+/// interagent/prmd, soutaro/steep (2), sup-heliotrope/sup,
+/// troessner/reek — these require deeper VariableForce semantics.
 pub struct ShadowingOuterLocalVariable;
 
 impl Cop for ShadowingOuterLocalVariable {
@@ -279,7 +308,7 @@ impl ShadowVisitor<'_, '_> {
             .map(|s| s.location().start_offset())
             .unwrap_or(if_offset);
 
-        let then_single_stmt = node.statements().map_or(true, |s| s.body().len() <= 1);
+        let then_single_stmt = node.statements().is_none_or(|s| s.body().len() <= 1);
 
         // Visit predicate with the then-body's conditional context (is_body=false).
         self.conditional_branch_stack.push(CondBranchEntry {
@@ -329,7 +358,7 @@ impl ShadowVisitor<'_, '_> {
                 let else_single_stmt = subsequent
                     .as_else_node()
                     .and_then(|e| e.statements())
-                    .map_or(true, |s| s.body().len() <= 1);
+                    .is_none_or(|s| s.body().len() <= 1);
                 self.conditional_branch_stack.push(CondBranchEntry {
                     cond_offset: if_offset,
                     branch_offset,
@@ -716,7 +745,7 @@ impl<'pr> Visit<'pr> for ShadowVisitor<'_, '_> {
         let unless_offset = node.location().start_offset();
         let else_offset = node.else_clause().map(|e| e.location().start_offset());
 
-        let body_single_stmt = node.statements().map_or(true, |s| s.body().len() <= 1);
+        let body_single_stmt = node.statements().is_none_or(|s| s.body().len() <= 1);
 
         // Visit predicate normally
         self.visit(&node.predicate());
@@ -813,7 +842,7 @@ impl<'pr> Visit<'pr> for ShadowVisitor<'_, '_> {
             let when_single_stmt = condition
                 .as_when_node()
                 .and_then(|w| w.statements())
-                .map_or(true, |s| s.body().len() <= 1);
+                .is_none_or(|s| s.body().len() <= 1);
             self.conditional_branch_stack.push(CondBranchEntry {
                 cond_offset: case_offset,
                 branch_offset,
@@ -833,9 +862,7 @@ impl<'pr> Visit<'pr> for ShadowVisitor<'_, '_> {
         // Visit the else clause (consequent) with its own branch
         if let Some(else_clause) = node.else_clause() {
             let branch_offset = else_clause.location().start_offset();
-            let else_single_stmt = else_clause
-                .statements()
-                .map_or(true, |s| s.body().len() <= 1);
+            let else_single_stmt = else_clause.statements().is_none_or(|s| s.body().len() <= 1);
             self.conditional_branch_stack.push(CondBranchEntry {
                 cond_offset: case_offset,
                 branch_offset,
@@ -889,10 +916,11 @@ fn is_different_conditional_branch(
     // skips when nodes). Block resolves to case only when single-stmt
     // (block.parent = when → case). Multi-stmt → block.parent = begin.
     if let Some((outer_cond, outer_branch)) = outer_info.conditional_branch {
-        if outer_cond == block_branch.0 && outer_branch != block_branch.1 {
-            if outer_info.is_if_type_cond || block_single_stmt {
-                return true;
-            }
+        if outer_cond == block_branch.0
+            && outer_branch != block_branch.1
+            && (outer_info.is_if_type_cond || block_single_stmt)
+        {
+            return true;
         }
     }
     // Check 2: adjacent elsif suppression.
