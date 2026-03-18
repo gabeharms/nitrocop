@@ -90,8 +90,7 @@ in String unless false
   x = 2
 end
 
-# RuboCop 1.84.2 crashes when else clause is explicit but empty
-# (regardless of whether the then-body has content)
+# RuboCop 1.84.2 crashes when both then-body AND else-body are empty
 if true
 else
 end
@@ -102,16 +101,5 @@ end
 
 if condition
 elsif false
-else
-end
-
-# Non-empty then-body with empty else: RuboCop also crashes/skips
-if false
-  123
-else
-end
-
-unless 1
-  2
 else
 end

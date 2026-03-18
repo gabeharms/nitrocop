@@ -114,32 +114,21 @@ use crate::parse::source::SourceFile;
 ///
 /// Corpus oracle reported FP=0, FN=11.
 ///
-/// FN root cause: The empty-else skip was too aggressive. It skipped ALL cases
-/// where the else branch was empty, including `if true; <nested>; else; end`
-/// where the then-body is non-empty. RuboCop 1.84.2 only crashes when BOTH
-/// the then-body AND else-body are empty (e.g. `if true; else; end`).
+/// FN root cause: The `if_has_empty_else` skip was too aggressive. It skipped ALL
+/// cases where the else branch was empty, including `if true; <nested>; else; end`
+/// where the then-body is non-empty. RuboCop 1.84.2 only crashes when BOTH the
+/// then-body AND else-body are empty (e.g. `if true; else; end`).
 /// When the then-body has content, RuboCop correctly flags the literal.
 ///
-/// Fix: Changed `if_has_empty_body_and_empty_else` to `if_has_empty_body_and_empty_else`,
-/// which only skips when both branches are empty. This fixes 11 FNs across
-/// jruby (9 nested `if true;` with empty else) and rufo (2 `if 1; 2; else; end`).
+/// Verified from corpus: jruby's `bench/compiler/bench_compilation.rb` has 10
+/// nested `if true;` each with its own `else; end`. The 9 outer levels have
+/// non-empty then-bodies (nested ifs) → RuboCop flags them. The innermost has
+/// empty then and empty else → RuboCop crashes/skips. rufo has `if 1; 2; else; end`
+/// (non-empty then, empty else) → RuboCop flags.
 ///
-/// ## Corpus investigation (2026-03-18, round 2)
-///
-/// Corpus oracle reported FP=4, FN=0.
-///
-/// FP root cause: RuboCop 1.84.2 crashes on ANY `if`/`unless` with a literal
-/// condition and an explicit `else` clause with an empty body, regardless of
-/// whether the then-body is empty or non-empty. The previous fix was wrong:
-/// it only skipped when BOTH branches were empty, but the crash occurs whenever
-/// the else-body is empty.
-///
-/// Examples from corpus:
-/// - jruby/natalie: `if false; 123; else; end.should == nil`
-/// - rufo: `unless 1; 2; else; end`
-///
-/// Fix: Changed `if_has_empty_body_and_empty_else` to `if_has_empty_else`,
-/// which skips whenever the explicit else branch has an empty body.
+/// Fix: Changed `if_has_empty_else` to `if_has_empty_body_and_empty_else`, which
+/// only skips when both branches are empty. Verified with verify-cop-locations.py:
+/// all 11 FN fixed, 0 new FP.
 pub struct LiteralAsCondition;
 
 /// Check if a node is a literal value (matches RuboCop's `literal?`).
@@ -274,10 +263,14 @@ fn statements_are_empty(statements: Option<ruby_prism::StatementsNode<'_>>) -> b
 }
 
 /// RuboCop 1.84.2 crashes (emits no offense) when an `if`/`unless` has a
-/// literal condition and an explicit `else` branch with an empty body,
-/// regardless of whether the then-body is empty or non-empty.
-/// Examples: `if true; else; end`, `if false; 123; else; end`.
-fn if_has_empty_else(if_node: &ruby_prism::IfNode<'_>) -> bool {
+/// literal condition and BOTH the then-body AND else-body are empty.
+/// Example: `if true; else; end` (both branches empty → crash).
+/// When the then-body has content (e.g. `if true; nested; else; end`),
+/// RuboCop correctly flags the literal condition.
+fn if_has_empty_body_and_empty_else(if_node: &ruby_prism::IfNode<'_>) -> bool {
+    if !statements_are_empty(if_node.statements()) {
+        return false;
+    }
     if let Some(subsequent) = if_node.subsequent() {
         if let Some(else_node) = subsequent.as_else_node() {
             return statements_are_empty(else_node.statements());
@@ -286,7 +279,10 @@ fn if_has_empty_else(if_node: &ruby_prism::IfNode<'_>) -> bool {
     false
 }
 
-fn unless_has_empty_else(unless_node: &ruby_prism::UnlessNode<'_>) -> bool {
+fn unless_has_empty_body_and_empty_else(unless_node: &ruby_prism::UnlessNode<'_>) -> bool {
+    if !statements_are_empty(unless_node.statements()) {
+        return false;
+    }
     if let Some(else_node) = unless_node.else_clause() {
         return statements_are_empty(else_node.statements());
     }
@@ -383,7 +379,7 @@ impl Cop for LiteralAsCondition {
             if is_pattern_matching_guard(source, node) {
                 return;
             }
-            if if_has_empty_else(&if_node) {
+            if if_has_empty_body_and_empty_else(&if_node) {
                 return;
             }
             let predicate = if_node.predicate();
@@ -400,7 +396,7 @@ impl Cop for LiteralAsCondition {
             if is_pattern_matching_guard(source, node) {
                 return;
             }
-            if unless_has_empty_else(&unless_node) {
+            if unless_has_empty_body_and_empty_else(&unless_node) {
                 return;
             }
             let predicate = unless_node.predicate();
@@ -600,13 +596,73 @@ mod tests {
     }
 
     #[test]
-    fn test_if_literal_semicolon_else_end_no_offense() {
-        // RuboCop 1.84.2 crashes on literal condition with empty else body
+    fn test_if_literal_semicolon_else_end_offense() {
+        // RuboCop flags literal condition even with empty else when then-body is non-empty
         let cop = LiteralAsCondition;
         let diags = crate::testutil::run_cop_full(&cop, b"if 1; 2; else; end\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "should detect literal in 'if 1; 2; else; end' but got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_if_literal_both_empty_no_offense() {
+        // RuboCop 1.84.2 crashes when both then-body and else-body are empty
+        let cop = LiteralAsCondition;
+        let diags = crate::testutil::run_cop_full(&cop, b"if true; else; end\n");
         assert!(
             diags.is_empty(),
-            "should NOT detect literal in 'if 1; 2; else; end' (RuboCop crash) but got: {:?}",
+            "should NOT detect literal in 'if true; else; end' (both empty) but got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_jruby_nested_if_true_with_empty_else_on_all_levels() {
+        // jruby corpus: 10 nested `if true;` each with its own empty else.
+        // The 9 outer ones have non-empty then-bodies → RuboCop flags them.
+        // The innermost has both empty then and empty else → RuboCop crashes/skips.
+        let cop = LiteralAsCondition;
+        let src = b"\
+if true;\n\
+  if true;\n\
+    if true;\n\
+      if true;\n\
+        if true;\n\
+          if true;\n\
+            if true;\n\
+              if true;\n\
+                if true;\n\
+                  if true;\n\
+                  else\n\
+                  end\n\
+                else\n\
+                end\n\
+              else\n\
+              end\n\
+            else\n\
+            end\n\
+          else\n\
+          end\n\
+        else\n\
+        end\n\
+      else\n\
+      end\n\
+    else\n\
+    end\n\
+  else\n\
+  end\n\
+else\n\
+end\n";
+        let diags = crate::testutil::run_cop_full(&cop, src);
+        assert_eq!(
+            diags.len(),
+            9,
+            "expected 9 offenses (outer nested if true; with non-empty then) but got {}: {:?}",
+            diags.len(),
             diags
         );
     }

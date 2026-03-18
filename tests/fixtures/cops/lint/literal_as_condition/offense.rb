@@ -163,3 +163,35 @@ if true;
   end
 end
 
+# Non-empty then-body with empty else: RuboCop flags the literal
+if false
+   ^^^^^ Lint/LiteralAsCondition: Literal `false` appeared as a condition.
+  123
+else
+end
+
+unless 1
+       ^ Lint/LiteralAsCondition: Literal `1` appeared as a condition.
+  2
+else
+end
+
+# Single-line if with literal, body, and empty else
+if 1; 2; else; end
+   ^ Lint/LiteralAsCondition: Literal `1` appeared as a condition.
+
+# Nested if true; where each level has empty else (jruby pattern)
+# Outer levels have non-empty then-body → flagged
+# Innermost has both empty then and else → not flagged (RuboCop crash)
+if true;
+   ^^^^ Lint/LiteralAsCondition: Literal `true` appeared as a condition.
+  if true;
+     ^^^^ Lint/LiteralAsCondition: Literal `true` appeared as a condition.
+    if true;
+    else
+    end
+  else
+  end
+else
+end
+
