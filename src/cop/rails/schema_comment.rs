@@ -63,10 +63,16 @@ use crate::parse::source::SourceFile;
 /// children in the parser AST (sym, sym, hash) and matches. nitrocop only saw
 /// 2 positional args and skipped it.
 ///
-/// Fix: introduced `parser_arg_count()` that counts all argument nodes including
-/// keyword hash, plus 1 for `&block` (BlockArgumentNode in Prism's `call.block()`
-/// vs block_pass in parser gem's send children). Applied arg-count gates:
-/// `create_table` requires 1-2, `add_column` requires 3-4.
+/// Fix for FN: introduced `parser_arg_count()` that counts all argument nodes
+/// including keyword hash, plus 1 for `&block` (BlockArgumentNode in Prism's
+/// `call.block()` vs block_pass in parser gem's send children). Applied
+/// arg-count gate for `add_column` (requires 3-4 parser-gem args).
+///
+/// REVERTED create_table arg-count gate (1-2 args): this gate filtered out
+/// 2,314 correct detections to fix only 17 FP — a bad tradeoff. The 17 FP
+/// come from non-migration `create_table` calls (test helpers, Sequel, etc.).
+/// The proper fix is a `within_change_method_or_block?` context check (like
+/// RuboCop's), not arg-count filtering. FP=17 remain as a known gap.
 pub struct SchemaComment;
 
 const TABLE_MSG: &str = "New database table without `comment`.";
@@ -216,12 +222,6 @@ impl Cop for SchemaComment {
 
         match name {
             b"create_table" if call.receiver().is_none() => {
-                // RuboCop pattern: (send nil? :create_table _table _?)
-                // Matches 1-2 argument children in the parser gem AST.
-                let argc = parser_arg_count(&call);
-                if !(1..=2).contains(&argc) {
-                    return;
-                }
                 if !has_valid_comment(&call) {
                     // Table without comment — only report table-level offense
                     let loc = node.location();

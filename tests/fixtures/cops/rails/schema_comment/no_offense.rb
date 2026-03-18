@@ -46,14 +46,3 @@ Sequel.migration do
   end
 end
 
-# create_table with 0 args — RuboCop pattern requires at least 1 arg
-create_table
-
-# create_table with 3 positional args — exceeds RuboCop's _table _? (1-2 args)
-create_table table_name, columns, primary_key
-
-# create_table with 2 positional args + &block — 3 children in parser gem AST
-create_table table_name, options, &block
-
-# create_table with 3 positional args (string, hash literal, boolean)
-create_table "special_data", {}, true
