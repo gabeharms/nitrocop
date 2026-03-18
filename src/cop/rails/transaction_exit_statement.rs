@@ -3,35 +3,31 @@
 ///
 /// ## Root Cause Analysis (FN=91)
 ///
-/// Two bugs caused all false negatives:
+/// Three bugs caused all false negatives:
 ///
-/// 1. **Missing `with_lock`** as a built-in transaction method. RuboCop's
+/// 1. **`TransactionMethods: []` in vendor config replaced built-in methods**.
+///    The vendor `config/default.yml` sets `TransactionMethods: []` (empty array).
+///    The original code used `if let Some(ref methods) = transaction_methods` which,
+///    when `TransactionMethods` was present (even as empty `[]`), replaced the
+///    built-in methods entirely instead of being additive. Since `get_string_array`
+///    returns `Some(vec![])` for an empty YAML array, the cop checked only the empty
+///    vec and never matched `transaction` or `with_lock`. This made the cop produce
+///    ZERO results despite unit tests passing (tests don't load vendor config).
+///    RuboCop's `transaction_method_name?` always checks `BUILT_IN_TRANSACTION_METHODS`
+///    first, then uses `TransactionMethods` as additive custom methods.
+///
+/// 2. **Missing `with_lock`** as a built-in transaction method. RuboCop's
 ///    `BUILT_IN_TRANSACTION_METHODS = %i[transaction with_lock]` includes both, but
-///    the original implementation only checked for `transaction`. Since `with_lock` is
-///    very common in Rails codebases, this was the primary source of FN.
+///    the original implementation only checked for `transaction`.
 ///
-/// 2. **`break` inside nested non-transaction blocks incorrectly flagged (FP)**.
+/// 3. **`break` inside nested non-transaction blocks incorrectly flagged (FP)**.
 ///    RuboCop skips `break` when it appears inside a nested block that is NOT a
 ///    transaction method (e.g., `loop do`, `each do`, `while`, `until`). The `break`
-///    exits the inner block, not the outer transaction. Only `return` and `throw`
-///    propagate through nested blocks to exit the enclosing method/transaction.
-///    The original `ExitFinder` had no such filtering and would flag `break` inside
-///    `loop`/`each`/`while`/`until` within transactions.
-///
-/// ## Fix
-///
-/// - Added `with_lock` to the default transaction method set.
-/// - Added `nested_non_transaction_block_depth` tracking in `ExitFinder` to skip
-///   `break` nodes that are inside nested non-transaction blocks. When the visitor
-///   enters a `BlockNode` or `LambdaNode`, it increments the depth; when it exits,
-///   it decrements. `break` is only reported when `nested_block_depth == 0`.
-///   `return` and `throw` are always reported regardless of nesting depth (they
-///   propagate out to the enclosing method, bypassing transaction commit/rollback).
+///    exits the inner block, not the outer transaction.
 ///
 /// ## Remaining Gaps
 ///
-/// None observed. All vendor spec cases pass. The corpus conformance should be
-/// significantly improved by adding `with_lock` detection.
+/// None observed. All vendor spec cases pass.
 use ruby_prism::Visit;
 
 use crate::cop::node_type::{BLOCK_NODE, CALL_NODE};
@@ -148,7 +144,7 @@ impl Cop for TransactionExitStatement {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let transaction_methods = config.get_string_array("TransactionMethods");
+        let custom_methods = config.get_string_array("TransactionMethods");
 
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -157,13 +153,15 @@ impl Cop for TransactionExitStatement {
         let method_name = call.name().as_slice();
 
         // Check if the method is a transaction method (built-in or configured).
-        // Built-in: `transaction` and `with_lock`. Custom via TransactionMethods config.
-        let is_transaction = if let Some(ref methods) = transaction_methods {
-            let name_str = std::str::from_utf8(method_name).unwrap_or("");
-            methods.iter().any(|m| m == name_str)
-        } else {
-            BUILT_IN_TRANSACTION_METHODS.contains(&method_name)
-        };
+        // Built-in methods (`transaction`, `with_lock`) are always checked.
+        // TransactionMethods config adds custom methods on top (additive),
+        // matching RuboCop's `transaction_method_name?` which always checks
+        // BUILT_IN_TRANSACTION_METHODS first.
+        let is_transaction = BUILT_IN_TRANSACTION_METHODS.contains(&method_name)
+            || custom_methods.is_some_and(|methods| {
+                let name_str = std::str::from_utf8(method_name).unwrap_or("");
+                methods.iter().any(|m| m == name_str)
+            });
         if !is_transaction {
             return;
         }
