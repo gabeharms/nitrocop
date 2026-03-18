@@ -66,3 +66,11 @@ x = a * b ** 2
 # Setter call without spaces
 x.y =2
     ^ Layout/SpaceAroundOperators: Surrounding space missing for operator `=`.
+
+# Extra spaces around = (not aligned)
+x  = 1
+   ^ Layout/SpaceAroundOperators: Operator `=` should be surrounded by a single space.
+
+# Extra spaces around => (not aligned)
+{'key'  => 'val'}
+        ^^ Layout/SpaceAroundOperators: Operator `=>` should be surrounded by a single space.

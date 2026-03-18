@@ -18,6 +18,17 @@ use ruby_prism::Visit;
 /// - Fix: expanded AST visitor to cover all operator types that RuboCop checks,
 ///   including write nodes (assignments), class/sclass operators, rescue assoc,
 ///   pattern matching operators (alternation |, capture =>), and rational literals.
+///
+/// Investigation findings (2026-03-18):
+/// - FP=317: 109 from text scanner not treating tabs as valid whitespace around
+///   operators (==, !=, =>, =). 205 from AllowForAlignment not supporting
+///   cross-operator alignment (e.g., `||=` aligned with `=`). 3 from rational
+///   literal false positives.
+/// - FN=3040: 1492 missing extra-space detection for `=`, 1250 for `=>`,
+///   114 for `==`, 83 for ternary `?`/`:` (not implemented).
+/// - Fix: treat tabs as valid whitespace in text scanner; add extra-space
+///   detection for `=` and `=>` in text scanner; improve alignment detection
+///   to support cross-operator alignment (operators ending at same column).
 pub struct SpaceAroundOperators;
 
 /// Collect byte offsets of `=` signs that are part of parameter defaults,
@@ -172,8 +183,9 @@ impl Cop for SpaceAroundOperators {
                     }
 
                     let op_str = std::str::from_utf8(two).unwrap_or("??");
-                    let space_before = i > 0 && bytes[i - 1] == b' ';
-                    let space_after = i + 2 < len && bytes[i + 2] == b' ';
+                    let space_before = i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t');
+                    let space_after =
+                        i + 2 < len && (bytes[i + 2] == b' ' || bytes[i + 2] == b'\t');
                     let newline_after =
                         i + 2 >= len || bytes[i + 2] == b'\n' || bytes[i + 2] == b'\r';
                     if !space_before || (!space_after && !newline_after) {
@@ -206,6 +218,26 @@ impl Cop for SpaceAroundOperators {
                             diag.corrected = true;
                         }
                         diagnostics.push(diag);
+                    } else if allow_for_alignment && space_before && (space_after || newline_after)
+                    {
+                        // Check for extra spaces around operator (alignment check)
+                        let multi_before = i >= 2 && bytes[i - 1] == b' ' && bytes[i - 2] == b' ';
+                        let multi_after =
+                            i + 3 < len && bytes[i + 2] == b' ' && bytes[i + 3] == b' ';
+                        if multi_before || multi_after {
+                            check_text_scanner_extra_space(
+                                self,
+                                source,
+                                i,
+                                i + 2,
+                                op_str,
+                                two,
+                                multi_before,
+                                multi_after,
+                                diagnostics,
+                                &mut corrections,
+                            );
+                        }
                     }
                     i += 2;
                     continue;
@@ -264,8 +296,8 @@ impl Cop for SpaceAroundOperators {
                     continue;
                 }
 
-                let space_before = i > 0 && bytes[i - 1] == b' ';
-                let space_after = i + 1 < len && bytes[i + 1] == b' ';
+                let space_before = i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t');
+                let space_after = i + 1 < len && (bytes[i + 1] == b' ' || bytes[i + 1] == b'\t');
                 let newline_after = i + 1 >= len || bytes[i + 1] == b'\n' || bytes[i + 1] == b'\r';
                 if !space_before || (!space_after && !newline_after) {
                     let (line, column) = source.offset_to_line_col(i);
@@ -297,6 +329,24 @@ impl Cop for SpaceAroundOperators {
                         diag.corrected = true;
                     }
                     diagnostics.push(diag);
+                } else if allow_for_alignment && space_before && (space_after || newline_after) {
+                    // Check for extra spaces around `=` (alignment check)
+                    let multi_before = i >= 2 && bytes[i - 1] == b' ' && bytes[i - 2] == b' ';
+                    let multi_after = i + 2 < len && bytes[i + 1] == b' ' && bytes[i + 2] == b' ';
+                    if multi_before || multi_after {
+                        check_text_scanner_extra_space(
+                            self,
+                            source,
+                            i,
+                            i + 1,
+                            "=",
+                            b"=",
+                            multi_before,
+                            multi_after,
+                            diagnostics,
+                            &mut corrections,
+                        );
+                    }
                 }
                 i += 1;
                 continue;
@@ -305,6 +355,253 @@ impl Cop for SpaceAroundOperators {
             i += 1;
         }
     }
+}
+
+/// Check for extra spaces around an operator found by the text scanner.
+#[allow(clippy::too_many_arguments)]
+fn check_text_scanner_extra_space(
+    cop: &SpaceAroundOperators,
+    source: &SourceFile,
+    op_start: usize,
+    op_end: usize,
+    op_str: &str,
+    op_bytes: &[u8],
+    multi_before: bool,
+    multi_after: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
+) {
+    let bytes = source.as_bytes();
+    // Skip if operator is at start of line (spaces are indentation)
+    if multi_before {
+        let mut ls = op_start;
+        while ls > 0 && bytes[ls - 1] != b'\n' {
+            ls -= 1;
+        }
+        if bytes[ls..op_start].iter().all(|&b| b == b' ' || b == b'\t') {
+            return;
+        }
+    }
+    // AllowForAlignment: skip if aligned with operator on adjacent line
+    if is_aligned_standalone(source, op_start, op_bytes) {
+        return;
+    }
+    // Skip if trailing space extends to a comment on the same line
+    if multi_after {
+        let mut p = op_end;
+        while p < bytes.len() && bytes[p] == b' ' {
+            p += 1;
+        }
+        if p < bytes.len() && bytes[p] == b'#' {
+            return;
+        }
+    }
+    let ws_start = if multi_before {
+        let mut s = op_start - 1;
+        while s > 0 && bytes[s - 1] == b' ' {
+            s -= 1;
+        }
+        s
+    } else {
+        op_start
+    };
+    let ws_end = if multi_after {
+        let mut e = op_end;
+        while e < bytes.len() && bytes[e] == b' ' {
+            e += 1;
+        }
+        e
+    } else {
+        op_end
+    };
+    let (line, column) = source.offset_to_line_col(op_start);
+    let mut diag = cop.diagnostic(
+        source,
+        line,
+        column,
+        format!("Operator `{op_str}` should be surrounded by a single space."),
+    );
+    if let Some(corr) = corrections {
+        if multi_before {
+            corr.push(crate::correction::Correction {
+                start: ws_start,
+                end: op_start,
+                replacement: " ".to_string(),
+                cop_name: cop.name(),
+                cop_index: 0,
+            });
+        }
+        if multi_after {
+            corr.push(crate::correction::Correction {
+                start: op_end,
+                end: ws_end,
+                replacement: " ".to_string(),
+                cop_name: cop.name(),
+                cop_index: 0,
+            });
+        }
+        diag.corrected = true;
+    }
+    diagnostics.push(diag);
+}
+
+/// Standalone alignment check used by both text scanner and AST visitor.
+/// Checks if the operator at byte offset `start` is aligned with an operator
+/// on an adjacent non-blank, non-comment line. Supports:
+/// 1. Same operator at same byte column
+/// 2. Word/space boundary at same column (aligned_words in RuboCop)
+/// 3. Cross-operator alignment (operators ending at same column)
+fn is_aligned_standalone(source: &SourceFile, start: usize, op_bytes: &[u8]) -> bool {
+    let bytes = source.as_bytes();
+    let mut ls = start;
+    while ls > 0 && bytes[ls - 1] != b'\n' {
+        ls -= 1;
+    }
+    let byte_col = start - ls;
+    let op_end_col = byte_col + op_bytes.len();
+    let lines: Vec<&[u8]> = source.lines().collect();
+    let (line, _) = source.offset_to_line_col(start);
+    let line_idx = line - 1;
+    // Pass 1: closest non-blank, non-comment line (no indentation filter)
+    if check_alignment_standalone(&lines, line_idx, byte_col, op_end_col, op_bytes, None) {
+        return true;
+    }
+    // Pass 2: search for same-indentation lines further out
+    let my_indent = lines[line_idx]
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t')
+        .unwrap_or(0);
+    check_alignment_standalone(
+        &lines,
+        line_idx,
+        byte_col,
+        op_end_col,
+        op_bytes,
+        Some(my_indent),
+    )
+}
+
+fn check_alignment_standalone(
+    lines: &[&[u8]],
+    line_idx: usize,
+    byte_col: usize,
+    op_end_col: usize,
+    op_bytes: &[u8],
+    indent_filter: Option<usize>,
+) -> bool {
+    for up in [true, false] {
+        let mut check_idx = if up {
+            if line_idx == 0 {
+                continue;
+            }
+            line_idx - 1
+        } else {
+            line_idx + 1
+        };
+        loop {
+            if check_idx >= lines.len() {
+                break;
+            }
+            let line_bytes = lines[check_idx];
+            let first_non_ws = line_bytes.iter().position(|&b| b != b' ' && b != b'\t');
+            match first_non_ws {
+                None => {}                               // Empty line — skip
+                Some(fs) if line_bytes[fs] == b'#' => {} // Comment line — skip
+                Some(indent) => {
+                    if let Some(required) = indent_filter {
+                        if indent != required {
+                            if up {
+                                if check_idx == 0 {
+                                    break;
+                                }
+                                check_idx -= 1;
+                            } else {
+                                check_idx += 1;
+                            }
+                            continue;
+                        }
+                    }
+                    // Check 1: same operator at same byte column
+                    if byte_col + op_bytes.len() <= line_bytes.len()
+                        && &line_bytes[byte_col..byte_col + op_bytes.len()] == op_bytes
+                    {
+                        return true;
+                    }
+                    // Check 2: word/space boundary at same column (aligned_words)
+                    if byte_col > 0
+                        && byte_col < line_bytes.len()
+                        && (line_bytes[byte_col - 1] == b' ' || line_bytes[byte_col - 1] == b'\t')
+                        && line_bytes[byte_col] != b' '
+                        && line_bytes[byte_col] != b'\t'
+                    {
+                        return true;
+                    }
+                    // Check 3: cross-operator alignment (operators ending at same column)
+                    if line_has_operator_ending_at_col(line_bytes, op_end_col) {
+                        return true;
+                    }
+                    break;
+                }
+            }
+            if up {
+                if check_idx == 0 {
+                    break;
+                }
+                check_idx -= 1;
+            } else {
+                check_idx += 1;
+            }
+        }
+    }
+    false
+}
+
+/// Check if a line has an assignment/comparison operator ending at the given column.
+/// This enables cross-operator alignment detection, e.g., `=` aligned with `||=`.
+fn line_has_operator_ending_at_col(line: &[u8], target_end_col: usize) -> bool {
+    if target_end_col == 0 || target_end_col > line.len() {
+        return false;
+    }
+    let end_byte = line[target_end_col - 1];
+    if end_byte != b'=' && end_byte != b'<' {
+        return false;
+    }
+    let col = target_end_col;
+    if end_byte == b'=' && col >= 1 {
+        let before = if col >= 2 { line[col - 2] } else { b' ' };
+        // Simple `=` preceded by whitespace
+        if before == b' ' || before == b'\t' {
+            return true;
+        }
+        // `==`, `!=`, `<=`, `>=`
+        if matches!(before, b'=' | b'!' | b'<' | b'>') {
+            return true;
+        }
+        // `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, `|=`, `&=`
+        if matches!(
+            before,
+            b'+' | b'-' | b'*' | b'/' | b'%' | b'^' | b'|' | b'&'
+        ) {
+            return true;
+        }
+        // `||=`, `&&=`, `**=`, `<<=`, `>>=`
+        if col >= 3 {
+            let two_before = &line[col - 3..col];
+            if two_before == b"||="
+                || two_before == b"&&="
+                || two_before == b"**="
+                || two_before == b"<<="
+                || two_before == b">>="
+            {
+                return true;
+            }
+        }
+    }
+    // `<<` (append operator, treated as assignment-like for alignment)
+    if end_byte == b'<' && col >= 2 && line[col - 2] == b'<' {
+        return true;
+    }
+    false
 }
 
 const BINARY_OPERATORS: &[&[u8]] = &[
@@ -330,112 +627,10 @@ struct OperatorChecker<'a> {
 }
 
 impl OperatorChecker<'_> {
-    /// Check if the same operator text appears at the same byte column on an
-    /// adjacent non-empty, non-comment line. Uses a two-pass approach matching
-    /// RuboCop's `PrecedingFollowingAlignment`:
-    /// - Pass 1: check the closest non-blank, non-comment line in each direction
-    /// - Pass 2: search for a line with the same indentation as the operator line
+    /// Delegates to the standalone alignment checker which supports
+    /// cross-operator alignment (e.g., `||=` aligned with `=`).
     fn is_aligned_with_adjacent(&self, start: usize, op_bytes: &[u8]) -> bool {
-        let bytes = self.source.as_bytes();
-
-        // Compute byte column (distance from start of line)
-        let mut ls = start;
-        while ls > 0 && bytes[ls - 1] != b'\n' {
-            ls -= 1;
-        }
-        let byte_col = start - ls;
-
-        let lines: Vec<&[u8]> = self.source.lines().collect();
-        let (line, _) = self.source.offset_to_line_col(start);
-        let line_idx = line - 1; // 0-indexed
-
-        // Pass 1: closest non-blank, non-comment line (no indentation filter)
-        if self.check_alignment_any_direction(&lines, line_idx, byte_col, op_bytes, None) {
-            return true;
-        }
-
-        // Pass 2: search for same-indentation lines further out
-        let my_indent = lines[line_idx]
-            .iter()
-            .position(|&b| b != b' ' && b != b'\t')
-            .unwrap_or(0);
-        self.check_alignment_any_direction(&lines, line_idx, byte_col, op_bytes, Some(my_indent))
-    }
-
-    /// Check both directions for alignment, optionally filtering by indentation.
-    fn check_alignment_any_direction(
-        &self,
-        lines: &[&[u8]],
-        line_idx: usize,
-        byte_col: usize,
-        op_bytes: &[u8],
-        indent_filter: Option<usize>,
-    ) -> bool {
-        for up in [true, false] {
-            let mut check_idx = if up {
-                if line_idx == 0 {
-                    continue;
-                }
-                line_idx - 1
-            } else {
-                line_idx + 1
-            };
-
-            loop {
-                if check_idx >= lines.len() {
-                    break;
-                }
-
-                let line_bytes = lines[check_idx];
-                let first_non_ws = line_bytes.iter().position(|&b| b != b' ' && b != b'\t');
-
-                match first_non_ws {
-                    None => {
-                        // Empty line — skip
-                    }
-                    Some(fs) if line_bytes[fs] == b'#' => {
-                        // Comment line — skip
-                    }
-                    Some(indent) => {
-                        if let Some(required) = indent_filter {
-                            if indent != required {
-                                // Different indentation — skip in pass 2
-                                // (RuboCop skips non-matching indent lines)
-                                if up {
-                                    if check_idx == 0 {
-                                        break;
-                                    }
-                                    check_idx -= 1;
-                                } else {
-                                    check_idx += 1;
-                                }
-                                continue;
-                            }
-                        }
-                        // Check if same operator at same byte column
-                        if byte_col + op_bytes.len() <= line_bytes.len()
-                            && &line_bytes[byte_col..byte_col + op_bytes.len()] == op_bytes
-                        {
-                            return true;
-                        }
-                        // In pass 1 (no indent filter), stop at first non-blank line
-                        // In pass 2 (with indent filter), stop at first matching-indent line
-                        break;
-                    }
-                }
-
-                if up {
-                    if check_idx == 0 {
-                        break;
-                    }
-                    check_idx -= 1;
-                } else {
-                    check_idx += 1;
-                }
-            }
-        }
-
-        false
+        is_aligned_standalone(self.source, start, op_bytes)
     }
 
     /// Check operator spacing for a "should have space" operator.

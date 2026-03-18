@@ -42,3 +42,9 @@ x = a * b**2
 
 # Setter call without spaces
 x.y = 2
+
+# Extra spaces around = (not aligned)
+x = 1
+
+# Extra spaces around => (not aligned)
+{'key' => 'val'}

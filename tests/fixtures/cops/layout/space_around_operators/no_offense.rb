@@ -148,4 +148,25 @@ Zlib::GzipWriter
 func(:-)
 
 # Tabs around operator are acceptable
-a = 1
+a =	1
+x	= 1
+y	=	2
+'000'	=>	'General error'
+'001' =>	'3D Not authenticated'
+x ==	y
+x	!= y
+
+# Cross-operator alignment: ||= aligned with = (same end column)
+PATH_PATTERN           = /^\/\w+/
+PROTOCOL_PATTERN       = /^\w+:\/\//
+README                 = File.dirname(__FILE__) + '/../../README.md'
+@output              ||= STDOUT
+
+# Cross-operator alignment: += aligned with = (same end column)
+x  = 1
+y += 2
+
+# Cross-operator alignment: various compound operators aligned
+found        += items
+total        += count
+status      ||= 0
