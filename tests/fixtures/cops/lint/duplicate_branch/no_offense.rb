@@ -87,3 +87,42 @@ do_foo if foo
 
 # Modifier unless is not checked
 do_bar unless foo
+
+# Strings that differ only by whitespace inside the literal (not duplicates)
+if version >= '3.4'
+  "attribute {\"foo\" => \"bar\"}"
+else
+  "attribute {\"foo\"=>\"bar\"}"
+end
+
+# Interpolated strings with different whitespace content
+if check_version
+  " $#{str}$ "
+else
+  "$#{str}$"
+end
+
+# Regex that differ by whitespace inside pattern
+if allow_spaces
+  value.gsub(/[^\d ]/, '')
+else
+  value.gsub(/[^\d]/, '')
+end
+
+# Heredocs with different indentation (not duplicates)
+if version > "5.2"
+  route <<-RUBY
+if Rails.env.development?
+  mount Engine, at: "/path"
+end
+RUBY
+else
+  route <<-RUBY
+if Rails.env.development?
+    mount Engine, at: "/path"
+  end
+RUBY
+end
+
+# String interpolation with trailing space difference
+line.sub!(/^/, line == "" ? "#{prefix}" : "#{prefix} ")

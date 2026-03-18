@@ -144,6 +144,31 @@ elsif bar
   return []
 end
 
+# case/when with different comments but same code
+case mode
+when 'subscribe'
+  render :text => params['challenge'], :status => 200
+  # TODO: confirm subscription
+  return
+when 'unsubscribe'
+^^^^^^^^^^^^^^^^^^^^^^ Lint/DuplicateBranch: Duplicate branch body detected.
+  render :text => params['challenge'], :status => 200
+  # TODO: confirm unsubscription
+  return
+end
+
+# if/elsif with logs but same structure (different comments, same code)
+if check_a
+  logger.trace("detected in #{config['path']}")
+  true
+elsif check_b
+^^^^^^^^^^^^^^^^ Lint/DuplicateBranch: Duplicate branch body detected.
+  logger.trace("detected in #{config['path']}")
+  true
+else
+  false
+end
+
 # rescue branches with different blank lines but same code
 begin
   work

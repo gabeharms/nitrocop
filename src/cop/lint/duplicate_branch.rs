@@ -53,20 +53,32 @@ use crate::parse::source::SourceFile;
 /// literal branch for the `IgnoreLiteralBranches` config path to satisfy the
 /// Prism hash/keyword-hash split.
 ///
-/// ## Follow-up (2026-03-18)
+/// ## Follow-up (2026-03-18) — whitespace normalization
 ///
 /// Remaining 15 FN were caused by whitespace-only differences between branches.
-/// RuboCop compares branches by AST structure (which ignores whitespace and
-/// comments), but nitrocop was comparing raw source bytes.
+/// Fix: normalize whitespace in source comparison keys.
 ///
-/// Examples: `{|child| check(child)}` vs `{|child| check(child) }` (trailing
-/// space before `}`), or rescue branches with extra blank lines between
-/// statements.
+/// ## Follow-up (2026-03-18) — FP from literal content + FN from comments
 ///
-/// Fix: normalize the source comparison key by collapsing all whitespace runs
-/// to a single space. Comments are already excluded since Prism's StatementsNode
-/// source range doesn't include them. String literals continue to use unescaped
-/// content for escape-equivalence.
+/// FP=29, FN=9 at 98.5% match rate.
+///
+/// **FP root cause:** whitespace normalization was applied to the entire source
+/// range including string/regex/heredoc content. Branches with strings differing
+/// only by whitespace inside the literal (e.g., `"foo => bar"` vs `"foo=>bar"`,
+/// or heredocs with different indentation) were falsely flagged as duplicates.
+///
+/// **FN root cause:** Prism's `StatementsNode` source range includes comments
+/// between statements. Branches with identical code but different comments
+/// (e.g., different TODO comments between `render` and `return`) compared
+/// differently because the raw source bytes included the comment text.
+///
+/// **Fix:** Two changes to `stmts_source`:
+/// 1. Iterate individual body nodes (not the full StatementsNode range) to skip
+///    inter-statement comments. Prism's `body()` returns only statement nodes.
+/// 2. Use `LiteralSpanFinder` visitor to identify string/regex/symbol literal
+///    spans within each node. Whitespace is normalized only OUTSIDE literal
+///    spans; literal content is fingerprinted verbatim (strings use unescaped
+///    bytes, regexes use unescaped pattern, interpolated strings use parts).
 pub struct DuplicateBranch;
 
 impl Cop for DuplicateBranch {
@@ -165,19 +177,24 @@ impl Cop for DuplicateBranch {
 /// Extract a comparison key for branch body.
 ///
 /// RuboCop compares branches by AST structure, not raw source text. Two branches
-/// with different whitespace or string escape spellings are duplicates if they
-/// produce the same AST.
+/// with different whitespace, comments, or string escape spellings are duplicates
+/// if they produce the same AST.
 ///
-/// We approximate this by normalizing the source text:
-/// 1. For single string-literal branches, use unescaped byte content so
+/// We approximate this by building a fingerprint from individual statement nodes:
+/// 1. Iterate body nodes individually (skips inter-statement comments, since
+///    Prism's `body()` only returns statement nodes, not comment nodes).
+/// 2. For single string-literal nodes, use unescaped byte content so
 ///    equivalent escape spellings compare equal.
-/// 2. For heredocs, extend the source range to include the closing delimiter.
-/// 3. Collapse all whitespace runs to a single space, so formatting differences
-///    (extra spaces, blank lines, indentation) don't prevent duplicate detection.
+/// 3. For other nodes, extend ranges for heredocs and normalize whitespace.
 fn stmts_source(source: &SourceFile, stmts: &Option<ruby_prism::StatementsNode<'_>>) -> Vec<u8> {
     match stmts {
         Some(s) => {
             let body = s.body();
+            if body.is_empty() {
+                return Vec::new();
+            }
+
+            // Single string literal: use unescaped content for escape-equivalence
             if body.len() == 1 {
                 if let Some(node) = body.iter().next() {
                     if let Some(string) = node.as_string_node() {
@@ -188,22 +205,21 @@ fn stmts_source(source: &SourceFile, stmts: &Option<ruby_prism::StatementsNode<'
                 }
             }
 
-            let loc = s.location();
-            let start = loc.start_offset();
-            let mut end = loc.end_offset();
-
-            let mut finder = MaxExtentFinder { max_end: end };
-            finder.visit(&s.as_node());
-            end = finder.max_end;
-
+            // Build fingerprint by concatenating per-node fingerprints.
+            // Iterating body nodes individually skips inter-statement comments.
+            // node_fingerprint preserves string/regex content verbatim while
+            // normalizing whitespace outside literals.
             let bytes = source.as_bytes();
-            let raw = if end <= bytes.len() {
-                &bytes[start..end]
-            } else {
-                loc.as_slice()
-            };
+            let mut fingerprint = Vec::new();
 
-            normalize_whitespace(raw)
+            for (i, node) in body.iter().enumerate() {
+                if i > 0 {
+                    fingerprint.push(b'\x00'); // separator between statements
+                }
+                node_fingerprint(bytes, &node, &mut fingerprint);
+            }
+
+            fingerprint
         }
         None => Vec::new(),
     }
@@ -262,6 +278,163 @@ impl<'pr> Visit<'pr> for MaxExtentFinder {
             }
         }
         ruby_prism::visit_string_node(self, node);
+    }
+}
+
+/// Build a fingerprint for a single statement node.
+///
+/// Finds all string/regex/symbol literal spans within the node using a visitor,
+/// then normalizes whitespace only OUTSIDE those spans. Literal content is
+/// preserved exactly, preventing false positives when whitespace inside strings
+/// or regexes differs between branches.
+fn node_fingerprint(bytes: &[u8], node: &ruby_prism::Node<'_>, out: &mut Vec<u8>) {
+    // Fast path: plain string literal — use unescaped content
+    if let Some(string) = node.as_string_node() {
+        out.extend_from_slice(b"S:");
+        out.extend_from_slice(string.unescaped());
+        return;
+    }
+
+    // Fast path: symbol literal — use unescaped name
+    if let Some(sym) = node.as_symbol_node() {
+        out.extend_from_slice(b"Y:");
+        out.extend_from_slice(sym.unescaped());
+        return;
+    }
+
+    let loc = node.location();
+    let node_start = loc.start_offset();
+    let mut node_end = loc.end_offset();
+
+    // Extend for heredocs within this node
+    let mut extent_finder = MaxExtentFinder { max_end: node_end };
+    extent_finder.visit(node);
+    node_end = extent_finder.max_end;
+
+    let end = node_end.min(bytes.len());
+    if node_start >= end {
+        let mut ws_out = normalize_whitespace(loc.as_slice());
+        out.append(&mut ws_out);
+        return;
+    }
+
+    // Collect literal spans (strings, regexes, symbols, heredocs) to preserve verbatim
+    let mut lit_finder = LiteralSpanFinder { spans: Vec::new() };
+    lit_finder.visit(node);
+    lit_finder.spans.sort_by_key(|s| s.0);
+
+    if lit_finder.spans.is_empty() {
+        // No literals — just normalize the whole source
+        let mut ws_out = normalize_whitespace(&bytes[node_start..end]);
+        out.append(&mut ws_out);
+        return;
+    }
+
+    let raw = &bytes[node_start..end];
+    let base = node_start;
+    let mut cursor = 0usize; // offset relative to base
+
+    for (span_start, span_end, content) in &lit_finder.spans {
+        let rel_start = span_start.saturating_sub(base);
+        let rel_end = span_end.saturating_sub(base).min(raw.len());
+
+        // Normalize whitespace in the gap before this literal
+        if rel_start > cursor {
+            let mut ws_out = normalize_whitespace(&raw[cursor..rel_start]);
+            out.append(&mut ws_out);
+        }
+
+        // Emit literal content verbatim
+        out.extend_from_slice(content);
+
+        if rel_end > cursor {
+            cursor = rel_end;
+        }
+    }
+
+    // Normalize any remaining source after the last literal
+    if cursor < raw.len() {
+        let mut ws_out = normalize_whitespace(&raw[cursor..]);
+        out.append(&mut ws_out);
+    }
+}
+
+/// Collects byte spans of string/regex/symbol literals within a node.
+/// Each span is (start_offset, end_offset, fingerprint_bytes).
+struct LiteralSpanFinder {
+    spans: Vec<(usize, usize, Vec<u8>)>,
+}
+
+impl<'pr> Visit<'pr> for LiteralSpanFinder {
+    fn visit_string_node(&mut self, node: &ruby_prism::StringNode<'pr>) {
+        let start = node.location().start_offset();
+        let mut end = node.location().end_offset();
+        if let Some(close) = node.closing_loc() {
+            let close_end = close.end_offset();
+            if close_end > end {
+                end = close_end;
+            }
+        }
+        let mut fp = b"S:".to_vec();
+        fp.extend_from_slice(node.unescaped());
+        self.spans.push((start, end, fp));
+    }
+
+    fn visit_interpolated_string_node(&mut self, node: &ruby_prism::InterpolatedStringNode<'pr>) {
+        let start = node.location().start_offset();
+        let mut end = node.location().end_offset();
+        if let Some(close) = node.closing_loc() {
+            let close_end = close.end_offset();
+            if close_end > end {
+                end = close_end;
+            }
+        }
+        // Use individual parts for content comparison (handles heredocs correctly)
+        let mut fp = b"IS:".to_vec();
+        for part in node.parts().iter() {
+            fp.extend_from_slice(part.location().as_slice());
+        }
+        self.spans.push((start, end, fp));
+        // Don't recurse — treat the whole interpolated string as one literal span
+    }
+
+    fn visit_regular_expression_node(&mut self, node: &ruby_prism::RegularExpressionNode<'pr>) {
+        let start = node.location().start_offset();
+        let end = node.location().end_offset();
+        let mut fp = b"R:".to_vec();
+        fp.extend_from_slice(node.unescaped());
+        let flag_slice = node.closing_loc().as_slice();
+        if flag_slice.len() > 1 {
+            fp.extend_from_slice(&flag_slice[1..]);
+        }
+        self.spans.push((start, end, fp));
+    }
+
+    fn visit_interpolated_regular_expression_node(
+        &mut self,
+        node: &ruby_prism::InterpolatedRegularExpressionNode<'pr>,
+    ) {
+        let start = node.location().start_offset();
+        let end = node.location().end_offset();
+        let mut fp = b"IR:".to_vec();
+        fp.extend_from_slice(node.location().as_slice());
+        self.spans.push((start, end, fp));
+    }
+
+    fn visit_symbol_node(&mut self, node: &ruby_prism::SymbolNode<'pr>) {
+        let start = node.location().start_offset();
+        let end = node.location().end_offset();
+        let mut fp = b"Y:".to_vec();
+        fp.extend_from_slice(node.unescaped());
+        self.spans.push((start, end, fp));
+    }
+
+    fn visit_interpolated_symbol_node(&mut self, node: &ruby_prism::InterpolatedSymbolNode<'pr>) {
+        let start = node.location().start_offset();
+        let end = node.location().end_offset();
+        let mut fp = b"IY:".to_vec();
+        fp.extend_from_slice(node.location().as_slice());
+        self.spans.push((start, end, fp));
     }
 }
 
