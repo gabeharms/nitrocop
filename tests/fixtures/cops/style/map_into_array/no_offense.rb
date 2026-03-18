@@ -28,3 +28,18 @@ end
 entries.each do |entry|
   order << entry.path
 end
+# Safe navigation on receiver - not flagged
+results = []
+collection&.each do |item|
+  results << item.to_s
+end
+# Operator assignment (+=) between init and each
+attachments = []
+attachments += existing_items(list)
+items.each do |item|
+  attachments << { data: item.data, name: item.name }
+end
+# Or-assignment (||=) between init and each
+values = []
+values ||= defaults
+src.each { |e| values << e }
