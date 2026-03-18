@@ -30,11 +30,20 @@ use crate::parse::source::SourceFile;
 /// and expressions like `2.0 ** -52`, `1.0 + Float::EPSILON`, `0.0.next_float`.
 ///
 /// ## Investigation (2026-03-18, round 3)
-/// 5 FP from ParenthesesNode unwrapping. RuboCop's `float_type?` does NOT unwrap
-/// parenthesized expressions — `(0.0)` is a `begin` node in RuboCop's AST and
-/// `float_type?` returns false for it. Patterns like `(0.0).next_float.should == ...`
-/// in jruby/natalie were falsely detected because `is_float()` recursed through
-/// ParenthesesNode. Fixed by removing ParenthesesNode handling entirely.
+/// 5 FP from ParenthesesNode unwrapping. Initial fix removed ParenthesesNode handling
+/// entirely, but this was incorrect. RuboCop's `float?` DOES unwrap `:begin` nodes
+/// (line 98-99 of the RuboCop source). The 5 FPs were from `(0.0).next_float` where
+/// the instance method path uses `node.receiver&.float_type?` (direct type check, NOT
+/// the recursive `float?`). So `(0.0)` (a `:begin` node) fails `.float_type?` → false.
+///
+/// ## Investigation (2026-03-18, round 4)
+/// FP=1: `to_f.round(1)` — our code used recursive `is_float()` for instance method
+/// receiver check, but RuboCop uses `node.receiver&.float_type?` (checks `:float` AST
+/// type only). `.to_f` is `:send`, not `:float`, so RuboCop doesn't flag it.
+/// FN=18: Parenthesized float expressions like `(n.to_f % 10)`, `(280.0 / 355.0)`,
+/// `(2.0 ** 1023)` — need ParenthesesNode unwrapping in `is_float()`.
+/// Fix: re-add ParenthesesNode unwrapping, but use `is_direct_float_node()` (non-recursive,
+/// matches `float_type?`) for the instance method / numeric_returning receiver check.
 pub struct FloatComparison;
 
 impl Cop for FloatComparison {
@@ -142,10 +151,30 @@ fn is_float(node: &ruby_prism::Node<'_>) -> bool {
         return true;
     }
 
+    // Unwrap ParenthesesNode — matches RuboCop's `when :begin` in `float?`
+    if let Some(parens) = node.as_parentheses_node() {
+        if let Some(body) = parens.body() {
+            if let Some(stmts) = body.as_statements_node() {
+                let body_stmts = stmts.body();
+                if body_stmts.len() == 1 {
+                    return is_float(&body_stmts.iter().next().unwrap());
+                }
+            }
+        }
+        return false;
+    }
+
     if let Some(call) = node.as_call_node() {
         return is_float_call(call);
     }
     false
+}
+
+/// Checks if a node is directly a float literal — matches RuboCop's `node.float_type?`
+/// which only checks the AST node type, NOT recursively. Used for instance method
+/// receiver checks where RuboCop uses `node.receiver&.float_type?`.
+fn is_direct_float_node(node: &ruby_prism::Node<'_>) -> bool {
+    node.as_float_node().is_some()
 }
 
 fn is_float_call(call: ruby_prism::CallNode<'_>) -> bool {
@@ -173,9 +202,12 @@ fn is_float_call(call: ruby_prism::CallNode<'_>) -> bool {
         return false;
     }
 
-    // Float instance methods on a float receiver
+    // Float instance methods on a float receiver.
+    // RuboCop uses `node.receiver&.float_type?` here — a direct type check for :float
+    // AST node, NOT the recursive `float?`. So `.to_f.round(1)` is NOT detected because
+    // `.to_f` is :send, not :float. We match this with `is_direct_float_node()`.
     if let Some(receiver) = call.receiver() {
-        if is_float(&receiver) {
+        if is_direct_float_node(&receiver) {
             // Methods that always return float from a float receiver
             if FLOAT_INSTANCE_METHODS.contains(&method) {
                 return true;

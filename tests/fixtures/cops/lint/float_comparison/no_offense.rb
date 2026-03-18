@@ -24,7 +24,8 @@ x == 1.1.ceil
 x == 1.1.floor
 x == 1 + 2
 x == (1)
-# Parenthesized float expressions - RuboCop does not unwrap parens
-x == (0.1)
+# Parenthesized float receiver with instance method - receiver.float_type? is false for (0.0)
 (-0.0).next_float == (0.0).next_float
 (0.0).prev_float == (-0.0).prev_float
+# round with positive precision on non-literal float receiver
+config.to_f.round(1) == target.to_f.round(1)

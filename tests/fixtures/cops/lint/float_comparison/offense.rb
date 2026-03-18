@@ -49,3 +49,12 @@ n.to_f % 10 == 1
 ^^^^^^^^^^^^^^^^^ Lint/FloatComparison: Avoid equality comparisons of floats as they are unreliable.
 x == 280.0 / 355.0
 ^^^^^^^^^^^^^^^^^^^ Lint/FloatComparison: Avoid equality comparisons of floats as they are unreliable.
+
+(n.to_f % 10) == 9
+^^^^^^^^^^^^^^^^^^^ Lint/FloatComparison: Avoid equality comparisons of floats as they are unreliable.
+x.should == (280.0 / 355.0)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/FloatComparison: Avoid equality comparisons of floats as they are unreliable.
+x.should == (2.0 ** 1023)
+^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/FloatComparison: Avoid equality comparisons of floats as they are unreliable.
+(format % 10).should == (format % 10.0)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/FloatComparison: Avoid equality comparisons of floats as they are unreliable.
