@@ -63,3 +63,12 @@ create_table :tags, comment: 'Tags' do |t|
   t.belongs_to :post
   ^^^^^^^^^^^^^^^^^^ Rails/SchemaComment: New database column without `comment`.
 end
+
+# add_column with 2 positional args + keyword hash = 3 parser-gem args.
+# RuboCop's pattern (send nil? :add_column _table _column _type _?) matches.
+# The keyword hash counts as _type in the parser gem AST.
+add_column :col_name, :text, null: false
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/SchemaComment: New database column without `comment`.
+
+add_column :created_at, :timestamp, collate: '"C"'
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/SchemaComment: New database column without `comment`.

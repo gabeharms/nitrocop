@@ -28,18 +28,16 @@ create_table :invoices, comment: 'Invoices' do |t|
   t.string :number, comment: desc
 end
 
-# Sequel ORM migrations — add_column inside alter_table only takes 2 positional
-# args (column_name, type), not 3 like ActiveRecord (table, column, type).
-# These must NOT be flagged.
+# Sequel ORM — add_column with only 2 args (no keyword hash).
+# parser_arg_count = 2, below the 3-4 range for add_column pattern.
 Sequel.migration do
   alter_table(:users) do
     add_column :name, String
     add_column :age, Integer
-    add_column :status, String, null: false
   end
 end
 
-# Sequel change block
+# Sequel change block — 2-arg add_column
 Sequel.migration do
   change do
     alter_table(:records) do
@@ -47,3 +45,15 @@ Sequel.migration do
     end
   end
 end
+
+# create_table with 0 args — RuboCop pattern requires at least 1 arg
+create_table
+
+# create_table with 3 positional args — exceeds RuboCop's _table _? (1-2 args)
+create_table table_name, columns, primary_key
+
+# create_table with 2 positional args + &block — 3 children in parser gem AST
+create_table table_name, options, &block
+
+# create_table with 3 positional args (string, hash literal, boolean)
+create_table "special_data", {}, true

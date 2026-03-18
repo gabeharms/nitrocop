@@ -46,6 +46,27 @@ use crate::parse::source::SourceFile;
 ///
 /// Other FP sources (state_machine gem, 9 FPs from pluginaweek/state_machine)
 /// may use similar 2-arg patterns and should be covered by the same fix.
+///
+/// ## Corpus investigation (2026-03-18) — FP=17 across 10 repos, FN=184 across 5 repos
+///
+/// FP root cause: nitrocop flagged `create_table` calls regardless of argument
+/// count. RuboCop's node pattern `(send nil? :create_table _table _?)` only
+/// matches calls with 1-2 argument children in the parser gem AST (where keyword
+/// hash and `&block` (block_pass) each count as a child). Calls with 0 args
+/// (bare `create_table` method calls), 3 positional args, or 2 positional +
+/// `&block` were incorrectly flagged.
+///
+/// FN root cause: nitrocop's `add_column` check used `positional_arg_count`
+/// which excluded keyword hash nodes from the count. But RuboCop's pattern
+/// `(send nil? :add_column _table _column _type _?)` counts ALL children
+/// including keyword hash. So `add_column :col, :text, null: false` has 3
+/// children in the parser AST (sym, sym, hash) and matches. nitrocop only saw
+/// 2 positional args and skipped it.
+///
+/// Fix: introduced `parser_arg_count()` that counts all argument nodes including
+/// keyword hash, plus 1 for `&block` (BlockArgumentNode in Prism's `call.block()`
+/// vs block_pass in parser gem's send children). Applied arg-count gates:
+/// `create_table` requires 1-2, `add_column` requires 3-4.
 pub struct SchemaComment;
 
 const TABLE_MSG: &str = "New database table without `comment`.";
@@ -120,15 +141,18 @@ const CREATE_TABLE_COLUMN_METHODS: &[&[u8]] = &[
     b"unsigned_decimal",
 ];
 
-/// Count the positional (non-keyword) arguments in a call node.
-fn positional_arg_count(call: &ruby_prism::CallNode<'_>) -> usize {
-    let Some(args) = call.arguments() else {
-        return 0;
-    };
-    args.arguments()
-        .iter()
-        .filter(|arg| arg.as_keyword_hash_node().is_none())
-        .count()
+/// Count argument children as the parser gem would see them.
+///
+/// In the parser gem, ALL children after the method name in a `send` node
+/// are counted: positional args, keyword hash, splat, AND `block_pass`
+/// (`&block`). In Prism, `&block` is stored in `call.block()` rather than
+/// in `call.arguments()`, so we add 1 when the block is a BlockArgumentNode.
+fn parser_arg_count(call: &ruby_prism::CallNode<'_>) -> usize {
+    let explicit_args = call.arguments().map(|a| a.arguments().len()).unwrap_or(0);
+    let block_pass = call
+        .block()
+        .is_some_and(|b| b.as_block_argument_node().is_some());
+    explicit_args + block_pass as usize
 }
 
 /// Check whether a call node has a `comment` keyword arg with a non-nil,
@@ -192,6 +216,12 @@ impl Cop for SchemaComment {
 
         match name {
             b"create_table" if call.receiver().is_none() => {
+                // RuboCop pattern: (send nil? :create_table _table _?)
+                // Matches 1-2 argument children in the parser gem AST.
+                let argc = parser_arg_count(&call);
+                if !(1..=2).contains(&argc) {
+                    return;
+                }
                 if !has_valid_comment(&call) {
                     // Table without comment — only report table-level offense
                     let loc = node.location();
@@ -212,13 +242,11 @@ impl Cop for SchemaComment {
                 if call.receiver().is_some() {
                     return;
                 }
-                // ActiveRecord's add_column requires 3 positional args:
-                // add_column :table, :column, :type [, opts]
-                // Sequel's add_column (inside alter_table) takes only 2:
-                // add_column :column_name, Type [, opts]
-                // Skip calls with fewer than 3 positional args — they are not
-                // ActiveRecord migrations and must not be flagged.
-                if positional_arg_count(&call) < 3 {
+                // RuboCop pattern: (send nil? :add_column _table _column _type _?)
+                // Matches 3-4 argument children in the parser gem AST.
+                // This counts ALL children (positional, keyword hash, block_pass).
+                let argc = parser_arg_count(&call);
+                if !(3..=4).contains(&argc) {
                     return;
                 }
                 if !has_valid_comment(&call) {
