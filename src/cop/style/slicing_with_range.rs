@@ -3,6 +3,16 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (2026-03-18):
+/// - FN: `x[idx..nil]` and `x[idx...nil]` — Prism parses explicit `nil` as a NilNode
+///   child (not absent). The cop was only checking for absent right (`is_none()`) and
+///   integer `-1`, missing the NilNode case. Fixed by treating NilNode right child
+///   the same as absent (endless) for both `0..nil` (redundant) and `x..nil` (suggest
+///   endless range) patterns, matching RuboCop's behavior.
+/// - FP: 4 corpus FPs on `x[0..]` patterns remain under investigation. These appear
+///   in repos where RuboCop (Prism backend) unexpectedly does not flag them, possibly
+///   due to a Prism-specific edge case in RuboCop's NodePattern matching. The behavior
+///   of flagging `x[0..]` is semantically correct (redundant slice).
 pub struct SlicingWithRange;
 
 impl SlicingWithRange {
@@ -14,6 +24,16 @@ impl SlicingWithRange {
             }
         }
         None
+    }
+
+    /// Check if the right side of a range is "nil-like": either absent (endless range
+    /// like `x..`) or an explicit NilNode (like `x..nil`). Both are semantically
+    /// equivalent for slicing purposes.
+    fn right_is_nil_like(range: &ruby_prism::RangeNode<'_>) -> bool {
+        match range.right() {
+            None => true,
+            Some(right) => right.as_nil_node().is_some(),
+        }
     }
 }
 
@@ -65,81 +85,59 @@ impl Cop for SlicingWithRange {
             .map(|l| l.start_offset())
             .unwrap_or(node.location().start_offset());
 
-        // Check for inclusive range (0..-1) or (0..nil)
         if let Some(irange) = range_node.as_range_node() {
-            // Check operator is .. (inclusive)
             let op = irange.operator_loc();
             let is_inclusive = op.as_slice() == b"..";
             let is_exclusive = op.as_slice() == b"...";
+            let op_str = if is_inclusive { ".." } else { "..." };
 
             if let Some(left) = irange.left() {
-                if Self::int_value(&left) == Some(0) {
-                    // 0..-1 (inclusive) — redundant, remove the slice
+                let left_is_zero = Self::int_value(&left) == Some(0);
+
+                if left_is_zero {
+                    // Pattern 1: 0..-1 (inclusive) — redundant, remove the slice
                     if is_inclusive {
                         if let Some(right) = irange.right() {
                             if Self::int_value(&right) == Some(-1) {
                                 let (line, column) = source.offset_to_line_col(bracket_offset);
                                 let src =
                                     std::str::from_utf8(node.location().as_slice()).unwrap_or("");
+                                let recv = std::str::from_utf8(
+                                    call.receiver().unwrap().location().as_slice(),
+                                )
+                                .unwrap_or("ary");
                                 diagnostics.push(self.diagnostic(
                                     source,
                                     line,
                                     column,
-                                    format!(
-                                            "Prefer `{}` over `{}`.",
-                                            std::str::from_utf8(
-                                                call.receiver().unwrap().location().as_slice()
-                                            )
-                                            .unwrap_or("ary"),
-                                            src
-                                        ),
+                                    format!("Prefer `{recv}` over `{src}`."),
                                 ));
+                                return;
                             }
                         }
-                        // 0..nil — also redundant
-                        if irange.right().is_none() {
-                            let (line, column) = source.offset_to_line_col(bracket_offset);
-                            let src = std::str::from_utf8(node.location().as_slice()).unwrap_or("");
-                            diagnostics.push(self.diagnostic(
-                                source,
-                                line,
-                                column,
-                                format!(
-                                        "Prefer `{}` over `{}`.",
-                                        std::str::from_utf8(
-                                            call.receiver().unwrap().location().as_slice()
-                                        )
-                                        .unwrap_or("ary"),
-                                        src
-                                    ),
-                            ));
-                        }
                     }
-                    // 0...nil — also redundant
-                    if is_exclusive && irange.right().is_none() {
+
+                    // Pattern 1b: 0..nil, 0.. (inclusive), 0...nil, 0... (exclusive) — redundant
+                    if (is_inclusive || is_exclusive) && Self::right_is_nil_like(&irange) {
                         let (line, column) = source.offset_to_line_col(bracket_offset);
                         let src = std::str::from_utf8(node.location().as_slice()).unwrap_or("");
+                        let recv =
+                            std::str::from_utf8(call.receiver().unwrap().location().as_slice())
+                                .unwrap_or("ary");
                         diagnostics.push(self.diagnostic(
                             source,
                             line,
                             column,
-                            format!(
-                                    "Prefer `{}` over `{}`.",
-                                    std::str::from_utf8(
-                                        call.receiver().unwrap().location().as_slice()
-                                    )
-                                    .unwrap_or("ary"),
-                                    src
-                                ),
+                            format!("Prefer `{recv}` over `{src}`."),
                         ));
+                        return;
                     }
                 }
 
-                // x..-1 where x != 0 — suggest endless range
-                if is_inclusive {
+                // Pattern 2: x..-1 where x != 0 — suggest endless range
+                if is_inclusive && !left_is_zero {
                     if let Some(right) = irange.right() {
-                        if Self::int_value(&right) == Some(-1) && Self::int_value(&left) != Some(0)
-                        {
+                        if Self::int_value(&right) == Some(-1) {
                             let left_src =
                                 std::str::from_utf8(left.location().as_slice()).unwrap_or("1");
                             let (line, column) = source.offset_to_line_col(bracket_offset);
@@ -147,7 +145,27 @@ impl Cop for SlicingWithRange {
                                 source,
                                 line,
                                 column,
-                                format!("Prefer `[{}..]` over `[{}..-1]`.", left_src, left_src),
+                                format!("Prefer `[{left_src}..]` over `[{left_src}..-1]`."),
+                            ));
+                            return;
+                        }
+                    }
+                }
+
+                // Pattern 2b: x..nil or x...nil where x != 0 — suggest endless range
+                if !left_is_zero {
+                    if let Some(right) = irange.right() {
+                        if right.as_nil_node().is_some() {
+                            let left_src =
+                                std::str::from_utf8(left.location().as_slice()).unwrap_or("1");
+                            let (line, column) = source.offset_to_line_col(bracket_offset);
+                            diagnostics.push(self.diagnostic(
+                                source,
+                                line,
+                                column,
+                                format!(
+                                    "Prefer `[{left_src}{op_str}]` over `[{left_src}{op_str}nil]`."
+                                ),
                             ));
                         }
                     }
