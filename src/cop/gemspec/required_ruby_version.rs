@@ -6,12 +6,20 @@ use crate::parse::source::SourceFile;
 ///
 /// Corpus oracle (run 22651309591) reported FP=0, FN=1.
 ///
-/// FN=1: pagy `docs/gem/pagy.gemspec` — symlink path mismatch. The pagy repo has
-/// `docs/gem -> ../gem` (a directory symlink). RuboCop follows the symlink and
-/// reports offenses at `docs/gem/pagy.gemspec`; nitrocop discovers the canonical
-/// path `gem/pagy.gemspec`. The corpus diff treats these as different files.
-/// Fixed by adding `resolve_symlink_paths.py` to the CI workflow to normalize
-/// paths in both tools' JSON output before diffing.
+/// FN=1: pagy `docs/gem/pagy.gemspec` — symlink path mismatch. Fixed by adding
+/// `resolve_symlink_paths.py` to the CI workflow.
+///
+/// ## Corpus investigation (2026-03-19)
+///
+/// Corpus oracle (run 23302802988) reported FP=0, FN=1.
+///
+/// FN=1: DataDog/datadog-ci-rb `datadog-ci.gemspec:8` — multi-line array with
+/// string interpolation (`[">= #{CONST}", "< #{CONST}"]`). `is_dynamic_rhs`
+/// treated `[` as hash access and returned dynamic=true, skipping the offense.
+/// RuboCop treats array literals as non-dynamic (no lvar/send descendants in
+/// const paths), can't extract version digits from interpolated strings, and
+/// fires a mismatch offense. Fixed by only treating `[` as dynamic when it's
+/// not at the start of the RHS (hash access like `foo[...]` vs array literal).
 pub struct RequiredRubyVersion;
 
 /// Extract version digits from a version string like RuboCop does:
@@ -59,8 +67,10 @@ fn format_target_version(v: f64) -> String {
 /// (which includes `[]` calls), variables, or constant references.
 fn is_dynamic_rhs(rhs: &str) -> bool {
     let trimmed = rhs.trim();
-    // Hash access like gemspec['key'] or config[:key]
-    if trimmed.contains('[') {
+    // Hash access like gemspec['key'] or config[:key], but NOT array literals
+    // starting with '['. Array literals (e.g. [">= 2.7", "< 4.0"]) are not
+    // dynamic — they're non-literal if versions can't be extracted.
+    if trimmed.contains('[') && !trimmed.starts_with('[') {
         return true;
     }
     // Method calls like Foo.bar or obj.method
@@ -330,6 +340,18 @@ mod tests {
                 "../../../tests/fixtures/cops/gemspec/required_ruby_version/no_offense_hash_access.rb"
             ),
             config_with_target_ruby(3.4),
+        );
+    }
+
+    #[test]
+    fn array_interpolation() {
+        // Multi-line array with interpolated constants — not dynamic, fires mismatch
+        crate::testutil::assert_cop_offenses_full_with_config(
+            &RequiredRubyVersion,
+            include_bytes!(
+                "../../../tests/fixtures/cops/gemspec/required_ruby_version/offense/array_interpolation.rb"
+            ),
+            config_with_target_ruby(4.0),
         );
     }
 
