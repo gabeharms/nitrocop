@@ -630,6 +630,8 @@ def main():
                         help="Path to synthetic-results.json (reclassifies untested cops)")
     parser.add_argument("--no-git-exclude", action="store_true",
                         help="Disable automatic git-based exclusion of already-fixed cops")
+    parser.add_argument("--extended", action="store_true",
+                        help="Use extended corpus (5k+ repos) instead of standard (1k repos)")
     args = parser.parse_args()
 
     # Default to --summary when no args given
@@ -639,10 +641,11 @@ def main():
     # Load corpus results — default to standard corpus (matches README/docs scorecard)
     oracle_sha = ""
     _run_id = 0
+    prefer = "extended" if args.extended else "standard"
     if args.input:
         input_path = args.input
     else:
-        input_path, _run_id, oracle_sha = download_latest_corpus_results(prefer="standard")
+        input_path, _run_id, oracle_sha = download_latest_corpus_results(prefer=prefer)
 
     data = json.loads(input_path.read_text())
     summary = data["summary"]

@@ -46,6 +46,12 @@ Ephemeral cloud VMs typically run as `root` or a CI-specific user, not `vscode`.
    ```bash
    python3 .claude/skills/fix-department/scripts/gem_progress.py --summary
    ```
+   If the user passed `--extended`, add `--extended` to all `gem_progress.py` invocations:
+   ```bash
+   python3 .claude/skills/fix-department/scripts/gem_progress.py --summary --extended
+   ```
+   The default uses the **standard corpus** (~1k repos, matches README/docs scorecard).
+   `--extended` uses the extended corpus (~5k repos) for more granular FP/FN data.
    The script automatically detects cops fixed since the last corpus oracle run by
    scanning git commit messages, and shows them as "Fixed (pending corpus confirmation)"
    so the scoreboard reflects reality between corpus runs.
@@ -471,6 +477,7 @@ Do not leave retained progress only in a feature branch.
 - `/fix-department rubocop-performance` — target rubocop-performance directly
 - `/fix-department rubocop-rspec` — target rubocop-rspec directly
 - `/fix-department --input /path/to/corpus-results.json` — use local corpus file
+- `/fix-department Rails --extended` — use extended corpus (5k+ repos) instead of standard (1k repos)
 
 ## How to Choose the Next Gem
 
