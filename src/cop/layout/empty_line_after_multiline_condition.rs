@@ -115,6 +115,20 @@ use ruby_prism::Visit;
 ///   as non-whitespace, so it was treated as real content (like minified code),
 ///   triggering a false offense. Fixed by checking if the first non-whitespace
 ///   byte in the tail is `#` — if so, it's a comment and should be ignored.
+///
+/// **FP root causes (round 7, 2 FP → 0 FP):**
+/// - FP in `ruby__rdoc`: modifier `unless` inside a parenthesized expression
+///   `(stat.mtime unless (cond and\n  other_cond))`. In Parser AST, the outer
+///   `()` creates a `begin` node wrapping the modifier, so `right_sibling`
+///   returns nil. Our `has_right_sibling` didn't recognize `)` as a scope
+///   closer in `tail_scope_closer_check`. After the predicate end, the tail
+///   has `)` (closing the outer parens), which is now treated as a scope
+///   closer — no right sibling within the parenthesized scope.
+/// - FP in `samg__timetrap`: CRLF line endings caused `\r` on the condition
+///   end line to be treated as non-whitespace content in the tail check of
+///   `check_multiline_condition`. The `\r` was not included in the whitespace
+///   byte set (`' '`, `'\t'`), so it triggered a false offense. Fixed by
+///   adding `\r` to the whitespace check.
 pub struct EmptyLineAfterMultilineCondition;
 
 impl Cop for EmptyLineAfterMultilineCondition {
@@ -454,7 +468,7 @@ fn tail_scope_closer_check(tail: &[u8]) -> TailResult {
         if b == b';' {
             return TailResult::RightSibling;
         }
-        if b == b'}' {
+        if b == b'}' || b == b')' {
             return TailResult::ScopeCloser;
         }
         // Check for `end` keyword at a word boundary
@@ -649,7 +663,9 @@ impl EmptyLineAfterMultilineCondition {
                 let tail = &cond_line[col..];
                 // Skip trailing comments — they are not real content after the condition.
                 // Find the first non-whitespace byte; if it's `#`, treat as blank tail.
-                let first_non_ws = tail.iter().position(|&b| b != b' ' && b != b'\t');
+                let first_non_ws = tail
+                    .iter()
+                    .position(|&b| b != b' ' && b != b'\t' && b != b'\r');
                 if let Some(pos) = first_non_ws {
                     if tail[pos] != b'#' {
                         let (line, col) =
@@ -925,6 +941,34 @@ mod tests {
             diags.len(),
             1,
             "Should fire on modifier if with multiline condition and right sibling: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn fp_next_if_with_hash_arg_crlf_line_endings() {
+        // next if with multiline condition in a CRLF file. The condition IS multiline,
+        // the next line IS blank (\r\n). The \r in CRLF must be treated as whitespace
+        // in the tail check, otherwise it triggers a false offense.
+        let source = b"while self.rest?\r\n  next if scan_block( {\"(\"=>\")\", \"do\"=>\"end\", \"{\"=>\"}\"},\r\n                     /pattern/ )\r\n\r\n  next if scan_block( nil, /pat/, {'{' => '}', '[' => ']'} )\r\nend\r\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterMultilineCondition, source);
+        assert!(
+            diags.is_empty(),
+            "Should not fire when CRLF blank line follows multiline condition: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn fp_modifier_unless_inside_parenthesized_expression() {
+        // Modifier unless inside parenthesized expression.
+        // In RuboCop's Parser AST, parens create a begin node wrapping the modifier,
+        // so right_sibling returns nil → no offense.
+        let source = b"def m\n  mtime = (stat.mtime unless (last_modified = @last_modified[name] and\n                              stat.mtime.to_i <= last_modified.to_i))\n\n  if force_doc or can_parse?(name) then\n    do_something\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterMultilineCondition, source);
+        assert!(
+            diags.is_empty(),
+            "Should not fire on modifier unless inside parens: {:?}",
             diags
         );
     }

@@ -376,3 +376,21 @@ items.each do |l|
 
   process(l)
 end
+
+# Modifier unless inside parenthesized expression — no right sibling in Parser AST
+# because parens create a begin node wrapping the modifier
+when "file" then
+  mtime = (stat.mtime unless (last_modified = @last_modified[rel_file_name] and
+                              stat.mtime.to_i <= last_modified.to_i))
+
+  if force_doc or RDoc::Parser.can_parse(rel_file_name) then
+    do_something
+  end
+
+# next if with hash arg containing string "}" — multiline condition with blank line after
+while rest?
+  next if scan_block( {"("=>")", "do"=>"end", "begin"=>"end", "{"=>"}"},
+                      /\s*(?:\.|::)\s*[a-zA-Z_]\w+\s*/ )
+
+  next if scan_block( nil, /\s*/, {'{' => '}', '[' => ']'} )
+end
