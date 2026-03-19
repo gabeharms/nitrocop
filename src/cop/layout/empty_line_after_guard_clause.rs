@@ -1560,5 +1560,4 @@ mod tests {
             diags
         );
     }
-
 }
