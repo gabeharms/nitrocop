@@ -163,6 +163,32 @@ use ruby_prism::Visit;
 /// `assignable_node` (RuboCop unwraps `create { }` to the block_node before checking
 /// parent context), and complex control flow patterns. These represent <0.13% of total
 /// offenses and are documented for future investigation.
+///
+/// ## Corpus investigation (2026-03-19, batch 3)
+///
+/// Oracle: FP=18, FN=37 (99.8% match rate on 32,661 offenses).
+///
+/// **FP root cause: create inside array/hash in local variable assignment (18 FP).**
+/// `x = [Model.create(...), Model.create(...)]` — RuboCop's VariableForce
+/// `check_assignment` checks `if rhs_node.send_type?` on the RHS. ArrayNode/HashNode
+/// doesn't match, so create calls inside arrays in local assignments are never flagged.
+/// Nitrocop was propagating `in_local_assignment` through transparent array/hash nodes.
+/// **Fix:** Save and reset `in_local_assignment` to false in `visit_array_node`,
+/// `visit_hash_node`, `visit_keyword_hash_node`.
+///
+/// **FN root cause: block-wrapped create in argument context (7 FN).**
+/// `Subscription.create { cleanup }` as an array element inside a method argument.
+/// In RuboCop's Parser gem AST, `create { }` becomes `Block(Send, Args, Body)`.
+/// `argument?` on the Send walks: Send→Block(parent)→array, and Block.parent is not
+/// `send_type?`, so `argument?` returns false — RuboCop flags it. In Prism, the block
+/// is part of the CallNode, so the CallNode inherits Argument context from the enclosing
+/// expression.
+/// **Fix:** In `process_persist_call`, when context is Argument and the call has a
+/// block body (BlockNode, not BlockArgumentNode), treat as VoidStatement.
+///
+/// **Remaining (~30 FN):** Various patterns in discourse, galetahub, natalie-lang etc.
+/// including Hash#update on hash literal in splat args (4 FN, hard to fix without
+/// parent tracking) and unknown patterns across ~16 repos.
 pub struct SaveBang;
 
 /// Modify-type persistence methods whose return value indicates success/failure.
@@ -643,7 +669,22 @@ impl SaveBangVisitor<'_, '_> {
         // We can't check this in the visitor, so we skip it for now
         // (it would require looking at the parent, which we don't have)
 
-        match self.current_context() {
+        // Block-wrapped persist calls in Argument context: In RuboCop's Parser gem AST,
+        // `create { block }` becomes Block(Send, Args, Body). When checking `argument?` on
+        // the Send node, it walks: Send→Block(parent)→enclosing, and Block.parent (e.g. array)
+        // is not send_type?, so argument? returns false. RuboCop flags these.
+        // In Prism, the block is part of the CallNode, so the CallNode gets Argument context
+        // from the enclosing expression. We override to VoidStatement for block-bearing calls.
+        let effective_context = match self.current_context() {
+            Some(Context::Argument)
+                if call.block().is_some_and(|b| b.as_block_node().is_some()) =>
+            {
+                Some(Context::VoidStatement)
+            }
+            ctx => ctx,
+        };
+
+        match effective_context {
             Some(Context::VoidStatement) => {
                 // Void context: always flag with MSG
                 self.flag_void_context(call);
@@ -1269,21 +1310,34 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
     // enclosing expression level. For example, `[save]` in void context still
     // flags `save`, but `return [save]` or `x = [save]` exempts it.
     fn visit_array_node(&mut self, node: &ruby_prism::ArrayNode<'pr>) {
+        // Don't propagate in_local_assignment through arrays/hashes.
+        // RuboCop's VariableForce check_assignment checks `if rhs_node.send_type?` —
+        // ArrayNode doesn't match, so create calls inside arrays in local assignments
+        // are not flagged by VariableForce.
+        let saved = self.in_local_assignment;
+        self.in_local_assignment = false;
         for element in node.elements().iter() {
             self.visit(&element);
         }
+        self.in_local_assignment = saved;
     }
 
     fn visit_hash_node(&mut self, node: &ruby_prism::HashNode<'pr>) {
+        let saved = self.in_local_assignment;
+        self.in_local_assignment = false;
         for element in node.elements().iter() {
             self.visit(&element);
         }
+        self.in_local_assignment = saved;
     }
 
     fn visit_keyword_hash_node(&mut self, node: &ruby_prism::KeywordHashNode<'pr>) {
+        let saved = self.in_local_assignment;
+        self.in_local_assignment = false;
         for element in node.elements().iter() {
             self.visit(&element);
         }
+        self.in_local_assignment = saved;
     }
 
     // ── BeginNode: body statements are in the parent's context ───────────

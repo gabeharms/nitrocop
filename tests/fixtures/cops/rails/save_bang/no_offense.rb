@@ -213,3 +213,22 @@ update([{id: 1, values: {name: 'Tom'}}])
 create(42)
 create(/regex/)
 first_or_create([{name: 'parrot'}, {name: 'parakeet'}])
+
+# CREATE inside array literal assigned to local variable (RuboCop does not flag)
+# RuboCop's VariableForce check_assignment checks `if rhs_node.send_type?` — ArrayNode
+# does not match, so create calls inside arrays in local assignments are skipped.
+included = [
+  Model.create(name: 'foo'),
+  Model.create(name: 'bar')
+]
+
+matching = [
+  Record.create(status: 'active'),
+  Record.create(status: 'inactive')
+]
+
+# CREATE inside hash literal assigned to local variable (same reason)
+lookup = {
+  first: Model.create(name: 'first'),
+  second: Model.create(name: 'second')
+}

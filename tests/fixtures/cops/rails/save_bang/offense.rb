@@ -161,3 +161,13 @@ def self.create_default
   create(name: 'test')
   ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.
 end
+
+# Block-wrapped create in argument context: create { block } as array element inside method arg
+# In RuboCop, `create { }` becomes Block(Send, Args, Body) — argument? on the Send walks
+# Send→Block→array, and Block.parent is array, not send_type?, so argument? returns false.
+# RuboCop flags this.
+def schedule_with_state
+  Subscription.new([Item.create { setup }, Subscription.create { cleanup }])
+                         ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.
+                                                        ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.
+end
