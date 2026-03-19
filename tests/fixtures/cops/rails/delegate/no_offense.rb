@@ -208,3 +208,69 @@ module Tracing
     yield
   end
 end
+
+# private block with INDENTED def — private at lower indent than def
+# Pattern from rails/rails: `private\n    def mkdir(dirs)`
+class TestHelper
+  private
+    def mkdir(dirs)
+      FileUtils.mkdir(dirs)
+    end
+
+    def entries
+      @changelog.entries
+    end
+end
+
+# `private def` inline modifier — private on same line as def
+# Pattern from ruby/debug, codetriage/CodeTriage, pakyow/pakyow, ruby/rbs
+class Config
+  private def config
+    self.class.config
+  end
+
+  private def parse_config_value(name, valstr)
+    self.class.parse_config_value(name, valstr)
+  end
+end
+
+# private def with question mark method — codetriage/CodeTriage pattern
+class Issue
+  private def pr_attached_with_issue?(pull_request_hash)
+    self.class.pr_attached_with_issue?(pull_request_hash)
+  end
+end
+
+# private def inside nested module — pakyow/pakyow pattern
+module Support
+  module Hookable
+    module ClassMethods
+      private def known_event?(event)
+        self.class.known_event?(event)
+      end
+
+      private def hook_pipeline
+        self.class.hook_pipeline
+      end
+    end
+  end
+end
+
+# private def inside nested class — ruby/rbs pattern
+module Collection
+  module Sources
+    class Stdlib
+      private def lookup(name, version)
+        REPO.lookup(name, version)
+      end
+    end
+  end
+end
+
+# private block with indented def delegating to constant — antiwork/gumroad pattern
+class ChargeProcessor
+  private
+    def paypal_api
+      PaypalChargeProcessor.paypal_api
+    end
+end

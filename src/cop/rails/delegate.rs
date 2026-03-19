@@ -193,6 +193,24 @@ use crate::parse::source::SourceFile;
 /// `is_private_or_protected` returns true, scan backwards from the def for block-opening
 /// keywords (if/unless/case/else/elsif/while/etc.) at lower indent. If found, the def
 /// is inside a conditional block and `private` doesn't apply per RuboCop's AST semantics.
+///
+/// ## Investigation (2026-03-19): FP=8, FN=0
+///
+/// **FP root cause (all 8)**: `is_inside_conditional_block()` backward scan didn't stop
+/// at `end` keywords at indent < def_col. It scanned through sibling method/block bodies
+/// and falsely matched conditional keywords (rescue/ensure/elsif/if) from INSIDE those
+/// other methods. Examples:
+/// - rails/rails: `ensure` at indent 2 inside a test method → falsely marked `def mkdir`
+///   (at indent 4 after `private`) as inside a conditional block.
+/// - ruby/debug: `elsif` at indent 6 inside `setup_sigdump` → falsely marked `private def
+///   config` (at indent 12) as inside a conditional.
+/// - antiwork/gumroad: `rescue` at indent 2 inside other methods → falsely marked
+///   `def paypal_api` (at indent 4 after `private`) as inside a conditional.
+///
+/// Fix: Added `end` at indent < def_col as a stop condition in the backward scan of
+/// `is_inside_conditional_block()`. When scanning backwards, an `end` at lower indent
+/// closes a sibling scope — conditional keywords beyond it are in a different scope and
+/// should not affect the current def.
 pub struct Delegate;
 
 impl Cop for Delegate {
@@ -459,7 +477,7 @@ fn is_inside_conditional_block(source: &SourceFile, def_offset: usize) -> bool {
     let lines: Vec<&[u8]> = source.lines().collect();
 
     // Scan backwards from the def to find an enclosing block-opening keyword
-    // at a LOWER indent than the def. If found before a class/module/private/end
+    // at a LOWER indent than the def. If found before a class/module/end
     // boundary, the def is nested inside a conditional.
     for line in lines[..def_line.saturating_sub(1)].iter().rev() {
         let indent = line
@@ -480,6 +498,18 @@ fn is_inside_conditional_block(source: &SourceFile, def_offset: usize) -> bool {
 
         // Stop at `def ` at same indent — reached another method definition
         if indent == def_col && trimmed.starts_with(b"def ") {
+            return false;
+        }
+
+        // Stop at `end` at lower indent — crossed out of a sibling method/block
+        // scope. Without this, conditional keywords (rescue/ensure/elsif/etc.)
+        // from inside OTHER methods would falsely match.
+        if indent < def_col
+            && (trimmed == b"end"
+                || trimmed.starts_with(b"end ")
+                || trimmed.starts_with(b"end;")
+                || trimmed.starts_with(b"end#"))
+        {
             return false;
         }
 
