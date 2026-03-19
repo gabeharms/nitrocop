@@ -2,11 +2,19 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// FP investigation (2026-03): 14 FPs all from `end#comment` pattern (no space
-/// before `#`). RuboCop's `KEYWORD_REGEXES` uses `/^\s*keyword\s/` which requires
-/// whitespace after the keyword on the source line. Without a space before `#`,
-/// the keyword regex doesn't match. Fixed by checking that raw text before the
-/// comment ends with whitespace (space or tab).
+/// FP/FN investigation (2026-03):
+/// - Original 14 FPs from `end#comment` (no space before `#`): RuboCop's regex
+///   `/^\s*keyword\s/` requires whitespace AFTER the keyword, not before `#`.
+///   Fixed by requiring whitespace after the keyword in `starts_with_keyword`.
+/// - 3 FPs: double-`#` rubocop:disable comments (`end # # rubocop:disable ...`)
+///   and `:nodoc:` appearing later in comment (`# -> path # :nodoc:`).
+///   Fixed by checking `after_hash_trimmed` for `# rubocop:` prefix and
+///   checking if comment contains `:nodoc:` anywhere.
+/// - 10 FNs: comments with no space before `#` but keyword IS followed by space
+///   (e.g., `def self.method dir, txt#comment`). The old `raw_before.ends_with(' ')`
+///   check rejected these. Fixed by removing that check and instead requiring
+///   whitespace after the keyword in `starts_with_keyword` (using `trim_start()`
+///   on raw_before to preserve trailing content).
 pub struct CommentedKeyword;
 
 /// Keywords that should not have comments on the same line.
@@ -48,16 +56,17 @@ impl Cop for CommentedKeyword {
             };
             let after_hash_trimmed = after_hash_str.trim_start();
 
-            // Allow :nodoc: and :yields: (RDoc annotations)
-            if after_hash_trimmed.starts_with(":nodoc:")
-                || after_hash_trimmed.starts_with(":yields:")
+            // Allow :nodoc: and :yields: (RDoc annotations) anywhere in comment
+            if after_hash_trimmed.contains(":nodoc:") || after_hash_trimmed.starts_with(":yields:")
             {
                 continue;
             }
 
             // Allow rubocop directives (rubocop:disable, rubocop:todo, etc.)
+            // Also handle double-# comments like `# # rubocop:disable ...`
             if after_hash_trimmed.starts_with("rubocop:")
                 || after_hash_trimmed.starts_with("rubocop :")
+                || after_hash_trimmed.starts_with("# rubocop:")
             {
                 continue;
             }
@@ -74,24 +83,14 @@ impl Cop for CommentedKeyword {
 
             // Get the full source line text before the comment
             let line_start_offset = comment_start - comment_col;
-            let before_comment = match std::str::from_utf8(&bytes[line_start_offset..comment_start])
-            {
-                Ok(s) => s.trim(),
-                Err(_) => continue,
-            };
-
-            // Skip if the comment is the only thing on the line (full-line comment)
-            if before_comment.is_empty() {
-                continue;
-            }
-
-            // RuboCop requires whitespace between keyword and `#`.
-            // `end#comment` (no space) is not flagged; only `end # comment` is.
             let raw_before = match std::str::from_utf8(&bytes[line_start_offset..comment_start]) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            if !raw_before.ends_with(' ') && !raw_before.ends_with('\t') {
+            let before_comment = raw_before.trim_start();
+
+            // Skip if the comment is the only thing on the line (full-line comment)
+            if before_comment.is_empty() {
                 continue;
             }
 
@@ -135,17 +134,18 @@ impl Cop for CommentedKeyword {
 /// Check if a trimmed line starts with the given keyword as a keyword token.
 /// For example, `starts_with_keyword("def x", "def")` returns true,
 /// but `starts_with_keyword("defined?(x)", "def")` returns false.
+/// RuboCop uses `/^\s*keyword\s/` — requires whitespace AFTER the keyword.
+/// `end#comment` (no space after keyword) is NOT a match.
 fn starts_with_keyword(trimmed: &str, keyword: &str) -> bool {
     if !trimmed.starts_with(keyword) {
         return false;
     }
     let after = &trimmed[keyword.len()..];
-    // After keyword must be empty or whitespace.
-    // RuboCop uses /^\s*keyword\s/ — only whitespace after the keyword counts.
+    // After keyword must have whitespace. RuboCop uses /^\s*keyword\s/.
     // `.` after `end` means method chain (e.g., `end.to ...`), not keyword usage.
     // `;` and `(` are handled transitively: `def x; end # comment` matches on `def`,
     // and `def x(a, b) # comment` also matches `def` followed by space.
-    after.is_empty() || after.starts_with(' ')
+    after.starts_with(' ') || after.starts_with('\t')
 }
 
 #[cfg(test)]
