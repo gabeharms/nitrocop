@@ -70,20 +70,18 @@
 /// using `check_branch_stmts_with_outer` with `is_if_rescue_branch=true` and ensure
 /// body nodes as outer context, matching RuboCop's rescue ancestor behavior.
 ///
-/// FN=1: Investigated and intentionally not matched. The FN is at
-/// `browsermedia/browsercms: app/models/cms/portlet.rb:228`. The class
-/// `Cms::Portlet < ActiveRecord::Base` is NOT a controller, but its body
-/// references `ActionController::Base.view_paths` (line 121). RuboCop's
-/// `def_node_search :action_controller?` searches the entire class subtree
-/// for `ApplicationController` / `ActionController::Base` constants, so it
-/// over-matches. Attempted subtree-search fix caused 2 new FNs on
-/// `rails__rails` because the manual walker (used when `in_action_controller`
-/// is true) doesn't handle modules or other nested structures that the full
-/// visitor traverses. Net result was FN 1→3 (worse). The subtree-search
-/// approach conflicts with the manual-walker architecture; a correct fix
-/// would require either rewriting the visitor to always use the full walker
-/// with per-class controller flags, or adding comprehensive handling for
-/// all nesting types (modules, sclass, etc.) in the manual walker.
+/// FN=1: Fixed. `Cms::Portlet < ActiveRecord::Base` references
+/// `ActionController::Base.view_paths` (line 121) in its body. RuboCop's
+/// `def_node_search :action_controller?` searches the entire class subtree.
+/// Added `class_body_references_action_controller` subtree search to match.
+/// Initial attempt caused 2 new FNs on `rails__rails` because the manual
+/// walker didn't handle modules (test files nest controllers inside modules
+/// like `module ::Blog; class PostsController < ActionController::Base`).
+/// Fixed by: (a) resetting `in_action_controller` per-class so each class
+/// qualifies independently (matches RuboCop's `find_ancestor(:class)`),
+/// and (b) using the full visitor for recursion after manually checking
+/// the class's own methods, so modules and other nested structures are
+/// properly traversed.
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
@@ -133,23 +131,22 @@ struct FlashVisitor<'a> {
 impl<'pr> Visit<'pr> for FlashVisitor<'_> {
     fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
         let was_in_controller = self.in_action_controller;
-        if is_action_controller_class(node) {
-            self.in_action_controller = true;
-        }
+        // Reset per class: RuboCop's inherit_action_controller_base? finds the
+        // CLOSEST class ancestor and searches it. Each class qualifies independently.
+        self.in_action_controller =
+            is_action_controller_class(node) || class_body_references_action_controller(node);
+
         if self.in_action_controller {
-            // Manually walk the class body to find def nodes and class-level blocks
-            // (e.g. `before_action do ... end`). This avoids double-visiting that
-            // would occur if we used the default visitor alongside manual recursion.
+            // Check this class's own instance methods and class-level blocks for flash.
+            // Then use the full visitor for nested structures (modules, nested classes).
             if let Some(body) = node.body() {
                 if let Some(stmts) = body.as_statements_node() {
                     for stmt in stmts.body().iter() {
                         if let Some(def_node) = stmt.as_def_node() {
-                            // Instance method
                             if def_node.receiver().is_none() {
                                 self.check_def_body(&def_node);
                             }
                         } else if let Some(call_node) = stmt.as_call_node() {
-                            // Class-level call with block: `before_action do ... end`
                             if let Some(block) = call_node.block() {
                                 if let Some(block_node) = block.as_block_node() {
                                     if let Some(body_inner) = block_node.body() {
@@ -161,15 +158,16 @@ impl<'pr> Visit<'pr> for FlashVisitor<'_> {
                                     }
                                 }
                             }
-                        } else if let Some(nested_class) = stmt.as_class_node() {
-                            // Handle nested classes
-                            self.visit_class_node(&nested_class);
                         }
                     }
                 }
+                // Full visitor recurse: finds nested classes (including inside modules).
+                // visit_class_node resets in_action_controller per-class, so nested
+                // non-controller classes won't be falsely treated as controllers.
+                self.visit(&body);
             }
         } else {
-            // Not in a controller — still recurse to find nested classes
+            // Not a controller — still recurse to find nested classes
             if let Some(body) = node.body() {
                 self.visit(&body);
             }
@@ -635,6 +633,66 @@ fn is_action_controller_class(class: &ruby_prism::ClassNode<'_>) -> bool {
     }
 
     false
+}
+
+/// Search a class body for any reference to ApplicationController or ActionController::Base.
+/// Matches RuboCop's `def_node_search :action_controller?` which searches entire class subtrees,
+/// not just the superclass. This handles cases like `Cms::Portlet < ActiveRecord::Base` that
+/// reference `ActionController::Base.view_paths` in the body.
+fn class_body_references_action_controller(class: &ruby_prism::ClassNode<'_>) -> bool {
+    if let Some(body) = class.body() {
+        let mut finder = ActionControllerRefFinder { found: false };
+        finder.visit(&body);
+        return finder.found;
+    }
+    false
+}
+
+struct ActionControllerRefFinder {
+    found: bool,
+}
+
+impl<'pr> Visit<'pr> for ActionControllerRefFinder {
+    fn visit_constant_read_node(&mut self, node: &ruby_prism::ConstantReadNode<'pr>) {
+        if !self.found && node.name().as_slice() == b"ApplicationController" {
+            self.found = true;
+        }
+    }
+
+    fn visit_constant_path_node(&mut self, node: &ruby_prism::ConstantPathNode<'pr>) {
+        if self.found {
+            return;
+        }
+        if let Some(name) = node.name() {
+            // ::ApplicationController
+            if name.as_slice() == b"ApplicationController" && node.parent().is_none() {
+                self.found = true;
+                return;
+            }
+            // ActionController::Base or ::ActionController::Base
+            if name.as_slice() == b"Base" {
+                if let Some(parent) = node.parent() {
+                    if let Some(c) = parent.as_constant_read_node() {
+                        if c.name().as_slice() == b"ActionController" {
+                            self.found = true;
+                            return;
+                        }
+                    }
+                    if let Some(parent_cp) = parent.as_constant_path_node() {
+                        if parent_cp.parent().is_none() {
+                            if let Some(parent_name) = parent_cp.name() {
+                                if parent_name.as_slice() == b"ActionController" {
+                                    self.found = true;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ruby_prism::visit_constant_path_node(self, node);
+    }
 }
 
 /// Check if a node is `flash[:key] = value` and return the flash receiver location offset.

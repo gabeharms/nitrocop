@@ -267,3 +267,14 @@ class ProfileController < ApplicationController
     redirect_to profile_path
   end
 end
+
+# RuboCop's def_node_search :action_controller? matches ANY reference to
+# ApplicationController/ActionController::Base in the class subtree, not just superclass
+class Widget < ActiveRecord::Base
+  VIEWS = ActionController::Base.view_paths
+
+  def store_in_flash
+    flash[:key] = "value"
+    ^^^^^ Rails/ActionControllerFlashBeforeRender: Use `flash.now` before `render`.
+  end
+end
