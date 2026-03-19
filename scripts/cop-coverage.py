@@ -106,9 +106,9 @@ def compute_synthetic(data: dict) -> dict[str, dict]:
 def confidence_tier(occurrences: int, unique_repos: int) -> str:
     if occurrences == 0:
         return "None"
-    if occurrences >= 100 and unique_repos >= 10:
+    if occurrences >= 500 and unique_repos >= 50:
         return "High"
-    if occurrences >= 10 or unique_repos >= 3:
+    if occurrences >= 100 and unique_repos >= 25:
         return "Medium"
     return "Low"
 
@@ -168,9 +168,9 @@ def main():
     if args.summary:
         total_cops = sum(tier_counts.values())
         print(f"Corpus coverage summary ({total_repos} repos, {total_cops} cops):")
-        print(f"  High   (>=100 occurrences, >=10 repos): {tier_counts['High']}")
-        print(f"  Medium (10-99 occurrences or 3-9 repos): {tier_counts['Medium']}")
-        print(f"  Low    (1-9 occurrences, 1-2 repos):    {tier_counts['Low']}")
+        print(f"  High   (>=500 occurrences, >=50 repos): {tier_counts['High']}")
+        print(f"  Medium (>=100 occurrences, >=25 repos): {tier_counts['Medium']}")
+        print(f"  Low    (<100 occurrences or <25 repos): {tier_counts['Low']}")
         print(f"  None   (0 occurrences):                 {tier_counts['None']}")
         return
 
@@ -201,9 +201,9 @@ def main():
     print(f"**Confidence tiers:** {tier_counts['High']} High, "
           f"{tier_counts['Medium']} Medium, {tier_counts['Low']} Low, {tier_counts['None']} None")
     print()
-    print(f"- **High**: >=100 occurrences AND >=10 repos")
-    print(f"- **Medium**: 10-99 occurrences OR 3-9 repos")
-    print(f"- **Low**: 1-9 occurrences AND 1-2 repos")
+    print(f"- **High**: >=500 occurrences AND >=50 repos")
+    print(f"- **Medium**: >=100 occurrences AND >=25 repos")
+    print(f"- **Low**: <100 occurrences or <25 repos")
     print(f"- **None**: 0 occurrences in corpus")
     print()
 
