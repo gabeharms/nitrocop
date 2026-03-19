@@ -171,3 +171,54 @@ def schedule_with_state
                          ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.
                                                         ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.
 end
+
+# CREATE inside || or && (compound_boolean? in RuboCop) — always flagged as conditional
+# regardless of enclosing context (assignment, argument, implicit return)
+Tag.find_by_name("foo") || Tag.create(name: "foo")
+                               ^^^^^^ Rails/SaveBang: `create` returns a model which is always truthy.
+Setting.first || Setting.create(name: "bar")
+                         ^^^^^^ Rails/SaveBang: `create` returns a model which is always truthy.
+x = Foo.first || Foo.create(name: "baz")
+                     ^^^^^^ Rails/SaveBang: `create` returns a model which is always truthy.
+log(Thing.find || Thing.create(name: "qux"))
+                        ^^^^^^ Rails/SaveBang: `create` returns a model which is always truthy.
+
+# rescue modifier breaks implicit return and assignment chains
+def teardown
+  @post.destroy rescue nil
+        ^^^^^^^ Rails/SaveBang: Use `destroy!` instead of `destroy` if the return value is not checked.
+end
+exception = (around.save rescue $!)
+                    ^^^^ Rails/SaveBang: Use `save!` instead of `save` if the return value is not checked.
+
+# yield arguments are NOT in argument context (RuboCop's argument? only checks send/csend parents)
+items.each {|p| yield(Node.create(p)) }
+                           ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.
+
+# Splat breaks argument context chain
+execute *builder.create
+                 ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.
+
+# yield with modify persist call (yield is NOT argument context per RuboCop)
+def process_yield
+  yield object.save
+               ^^^^ Rails/SaveBang: Use `save!` instead of `save` if the return value is not checked.
+  nil
+end
+
+# super with modify persist call (super is NOT argument context per RuboCop)
+def process_super
+  super(object.save)
+               ^^^^ Rails/SaveBang: Use `save!` instead of `save` if the return value is not checked.
+  nil
+end
+
+# yield/super even in implicit return position — yield/super break the chain
+def process_yield_implicit
+  yield object.save
+               ^^^^ Rails/SaveBang: Use `save!` instead of `save` if the return value is not checked.
+end
+def process_super_implicit
+  super(object.save)
+               ^^^^ Rails/SaveBang: Use `save!` instead of `save` if the return value is not checked.
+end

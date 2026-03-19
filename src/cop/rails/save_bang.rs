@@ -189,6 +189,30 @@ use ruby_prism::Visit;
 /// **Remaining (~30 FN):** Various patterns in discourse, galetahub, natalie-lang etc.
 /// including Hash#update on hash literal in splat args (4 FN, hard to fix without
 /// parent tracking) and unknown patterns across ~16 repos.
+///
+/// ## Corpus investigation (2026-03-19, batch 4)
+///
+/// Targeted fix for remaining ~24 FN from batch 3. Four root causes:
+///
+/// **FN root cause 1: Create in compound boolean (16 FN).**
+/// RuboCop checks `compound_boolean?` for create methods — if the create call is inside
+/// `||`/`&&`/`or`/`and`, it's ALWAYS flagged as conditional regardless of enclosing
+/// assignment/argument context. Only `implicit_return?` and `explicit_return?` walk
+/// through or_type? parents to exempt.
+/// **Fix:** Added `in_compound_boolean` flag set inside `visit_or_node`/`visit_and_node`.
+///
+/// **FN root cause 2: Rescue modifier breaks context chains (5 FN).**
+/// `@post.destroy rescue nil` — RuboCop's `implicit_return?` doesn't walk through
+/// rescue_modifier, and `assignable_node` stops at rescue_mod.
+/// **Fix:** Added `visit_rescue_modifier_node` pushing VoidStatement for the expression.
+///
+/// **FN root cause 3: Yield/super arguments not argument context (2+ FN).**
+/// RuboCop's `argument?` only checks `parent.send_type?`. Yield/super are not send_type?.
+/// **Fix:** Changed `visit_yield_node`/`visit_super_node` to push VoidStatement.
+///
+/// **FN root cause 4: Splat breaks argument context (1 FN).**
+/// `execute *builder.create` — `assignable_node` stops at splat, `argument?` returns false.
+/// **Fix:** Added `visit_splat_node` pushing VoidStatement for the expression.
 pub struct SaveBang;
 
 /// Modify-type persistence methods whose return value indicates success/failure.
@@ -295,6 +319,7 @@ impl Cop for SaveBang {
             context_stack: Vec::new(),
             suppress_create_assignment: false,
             in_local_assignment: false,
+            in_compound_boolean: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -314,6 +339,11 @@ struct SaveBangVisitor<'a, 'src> {
     /// Only local variable create-in-assignment generates offenses; instance/class/global/constant
     /// assignments are treated as "return value used" (RuboCop's VariableForce only tracks locals).
     in_local_assignment: bool,
+    /// When true, we are inside an `||` or `&&` (compound boolean) expression.
+    /// RuboCop checks `compound_boolean?` for create methods BEFORE `argument?`,
+    /// so create inside `||`/`&&` is ALWAYS flagged as conditional regardless of
+    /// enclosing context. Only affects CREATE methods, not MODIFY methods.
+    in_compound_boolean: bool,
 }
 
 impl SaveBangVisitor<'_, '_> {
@@ -668,6 +698,26 @@ impl SaveBangVisitor<'_, '_> {
         // This is the checked_immediately? case from RuboCop
         // We can't check this in the visitor, so we skip it for now
         // (it would require looking at the parent, which we don't have)
+
+        // RuboCop checks compound_boolean? for create methods. In RuboCop, `argument?`
+        // and `return_value_assigned?` check the direct parent node — and the direct parent
+        // of a create call inside `||` is the OrNode, not the enclosing call/assignment.
+        // So argument? and assigned? return false. Only implicit_return? and explicit_return?
+        // walk through or_type? parents, so only those exempt create in compound boolean.
+        if is_create && self.in_compound_boolean {
+            // Check if ImplicitReturn or ExplicitReturn exist ANYWHERE in the stack,
+            // not just at the top. The or_node visitor pushes Condition on top, so
+            // current_context() is Condition, but we need to see through to the
+            // enclosing ImplicitReturn/ExplicitReturn context.
+            let has_return_exempt = self
+                .context_stack
+                .iter()
+                .any(|c| matches!(c, Context::ImplicitReturn | Context::ExplicitReturn));
+            if !has_return_exempt {
+                self.flag_create_conditional(call);
+                return;
+            }
+        }
 
         // Block-wrapped persist calls in Argument context: In RuboCop's Parser gem AST,
         // `create { block }` becomes Block(Send, Args, Body). When checking `argument?` on
@@ -1245,16 +1295,24 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
     // ── YieldNode / SuperNode: arguments are in argument context ──────────
 
     fn visit_yield_node(&mut self, node: &ruby_prism::YieldNode<'pr>) {
+        // RuboCop's argument? only checks send_type?/csend_type? parents.
+        // yield is NOT send_type?, so yield args are NOT in argument context.
+        // Also, yield breaks the implicit return chain — even if yield is the last
+        // statement in a block (ImplicitReturn context), the create inside yield's
+        // args is NOT exempt. Push VoidStatement to override inherited context.
         if let Some(args) = node.arguments() {
-            self.context_stack.push(Context::Argument);
+            self.context_stack.push(Context::VoidStatement);
             self.visit_arguments_node(&args);
             self.context_stack.pop();
         }
     }
 
     fn visit_super_node(&mut self, node: &ruby_prism::SuperNode<'pr>) {
+        // RuboCop's argument? only checks send_type?/csend_type? parents.
+        // super is NOT send_type?, so super args are NOT in argument context.
+        // Push VoidStatement to override inherited context (same as yield).
         if let Some(args) = node.arguments() {
-            self.context_stack.push(Context::Argument);
+            self.context_stack.push(Context::VoidStatement);
             self.visit_arguments_node(&args);
             self.context_stack.pop();
         }
@@ -1268,10 +1326,13 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
     // ── And/Or nodes: both children are condition context ────────────────
 
     fn visit_and_node(&mut self, node: &ruby_prism::AndNode<'pr>) {
+        let saved = self.in_compound_boolean;
+        self.in_compound_boolean = true;
         self.context_stack.push(Context::Condition);
         self.visit(&node.left());
         self.visit(&node.right());
         self.context_stack.pop();
+        self.in_compound_boolean = saved;
     }
 
     fn visit_or_node(&mut self, node: &ruby_prism::OrNode<'pr>) {
@@ -1282,6 +1343,8 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
         // is exempt.
         // Same for ExplicitReturn, Assignment, Argument contexts
         // where the return value of the || expression is being used.
+        let saved = self.in_compound_boolean;
+        self.in_compound_boolean = true;
         let ctx = self.current_context();
         match ctx {
             Some(Context::ImplicitReturn)
@@ -1300,6 +1363,7 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
                 self.context_stack.pop();
             }
         }
+        self.in_compound_boolean = saved;
     }
 
     // ── Array / Hash literals: children are collection context ───────────
@@ -1449,6 +1513,31 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
 
     // ── Ternary (IfNode handles this already) ────────────────────────────
     // Prism uses IfNode for ternary as well, so visit_if_node covers it.
+
+    // ── RescueModifierNode: breaks implicit return and assignment chains ─
+
+    fn visit_rescue_modifier_node(&mut self, node: &ruby_prism::RescueModifierNode<'pr>) {
+        // rescue modifier breaks the implicit return and assignment chains.
+        // In RuboCop, rescue_modifier is not in the accepted parent types for
+        // implicit_return?, and assignable_node stops at rescue_mod (not array/hash).
+        self.context_stack.push(Context::VoidStatement);
+        self.visit(&node.expression());
+        self.context_stack.pop();
+        // The rescue value (e.g., `nil` in `save rescue nil`) is just a value
+        self.visit(&node.rescue_expression());
+    }
+
+    // ── SplatNode: breaks argument context chain ─────────────────────────
+
+    fn visit_splat_node(&mut self, node: &ruby_prism::SplatNode<'pr>) {
+        // Splat breaks the argument context chain in RuboCop.
+        // assignable_node stops at the splat, and splat.argument? returns false.
+        if let Some(expr) = node.expression() {
+            self.context_stack.push(Context::VoidStatement);
+            self.visit(&expr);
+            self.context_stack.pop();
+        }
+    }
 
     // ── Interpolation: children are in argument context ──────────────────
 

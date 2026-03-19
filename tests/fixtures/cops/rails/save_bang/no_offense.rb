@@ -151,22 +151,8 @@ items.each { |i| i.save }
 !object.save
 not object.save
 
-# Yield with persist call argument (return value used by yield)
-def process
-  yield object.save
-end
-
-# Yield with persist call as non-last statement (still an argument)
-def process
-  yield object.save
-  nil
-end
-
-# Super with persist call argument
-def process
-  super(object.save)
-  nil
-end
+# (Yield/super with persist call moved to offense.rb — RuboCop's
+# argument? and implicit_return? don't treat yield/super as exempt)
 
 # CREATE assigned to instance/class/global variable (RuboCop's VariableForce only tracks locals)
 @record = object.first_or_create
@@ -232,3 +218,11 @@ lookup = {
   first: Model.create(name: 'first'),
   second: Model.create(name: 'second')
 }
+
+# MODIFY in || (return value checked as boolean — exempt)
+x = record.save || raise("failed")
+y = something || other
+
+# MODIFY in || (return value checked as boolean — exempt)
+# (yield and super with modify persist calls moved to offense.rb —
+#  RuboCop's argument? doesn't treat yield/super as argument context)
