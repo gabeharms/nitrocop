@@ -724,15 +724,9 @@ fn is_multiline_guard_block(content: &[u8], lines: &[&[u8]], start_idx: usize) -
     let mut paren_depth: i32 = 0;
     let mut in_condition = true;
 
-    // Count parens on the if/unless line itself
+    // Count parens on the if/unless line itself, skipping string/regex content
     let if_line = lines[content_line_idx];
-    for &b in if_line {
-        match b {
-            b'(' | b'{' | b'[' => paren_depth += 1,
-            b')' | b'}' | b']' => paren_depth -= 1,
-            _ => {}
-        }
-    }
+    paren_depth += count_bracket_depth_change(if_line);
     // Check if the if/unless line ends with a continuation
     let if_trimmed_end = trim_trailing_whitespace(if_line);
     if !ends_with_continuation(if_trimmed_end) && paren_depth <= 0 {
@@ -755,13 +749,7 @@ fn is_multiline_guard_block(content: &[u8], lines: &[&[u8]], start_idx: usize) -
 
         // If we're still in the condition, update paren depth and check for continuation
         if in_condition {
-            for &b in trimmed {
-                match b {
-                    b'(' | b'{' | b'[' => paren_depth += 1,
-                    b')' | b'}' | b']' => paren_depth -= 1,
-                    _ => {}
-                }
-            }
+            paren_depth += count_bracket_depth_change(line);
             let stripped = trim_trailing_whitespace(trimmed);
             if !ends_with_continuation(stripped) && paren_depth <= 0 {
                 in_condition = false;
@@ -804,14 +792,12 @@ fn ends_with_continuation(stripped: &[u8]) -> bool {
         || stripped.ends_with(b"=~")
         || stripped.ends_with(b"!~")
         || {
-            // Check for `and` or `or` keywords at end (with word boundary)
+            // Check for `and` or `or` keywords at end (with word boundary).
+            // The pattern includes a leading space (e.g., b" or"), which ensures
+            // the keyword is separated from the preceding token by a space.
             let len = stripped.len();
-            (len >= 4
-                && &stripped[len - 4..] == b" and"
-                && (len == 4 || !is_ident_char(stripped[len - 5])))
-                || (len >= 3
-                    && &stripped[len - 3..] == b" or"
-                    && (len == 3 || !is_ident_char(stripped[len - 4])))
+            (len >= 4 && &stripped[len - 4..] == b" and")
+                || (len >= 3 && &stripped[len - 3..] == b" or")
         }
 }
 
@@ -839,7 +825,12 @@ fn is_bare_guard_in_block(trimmed: &[u8], lines: &[&[u8]], line_idx: usize) -> b
     // If the line starts with a guard keyword but also has a modifier `if`/`unless`,
     // it's NOT a bare guard statement — it's a modifier-form if/unless wrapping the
     // guard. RuboCop's `guard_clause?` does NOT match these.
-    if has_guard_keyword && (contains_word(trimmed, b"if") || contains_word(trimmed, b"unless")) {
+    // Use `contains_word_outside_strings` to avoid matching `if` inside string literals
+    // like `raise "columns if you join a table"`.
+    if has_guard_keyword
+        && (contains_word_outside_strings(trimmed, b"if")
+            || contains_word_outside_strings(trimmed, b"unless"))
+    {
         return false;
     }
 
@@ -905,14 +896,221 @@ fn find_line_index_from(lines: &[&[u8]], from_idx: usize, content: &[u8]) -> Opt
 /// Matches patterns like `cond ? raise(e) : other` or `x ? fail(msg) : y`.
 /// RuboCop's `next_sibling_empty_or_guard_clause?` checks `next_sibling.if_type? &&
 /// contains_guard_clause?(next_sibling)` which matches ternaries with guard if-branches.
+///
+/// Must distinguish actual ternaries (`cond ? expr : expr`) from method names
+/// ending in `?` (like `include?`, `valid?`, `empty?`). A real ternary has
+/// ` ? ` (question mark preceded by non-`?` and followed by space) that is NOT
+/// inside a string literal, plus a `:` separator.
 fn is_ternary_guard_line(content: &[u8]) -> bool {
-    if !content.windows(1).any(|w| w == b"?") {
+    // Look for ` ? ` pattern outside of string literals.
+    // A Ruby ternary looks like: `expr ? true_branch : false_branch`
+    // Method calls ending in `?` look like: `foo.bar?` or `bar?(args)`
+    let mut has_ternary_question = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut i = 0;
+    while i < content.len() {
+        let b = content[i];
+        if b == b'\'' && !in_double_quote {
+            in_single_quote = !in_single_quote;
+        } else if b == b'"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+        } else if b == b'\\' && (in_single_quote || in_double_quote) {
+            i += 1; // skip escaped char
+        } else if b == b'?' && !in_single_quote && !in_double_quote {
+            // Distinguish ternary `?` from method `?`:
+            // - Ternary: `cond ? expr : expr` — `?` is followed by space, and
+            //   preceded by space/`)` (end of condition expression)
+            // - Method: `method?` — `?` is part of the name, preceded by ident char,
+            //   typically followed by `(`, `)`, `,`, space, or end of line
+            let followed_by_space =
+                i + 1 < content.len() && (content[i + 1] == b' ' || content[i + 1] == b'\t');
+            let preceded_by_end_of_expr =
+                i > 0 && matches!(content[i - 1], b' ' | b'\t' | b')' | b']' | b'}');
+            // Ternary `?` needs space after it (before true branch) and is typically
+            // at an expression boundary (space or closing bracket before it).
+            // Method `?` is preceded by an ident char (part of the name).
+            if followed_by_space && preceded_by_end_of_expr {
+                has_ternary_question = true;
+                break;
+            }
+            // Also handle `cond? expr : expr` where `?` is directly after an ident
+            // but followed by space — this is ambiguous. Ruby requires space before
+            // `?` for ternary when the condition is a bare name, but single-char
+            // ternaries like `a?b:c` are valid. For our purposes, we need the `:`.
+            // So we check for this pattern only if followed by space and there's a
+            // guard keyword + colon later.
+            if followed_by_space && i > 0 && is_ident_char(content[i - 1]) {
+                // Could be `a_check ? raise(e) : other` — check further
+                // Actually in Ruby, `a_check?` would be a method name.
+                // `a_check ? x` requires a space before `?` to be a ternary.
+                // So this case is a method call, not a ternary. Skip.
+            }
+        }
+        i += 1;
+    }
+    if !has_ternary_question {
+        return false;
+    }
+    // Also verify there's a `:` separator (ternary else branch)
+    let mut has_colon = false;
+    let mut j = i + 1;
+    in_single_quote = false;
+    in_double_quote = false;
+    while j < content.len() {
+        let b = content[j];
+        if b == b'\'' && !in_double_quote {
+            in_single_quote = !in_single_quote;
+        } else if b == b'"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+        } else if b == b'\\' && (in_single_quote || in_double_quote) {
+            j += 1;
+        } else if b == b':' && !in_single_quote && !in_double_quote {
+            // Check it's not a symbol (`:sym`) - should be preceded by space
+            if j > 0
+                && (content[j - 1] == b' ' || content[j - 1] == b'\t' || content[j - 1] == b')')
+            {
+                has_colon = true;
+                break;
+            }
+        }
+        j += 1;
+    }
+    if !has_colon {
         return false;
     }
     for keyword in GUARD_METHODS {
         if contains_word(content, keyword) {
             return true;
         }
+    }
+    false
+}
+
+/// Count net bracket/paren depth change in a line, skipping characters inside
+/// string literals (single/double quoted) and regex literals (starting with `/`
+/// after an operator or at line start). This avoids false depth counts from
+/// brackets inside strings like `"columns if you join"` or regexes like `/\[/`.
+fn count_bracket_depth_change(line: &[u8]) -> i32 {
+    let mut depth: i32 = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_regex = false;
+    let mut i = 0;
+    while i < line.len() {
+        let b = line[i];
+        if in_single_quote {
+            if b == b'\\' {
+                i += 1; // skip escaped char
+            } else if b == b'\'' {
+                in_single_quote = false;
+            }
+        } else if in_double_quote {
+            if b == b'\\' {
+                i += 1; // skip escaped char
+            } else if b == b'"' {
+                in_double_quote = false;
+            }
+        } else if in_regex {
+            if b == b'\\' {
+                i += 1; // skip escaped char
+            } else if b == b'/' {
+                in_regex = false;
+            }
+        } else {
+            match b {
+                b'\'' => in_single_quote = true,
+                b'"' => in_double_quote = true,
+                b'/' => {
+                    // Heuristic: `/` starts a regex if preceded by operator, `(`, `=`, `,`,
+                    // `!`, `~`, space+operator, or at start of expression
+                    let is_regex_start = if i == 0 {
+                        true
+                    } else {
+                        let prev = line[i - 1];
+                        matches!(
+                            prev,
+                            b'=' | b'('
+                                | b','
+                                | b'!'
+                                | b'~'
+                                | b' '
+                                | b'\t'
+                                | b'|'
+                                | b'&'
+                                | b'{'
+                                | b'['
+                                | b';'
+                                | b':'
+                        )
+                    };
+                    if is_regex_start {
+                        in_regex = true;
+                    }
+                }
+                b'(' | b'{' | b'[' => depth += 1,
+                b')' | b'}' | b']' => depth -= 1,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    depth
+}
+
+/// Check if `word` appears as a whole word in `content`, but only outside
+/// of string literals. This prevents matching keywords inside strings like
+/// `"columns if you join a table"`.
+fn contains_word_outside_strings(haystack: &[u8], word: &[u8]) -> bool {
+    let wlen = word.len();
+    if haystack.len() < wlen {
+        return false;
+    }
+    // Track string context
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut i = 0;
+    while i < haystack.len() {
+        let b = haystack[i];
+        if in_single_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            } else if b == b'\'' {
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            } else if b == b'"' {
+                in_double_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' {
+            in_single_quote = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_double_quote = true;
+            i += 1;
+            continue;
+        }
+        // Check for word match at this position (outside strings)
+        if i + wlen <= haystack.len() && &haystack[i..i + wlen] == word {
+            let before_ok = i == 0 || !is_ident_char(haystack[i - 1]);
+            let after_ok = i + wlen >= haystack.len() || !is_ident_char(haystack[i + wlen]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
     }
     false
 }
@@ -1336,6 +1534,32 @@ mod tests {
             diags.len(),
             1,
             "Expected 1 offense for return empty string unless guard, got {}: {:?}",
+            diags.len(),
+            diags
+        );
+    }
+
+    #[test]
+    fn fp_guard_then_unless_with_or_continuation() {
+        let source = b"def foo\n  return [n, \"unexpected\"] if lhs_name.nil?\n  unless @inst.tables.has_key? name.to_sym or\n         @inst.lattices.has_key? name.to_sym\n    return [n, \"does not exist\"]\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterGuardClause, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "Expected 0 offenses for guard then unless-with-or, got {}: {:?}",
+            diags.len(),
+            diags
+        );
+    }
+
+    #[test]
+    fn fp_guard_then_if_with_and_continuation() {
+        let source = b"def foo\n  return doc.length if doc.offset == doc.length - 1\n  if doc.length >= doc.offset + doc.delim.length and\n      doc.get_range(doc.offset, doc.delim.length) == doc.delim\n    return doc.offset + doc.delim.length\n  end\nend\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterGuardClause, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "Expected 0 offenses for guard then if-with-and, got {}: {:?}",
             diags.len(),
             diags
         );

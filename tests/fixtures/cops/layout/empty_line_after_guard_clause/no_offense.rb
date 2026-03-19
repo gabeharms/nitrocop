@@ -629,3 +629,82 @@ def guard_then_multiline_cond_at_end
     return
   end
 end
+
+# FP fix: block guard `end` followed by another block `if..raise..end` where
+# the if condition contains braces from a block literal (e.g., `.all? { }`)
+def block_guard_then_if_with_block_literal
+  if @optional_argument
+    raise ArgumentError, "Options not supported"
+  end
+  if @optional_argument and !@opts.all? { |o| o =~ /[ =]\[/ }
+    raise ArgumentError, "Option is inconsistent"
+  end
+end
+
+# FP fix: guard followed by `unless..raise..end` with multi-line `or` condition
+def guard_then_unless_with_or_continuation
+  return [n, "unexpected format: #{lhs}"] if lhs_name.nil?
+  unless @instance.tables.has_key? lhs_name.to_sym or
+         @instance.lattices.has_key? lhs_name.to_sym
+    return [n, "Collection does not exist: '#{lhs_name}'"]
+  end
+end
+
+# FP fix: guard followed by `if..return..end` where condition contains regex
+def guard_then_if_with_regex_condition
+  return "percona-toolkit" if query =~ %r#\*\w+\.\w+:[0-9]/[0-9]\*/#
+  if match = /\A\s*(call\s+\S+)\(/i.match(query)
+    return match.captures.first.downcase!
+  end
+end
+
+# FP fix: guard followed by multi-line `if` with `and` keyword in condition
+# and block braces that confuse paren depth
+def guard_then_if_with_and_continuation
+  return doc.length if doc.cursor_offset == doc.length - 1
+  if doc.length >= doc.cursor_offset + doc.delim.length and
+      doc.get_range(doc.cursor_offset, doc.delim.length) == doc.delim
+    return doc.cursor_offset + doc.delim.length
+  end
+end
+
+# FP fix: block guard `end` followed by another block `if..return..end`
+# where the next if condition uses comparison operators and is single-line
+def consecutive_block_guards_single_line_cond
+  if security.user_auth && security.users.empty?
+    raise ConfigError, "users required"
+  end
+  if !security.allow_anon && security.clients.empty?
+    raise ConfigError, "clients required"
+  end
+end
+
+# FP fix: guard followed by `if..raise..end` where the raise message
+# contains the word `if` inside a string literal
+def guard_then_if_raise_with_if_in_string
+  raise ArgumentError, "Must specify at least one column" if columns.empty?
+  if relation.joins_values.present? && !@columns.all? { |column| column.to_s.include?(".") }
+    raise ArgumentError, "You need to specify fully-qualified columns if you join a table"
+  end
+end
+
+# FP fix: next guard followed by `unless..raise..end` (non-if keyword guard block)
+def next_guard_then_unless_raise_block
+  DELIMITERS.each do |d|
+    next unless flags.include?(d)
+    unless @delimiters.nil?
+      raise ArgumentError, "Only one delimiter allowed"
+    end
+  end
+end
+
+# FP fix: block guard followed by if block where the if body is a return
+# with the word `if` appearing inside a string argument
+def guard_then_if_with_if_in_return_string
+  if relation.orders.present?
+    raise ConditionNotSupportedError
+  end
+  if relation.arel.orders.present? || relation.arel.taken.present?
+    raise ConditionNotSupportedError
+  end
+end
