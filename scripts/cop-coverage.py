@@ -40,7 +40,7 @@ def load_corpus_results(input_path: str | None) -> dict:
         return json.loads(Path(input_path).read_text())
 
     from corpus_download import download_corpus_results
-    path, run_id, _ = download_corpus_results()
+    path, run_id, _ = download_corpus_results(prefer="extended")
     print(f"Using corpus results from CI run {run_id}", file=sys.stderr)
     return json.loads(path.read_text())
 
@@ -106,9 +106,9 @@ def compute_synthetic(data: dict) -> dict[str, dict]:
 def confidence_tier(occurrences: int, unique_repos: int) -> str:
     if occurrences == 0 and unique_repos == 0:
         return "None"
-    if unique_repos >= 100:
+    if unique_repos >= 500:
         return "High"
-    if unique_repos >= 25:
+    if unique_repos >= 100:
         return "Medium"
     return "Low"
 
@@ -168,9 +168,9 @@ def main():
     if args.summary:
         total_cops = sum(tier_counts.values())
         print(f"Corpus coverage summary ({total_repos} repos, {total_cops} cops):")
-        print(f"  High   (>=100 repos): {tier_counts['High']}")
-        print(f"  Medium (>=25 repos):  {tier_counts['Medium']}")
-        print(f"  Low    (<25 repos):   {tier_counts['Low']}")
+        print(f"  High   (>=500 repos): {tier_counts['High']}")
+        print(f"  Medium (>=100 repos): {tier_counts['Medium']}")
+        print(f"  Low    (<100 repos):  {tier_counts['Low']}")
         print(f"  None   (0 repos):     {tier_counts['None']}")
         return
 
@@ -201,9 +201,9 @@ def main():
     print(f"**Confidence tiers:** {tier_counts['High']} High, "
           f"{tier_counts['Medium']} Medium, {tier_counts['Low']} Low, {tier_counts['None']} None")
     print()
-    print(f"- **High**: >=100 repos")
-    print(f"- **Medium**: >=25 repos")
-    print(f"- **Low**: <25 repos")
+    print(f"- **High**: >=500 repos")
+    print(f"- **Medium**: >=100 repos")
+    print(f"- **Low**: <100 repos")
     print(f"- **None**: 0 repos")
     print()
 
