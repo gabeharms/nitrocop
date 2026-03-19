@@ -25,7 +25,18 @@ end
 it do
   allow(Foo).to receive(:bar) { some_method.freeze }
 end
-# Block with parameter is dynamic
+# Block with parameter is dynamic (but only if body is dynamic)
 it do
   allow(Foo).to receive(:bar) { |arg| arg }
+end
+# raise_error with block — not a stub, should not flag
+it do
+  expect { validate!({}) }.to raise_error(InvalidBlueprint) do
+    'not a valid blueprint'
+  end
+end
+it do
+  expect { validate!(Integer) }.to raise_error(InvalidBlueprint) do
+    'not a valid blueprint'
+  end
 end

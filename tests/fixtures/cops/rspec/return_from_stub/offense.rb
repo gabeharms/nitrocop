@@ -75,3 +75,23 @@ it do
   allow_any_instance_of(Foo).to receive(:qux).with(:arg) { "hello" }
                                                          ^ RSpec/ReturnFromStub: Use `and_return` for static values.
 end
+# is_expected is equivalent to expect(subject)
+it do
+  is_expected.to receive(:can?) { true }
+                                ^ RSpec/ReturnFromStub: Use `and_return` for static values.
+end
+it do
+  is_expected.to receive(:can?).with(:read, 123) { true }
+                                                 ^ RSpec/ReturnFromStub: Use `and_return` for static values.
+end
+# Block with parameters but static body — RuboCop still flags
+it do
+  allow_any_instance_of(Foo).to receive(:load).with("file", any_args) do |config, name|
+                                                                      ^^ RSpec/ReturnFromStub: Use `and_return` for static values.
+    nil
+  end
+end
+it do
+  allow_any_instance_of(Foo).to receive(:find) {|path| nil}
+                                               ^ RSpec/ReturnFromStub: Use `and_return` for static values.
+end

@@ -56,6 +56,20 @@ use crate::parse::source::SourceFile;
 /// `allow_any_instance_of(Foo).to receive(:bar) { true }`. Fixed by adding both
 /// names to the receiver check. Both are receiverless calls, so the existing
 /// `recv_call.receiver().is_some()` guard is already correct for them.
+///
+/// ## Corpus investigation (2026-03-18, round 4)
+///
+/// FP=2: Both from procore-oss/blueprinter. Pattern:
+/// `expect { ... }.to raise_error(Err) do 'msg' end`. The `block_on_to` fallback
+/// was incorrectly used even when the argument to `.to` was NOT a `receive` chain
+/// (it was `raise_error`). Fixed by gating `block_on_to` on `is_receive_chain()`.
+///
+/// FN=13 (3 root causes):
+/// 1. `is_expected.to receive(:can?) { true }` (9 FN, cancancan): `is_expected` is
+///    equivalent to `expect(subject)` and was not in the receiver name check. Fixed.
+/// 2. Blocks with parameters but static body (4 FN: fastlane 2, Freika 1, opal 1):
+///    e.g., `receive(:foo) do |arg| nil end`. RuboCop only checks body staticness,
+///    not whether the block has parameters. Removed the parameter skip.
 pub struct ReturnFromStub;
 impl Cop for ReturnFromStub {
     fn name(&self) -> &'static str {
@@ -159,6 +173,7 @@ impl Cop for ReturnFromStub {
             && recv_name != b"expect"
             && recv_name != b"allow_any_instance_of"
             && recv_name != b"expect_any_instance_of"
+            && recv_name != b"is_expected"
         {
             return;
         }
@@ -178,8 +193,14 @@ impl Cop for ReturnFromStub {
 
         // Find the `receive` call in the argument chain and check for a block on it
         let block_on_receive = find_block_on_receive_chain(&arg_list[0]);
-        // Also check for a block on `.to` itself
-        let block_on_to = call.block();
+        // Also check for a block on `.to` itself, but only if the argument chain
+        // contains a `receive` call. Without this check, blocks on `.to raise_error(...)`
+        // or other non-stub matchers would be incorrectly flagged.
+        let block_on_to = if block_on_receive.is_none() && is_receive_chain(&arg_list[0]) {
+            call.block()
+        } else {
+            None
+        };
 
         let block_node = if let Some(b) = block_on_receive {
             b
@@ -192,18 +213,8 @@ impl Cop for ReturnFromStub {
             return;
         };
 
-        // If block has parameters, it's a dynamic block
-        if let Some(params) = block_node.parameters() {
-            if let Some(bp) = params.as_block_parameters_node() {
-                if let Some(p) = bp.parameters() {
-                    let req: Vec<_> = p.requireds().iter().collect();
-                    if !req.is_empty() {
-                        return;
-                    }
-                }
-            }
-        }
-
+        // RuboCop does not skip blocks with parameters — it only checks the body.
+        // A block like `receive(:foo) { |arg| nil }` is still flagged if the body is static.
         let body = match block_node.body() {
             Some(b) => b,
             None => {
@@ -243,6 +254,22 @@ impl Cop for ReturnFromStub {
             "Use `and_return` for static values.".to_string(),
         ));
     }
+}
+
+/// Check if a call chain has `receive` as the root method name (without looking for blocks).
+fn is_receive_chain(node: &ruby_prism::Node<'_>) -> bool {
+    let call = match node.as_call_node() {
+        Some(c) => c,
+        None => return false,
+    };
+    let mut current = call;
+    while let Some(recv) = current.receiver() {
+        match recv.as_call_node() {
+            Some(c) => current = c,
+            None => return false,
+        }
+    }
+    current.name().as_slice() == b"receive"
 }
 
 fn find_block_on_receive_chain<'a>(
