@@ -9,11 +9,22 @@ use crate::parse::source::SourceFile;
 /// instead of recv_call.message_loc() (the `.reverse`/`.reverse_each` method name).
 /// Multi-line chains surfaced this as line mismatches (FP on chain start line,
 /// FN on the .reverse line). Fix: use recv_call.message_loc() for offense location.
+///
+/// Corpus investigation (2026-03-19):
+/// Corpus oracle reported FP=3, FN=0.
+///
+/// FP=3: Fixed by adding `default_enabled() -> false`. The vendor rubocop config
+/// has `Enabled: pending` for this cop (added v1.84), so rubocop doesn't enable
+/// it unless explicitly configured. The corpus baseline config doesn't list it.
 pub struct ReverseFind;
 
 impl Cop for ReverseFind {
     fn name(&self) -> &'static str {
         "Style/ReverseFind"
+    }
+
+    fn default_enabled(&self) -> bool {
+        false
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -140,5 +151,22 @@ mod tests {
             b"array.reverse.find { |x| x > 0 }",
             config,
         );
+    }
+
+    #[test]
+    fn no_offense_with_default_config() {
+        // With default config (no TargetRubyVersion override), Ruby defaults to 2.7
+        // so no offenses should be produced
+        crate::testutil::assert_cop_no_offenses_full_with_config(
+            &ReverseFind,
+            b"array.reverse.find { |x| x > 0 }",
+            CopConfig::default(),
+        );
+    }
+
+    #[test]
+    fn default_enabled_is_false() {
+        // Vendor rubocop config has Enabled: pending for this cop
+        assert!(!ReverseFind.default_enabled());
     }
 }
