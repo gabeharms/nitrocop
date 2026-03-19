@@ -3,6 +3,16 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Rails/SafeNavigation — converts `try!`/`try` calls to safe navigation `&.`.
+///
+/// ## Investigation (2026-03-19)
+///
+/// **FP root cause (1 FP):** `result.try!(:[], "count")` was flagged but RuboCop skips it.
+/// RuboCop checks `dispatch.value.match?(/\w+[=!?]?/)` — the `[]` operator symbol doesn't
+/// match this regex because `[` and `]` are not word characters.
+///
+/// Fix: Added validation that the symbol argument contains only word characters and optional
+/// trailing `=`/`!`/`?`, matching RuboCop's regex filter.
 pub struct SafeNavigation;
 
 impl Cop for SafeNavigation {
@@ -56,7 +66,19 @@ impl Cop for SafeNavigation {
             Some(a) => a,
             None => return,
         };
-        if first_arg.as_symbol_node().is_none() {
+        let sym = match first_arg.as_symbol_node() {
+            Some(s) => s,
+            None => return,
+        };
+
+        // RuboCop checks `dispatch.value.match?(/\w+[=!?]?/)` — operator symbols
+        // like :[] or :+ don't match this regex and are skipped.
+        let sym_value = sym.unescaped();
+        if sym_value.is_empty()
+            || !sym_value.iter().all(|b: &u8| {
+                b.is_ascii_alphanumeric() || *b == b'_' || *b == b'!' || *b == b'?' || *b == b'='
+            })
+        {
             return;
         }
 

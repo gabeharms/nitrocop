@@ -8,3 +8,9 @@ obj.try(:method_name)
 linkset.try(short)
 obj.try!(method_var)
 obj.try!(some_method_name)
+
+# try!/try with operator method symbols — RuboCop skips these because
+# the symbol value doesn't match /\w+[=!?]?/
+result.try!(:[], "count")
+hash.try!(:[], key)
+obj.try(:[]=, key, value)
