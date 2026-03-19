@@ -31,6 +31,10 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         run: cargo fmt --check
 
+      - name: Validate corpus manifest
+        if: matrix.os == 'ubuntu-24.04'
+        run: python3 bench/corpus/validate_manifest.py
+
       - name: No vendor include macros
         if: matrix.os == 'ubuntu-24.04'
         run: bash scripts/check_no_vendor_include_macros.sh
