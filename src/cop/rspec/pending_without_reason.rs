@@ -1,7 +1,7 @@
 use ruby_prism::Visit;
 
 use crate::cop::node_type::CALL_NODE;
-use crate::cop::util::{self, RSPEC_DEFAULT_INCLUDE, is_rspec_example, is_rspec_example_group};
+use crate::cop::util::{self, is_rspec_example, is_rspec_example_group, RSPEC_DEFAULT_INCLUDE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
@@ -34,6 +34,18 @@ use crate::parse::source::SourceFile;
 /// Fix: mirror RuboCop's `block_node_example_group?` logic — also flag
 /// SKIPPED_GROUP_METHODS when the call itself has an explicit `RSpec` receiver
 /// and a block, regardless of parent context.
+///
+/// ## Corpus investigation (2026-03-19)
+///
+/// Corpus oracle reported FP=4, FN=0. All 4 FP are `RSpec.xdescribe` as the
+/// sole top-level statement in pakyow files. Root cause: RuboCop's
+/// `parent_node` returns nil when the block is the only top-level form
+/// (Parser-gem has no wrapping `begin` node for a single statement), causing
+/// `on_send` to return early and skip the cop entirely. The 2026-03-18 fix
+/// added top-level detection but didn't account for this Parser-gem quirk.
+///
+/// Fix: skip the `block_node_example_group?` branch when the call is the sole
+/// top-level statement, matching RuboCop's `parent_node` nil early-return.
 pub struct PendingWithoutReason;
 
 /// Skipped example-group methods (`ExampleGroups::Skipped` in RuboCop).
@@ -103,6 +115,30 @@ struct PendingWithoutReasonVisitor<'a, 'pr> {
 }
 
 impl<'a, 'pr> PendingWithoutReasonVisitor<'a, 'pr> {
+    /// Returns true when the current call node (last ancestor) is the sole
+    /// top-level statement in the file.  In RuboCop's Parser-gem AST a sole
+    /// top-level block has no parent (parent_node returns nil) which causes
+    /// on_send to return early.  In Prism the program always wraps a
+    /// StatementsNode, so we detect this by checking:
+    ///   ancestors = [ProgramNode, StatementsNode, <current CallNode>]
+    ///   AND the StatementsNode has exactly one child.
+    fn is_sole_top_level(&self) -> bool {
+        // ancestors[-1] is the current CallNode.
+        // ancestors[-2] should be StatementsNode (or possibly a block wrapper).
+        // ancestors[-3] should be ProgramNode.
+        if self.ancestors.len() < 3 {
+            return false;
+        }
+        let idx = self.ancestors.len();
+        let Some(stmts) = self.ancestors[idx - 2].as_statements_node() else {
+            return false;
+        };
+        if self.ancestors[idx - 3].as_program_node().is_none() {
+            return false;
+        }
+        stmts.body().len() == 1
+    }
+
     fn parent_context(&self) -> ParentContext {
         // Current node is the last ancestor (a CallNode while in visit_call_node).
         let Some(mut idx) = self.ancestors.len().checked_sub(2) else {
@@ -188,10 +224,18 @@ impl<'a, 'pr> Visit<'pr> for PendingWithoutReasonVisitor<'a, 'pr> {
         // Flagged when inside a spec group OR when the call itself is an
         // example group with an explicit RSpec receiver and block (top-level
         // `RSpec.xdescribe` case — mirrors RuboCop's `block_node_example_group?`).
+        //
+        // RuboCop quirk: `parent_node` returns nil for the sole top-level
+        // statement in a file (no wrapping `begin` node in Parser-gem AST),
+        // causing `on_send` to return early.  So `RSpec.xdescribe` as the
+        // only statement in a file is NOT flagged.  We replicate this via
+        // `is_sole_top_level()`.
         if SKIPPED_GROUP_METHODS.contains(&method_name)
             && has_rspec_receiver(node.receiver())
             && (context == ParentContext::SpecGroup
-                || (has_block && is_explicit_rspec_receiver(node.receiver())))
+                || (has_block
+                    && is_explicit_rspec_receiver(node.receiver())
+                    && !self.is_sole_top_level()))
         {
             add_reason_offense(self.cop, self.source, self.diagnostics, node, "skip");
         }
@@ -303,4 +347,32 @@ fn add_reason_offense(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(PendingWithoutReason, "cops/rspec/pending_without_reason");
+
+    /// RuboCop does not flag `RSpec.xdescribe` when it is the sole top-level
+    /// statement (Parser-gem `parent_node` returns nil → `on_send` returns early).
+    #[test]
+    fn sole_top_level_xdescribe_is_not_flagged() {
+        let source = br#"RSpec.xdescribe "something" do
+  include_context "app"
+  it "works" do
+  end
+end
+"#;
+        crate::testutil::assert_cop_no_offenses_full(&PendingWithoutReason, source);
+    }
+
+    /// When `RSpec.xdescribe` is NOT the sole top-level statement, it IS flagged
+    /// (RuboCop wraps multiple top-level statements in a `begin` node).
+    #[test]
+    fn multi_top_level_xdescribe_is_flagged() {
+        let source = br#"require 'spec_helper'
+RSpec.xdescribe "something" do
+  it "works" do
+  end
+end
+"#;
+        let diags = crate::testutil::run_cop_full(&PendingWithoutReason, source);
+        assert_eq!(diags.len(), 1, "expected 1 offense, got {diags:?}");
+        assert!(diags[0].message.contains("skip"), "expected skip message");
+    }
 }
