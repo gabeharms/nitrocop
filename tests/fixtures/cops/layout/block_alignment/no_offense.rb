@@ -159,3 +159,32 @@ scope :last_n_per_feed, -> (n, feed_ids) {
      {code: :even, msg: "Value must be even. Was: #{v}"}
    end
 }]
+
+# FP fix: } chained via next-line dot (not immediately after })
+victims = replicas.select {
+            !(it.destroy_set? || it.strand.label == "destroy")
+          }
+  .sort_by { |r| r.created_at }
+
+# FP fix: do..end block in if condition with && — end aligns with LHS of && expression
+if adjustment_type == "removal" && article.tag_list.none? do |tag|
+     tag.casecmp(tag_name).zero?
+   end
+  errors.add(:tag_id, "not live")
+end
+
+# FP fix: multiline assignment on previous line — end aligns with assignment LHS
+packages_lines, last_package_lines =
+  stdout
+  .each_line
+  .map(&:strip)
+  .reject { |line| end_of_lines?(line) }
+  .reduce([[], []]) do |(pkgs, pkg), line|
+  if start?(line)
+    pkgs.push(pkg) unless pkg.empty?
+    [pkgs, [line]]
+  else
+    pkg.push(line)
+    [pkgs, pkg]
+  end
+end

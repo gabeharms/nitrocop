@@ -101,6 +101,39 @@ use crate::parse::source::SourceFile;
 /// 4. **Incorrect no_offense fixture cases** — Several fixture cases had `}` aligned with
 ///    the method call column (not the expression/line start), which RuboCop would flag.
 ///    Removed factually incorrect cases from no_offense.rb.
+///
+/// ## Corpus investigation findings (2026-03-19)
+///
+/// Root causes of remaining 6 FP:
+/// 1. **Next-line dot chain** (ubicloud, 2 FP) — `}` followed by newline + `.sort_by` was
+///    not detected as a chained closer because `is_closer_chained` only checked for `.`
+///    immediately after the closer. Extended to check the next non-empty line for leading `.`.
+/// 2. **`&&`/`||` with complex LHS** (forem, 1 FP) — `if x == "str" && y.each do ... end`
+///    where `find_same_line_operator_lhs` couldn't walk backward through string literals
+///    and `==` in the LHS. Made the backward walk more permissive (handles quotes, operators).
+/// 3. **Multiline assignment on previous line** (pivotal, 1 FP) — `a, b =\n  stdout\n  .reduce do`
+///    where `find_assignment_lhs_col` only checked the same line as the CallNode. Extended
+///    to check the previous line when the call starts at line indent and prev line ends with `=`.
+/// 4. **Paren/rescue context** (automaticmode, 1 FP) — `(svg = IO.popen(...) { } rescue false)`.
+///    Not fixed; requires AST parent walk.
+/// 5. **Splat method arg deep indentation** (flyerhzm, 1 FP) — `*descendants.map { ... }`.
+///    Not fixed; requires AST parent walk.
+///
+/// Root causes of remaining 17 FN:
+/// 1. **`expression_start_indent` too permissive** (Arachni, 6 FN + seyhunak, 3 FN + others) —
+///    When a block's call expression is mid-line (e.g., inside parens like `expect(auditable.audit(...)
+///    do`), the line indent matches the outer context, not the call expression. Guarded
+///    `expression_start_indent` to only be accepted when `call_start_col == expression_start_indent`
+///    (i.e., the call starts at the line's indent position).
+/// 2. **`%` not in `find_call_expression_col` chars** (randym, 2 FN + floere, 1 FN) —
+///    `%w(...)` percent literals weren't fully walked backward. Added `%` to accepted characters.
+/// 3. **Lambda `call_expr_col` accepting `{` column** (refinery, 1 FN) — For lambda blocks,
+///    `find_call_expression_col` gave the `{`/`do` position rather than `->`, causing `}`
+///    aligned with `{` to be accepted. Removed `call_expr_col` from lambda alignment check.
+/// 4. **Chained `.to_json` accepted in assignment** (diaspora, 1 FN) — Not fixed; chained
+///    closer heuristic accepts `call_start_col` which matches the RHS call. Requires AST walk.
+///
+/// Remaining gaps: 2 FP (paren/rescue, splat-arg) + 1 FN (chained closer in assignment).
 pub struct BlockAlignment;
 
 impl Cop for BlockAlignment {
@@ -260,9 +293,15 @@ impl Cop for BlockAlignment {
                     closing_loc.as_slice().len(),
                 );
                 let accept_call_start = assignment_col.is_none() || closer_is_chained;
+                // Only accept expression_start_indent when the call actually starts
+                // at the line's indent position (i.e., the call is the first thing on
+                // the line). When the call is mid-line (e.g., inside parens like
+                // `expect(auditable.audit(...) do`), the line indent is just the outer
+                // context's indentation and shouldn't be a valid alignment target.
+                let call_starts_at_indent = call_start_col == expression_start_indent;
                 if end_col != start_of_line_indent
                     && end_col != expression_start_col
-                    && end_col != expression_start_indent
+                    && (!call_starts_at_indent || end_col != expression_start_indent)
                     && (!accept_call_start || end_col != call_start_col)
                     && end_col != call_expr_col
                     && operator_continuation_indent.is_none_or(|c| end_col != c)
@@ -321,8 +360,6 @@ impl BlockAlignment {
         let expression_start_col = assignment_col.unwrap_or(lambda_start_col);
         let expression_start_indent = line_indent(bytes, lambda_start_offset);
 
-        let call_expr_col = find_call_expression_col(bytes, opening_loc.start_offset());
-
         let (end_line, end_col) = source.offset_to_line_col(closing_loc.start_offset());
 
         if end_line == opening_line {
@@ -358,13 +395,14 @@ impl BlockAlignment {
             }
             _ => {
                 // "either": accept alignment with do-line indent,
-                // expression start col/indent, lambda start col, or call_expr_col.
+                // expression start col/indent, or lambda start col.
                 // NOTE: do_col (column of `{`/`do`) is NOT a valid target.
+                // NOTE: call_expr_col is NOT used for lambdas — the backward walk
+                // from `{`/`do` gives the `->` position, not a meaningful call expr.
                 if end_col != start_of_line_indent
                     && end_col != expression_start_col
                     && end_col != expression_start_indent
                     && end_col != lambda_start_col
-                    && end_col != call_expr_col
                 {
                     diagnostics.push(self.diagnostic(
                         source,
@@ -414,6 +452,15 @@ fn line_indent(bytes: &[u8], offset: usize) -> usize {
 /// Check if the call expression at `call_start_offset` is the RHS of an assignment.
 /// If so, return the column of the LHS variable (the assignment target).
 /// This matches RuboCop's `find_lhs_node` which walks through op_asgn/masgn nodes.
+///
+/// Also checks the previous line when the call starts at (or near) the beginning of
+/// its line. This handles multiline assignments like:
+///   packages_lines, last_package_lines =
+///     stdout
+///     .each_line
+///     .reduce([[], []]) do ...
+///     end
+/// where `end` should align with `packages_lines` on the preceding assignment line.
 fn find_assignment_lhs_col(bytes: &[u8], call_start_offset: usize) -> Option<usize> {
     let mut line_start = call_start_offset;
     while line_start > 0 && bytes[line_start - 1] != b'\n' {
@@ -421,16 +468,50 @@ fn find_assignment_lhs_col(bytes: &[u8], call_start_offset: usize) -> Option<usi
     }
 
     let call_col = call_start_offset - line_start;
-    if call_col == 0 {
-        return None;
+
+    // First, check on the same line
+    if call_col > 0 {
+        let result = skip_assignment_backward(bytes, line_start, call_start_offset);
+        if result != call_start_offset {
+            return Some(result - line_start);
+        }
     }
 
-    let result = skip_assignment_backward(bytes, line_start, call_start_offset);
-    if result != call_start_offset {
-        Some(result - line_start)
-    } else {
-        None
+    // If the call starts at the beginning of its line (or very close to it),
+    // check if the previous line ends with `=` (possibly with trailing whitespace).
+    // This handles multiline assignment RHS patterns.
+    let indent = line_indent(bytes, call_start_offset);
+    if call_col == indent && line_start > 0 {
+        // Find the previous line
+        let prev_line_end = line_start - 1; // the \n
+        let mut prev_line_start = prev_line_end;
+        while prev_line_start > 0 && bytes[prev_line_start - 1] != b'\n' {
+            prev_line_start -= 1;
+        }
+
+        let prev_line = &bytes[prev_line_start..prev_line_end];
+        // Check if previous line ends with `=` (after trimming whitespace)
+        let trimmed_end = prev_line
+            .iter()
+            .rposition(|&b| b != b' ' && b != b'\t' && b != b'\r');
+        if let Some(last_idx) = trimmed_end {
+            if prev_line[last_idx] == b'=' {
+                // Check it's an assignment (not ==, !=, <=, >=)
+                let is_comparison =
+                    last_idx > 0 && matches!(prev_line[last_idx - 1], b'=' | b'!' | b'<' | b'>');
+                if !is_comparison {
+                    // Find the LHS on the previous line: walk to first non-ws
+                    let prev_indent = prev_line
+                        .iter()
+                        .position(|&b| b != b' ' && b != b'\t')
+                        .unwrap_or(0);
+                    return Some(prev_indent);
+                }
+            }
+        }
     }
+
+    None
 }
 
 /// Walk backward from the `do` keyword on the same line to find the column where
@@ -483,7 +564,8 @@ fn find_call_expression_col(bytes: &[u8], do_offset: usize) -> usize {
                 || ch == b'?'
                 || ch == b'!'
                 || ch == b'@'
-                || ch == b'$' =>
+                || ch == b'$'
+                || ch == b'%' =>
             {
                 pos -= 1;
             }
@@ -663,19 +745,49 @@ fn find_operator_continuation_start(bytes: &[u8], call_start_offset: usize) -> O
     Some(indent)
 }
 
-/// Check if a closing keyword (end/}) is followed by a chained method call on the same line.
-/// Returns true for patterns like `end.check_request`, `end&.path`, `}.sort_by`.
+/// Check if a closing keyword (end/}) is followed by a chained method call.
+/// Returns true for patterns like `end.check_request`, `end&.path`, `}.sort_by`,
+/// and also next-line dot chains like:
+///   }
+///   .sort_by { |r| ... }
 /// This indicates the block is an intermediate part of a method chain, not the final closer.
 fn is_closer_chained(bytes: &[u8], closer_offset: usize, closer_len: usize) -> bool {
     let after = closer_offset + closer_len;
     if after >= bytes.len() {
         return false;
     }
-    // Check for `.method` or `&.method` after the closer
+    // Check for `.method` or `&.method` immediately after the closer (same line)
     if bytes[after] == b'.' {
         return true;
     }
     if bytes[after] == b'&' && after + 1 < bytes.len() && bytes[after + 1] == b'.' {
+        return true;
+    }
+    // Check for next-line dot chain: skip to the next non-empty line and check
+    // if it starts with `.` or `&.` (after whitespace)
+    let mut pos = after;
+    // Skip rest of current line
+    while pos < bytes.len() && bytes[pos] != b'\n' {
+        // If there's non-whitespace content after the closer on this line
+        // (like ` rescue false)` or `.to_json`), don't look at next line
+        if bytes[pos] != b' ' && bytes[pos] != b'\t' && bytes[pos] != b'\r' {
+            return false;
+        }
+        pos += 1;
+    }
+    // Skip newline
+    if pos < bytes.len() && bytes[pos] == b'\n' {
+        pos += 1;
+    }
+    // Skip whitespace on next line
+    while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
+        pos += 1;
+    }
+    // Check if next line starts with `.` or `&.`
+    if pos < bytes.len() && bytes[pos] == b'.' {
+        return true;
+    }
+    if pos < bytes.len() && bytes[pos] == b'&' && pos + 1 < bytes.len() && bytes[pos + 1] == b'.' {
         return true;
     }
     false
@@ -686,8 +798,11 @@ fn is_closer_chained(bytes: &[u8], closer_offset: usize, closer_len: usize) -> b
 /// This handles patterns like:
 ///   next true if urls&.size&.positive? && urls&.all? do |url|
 ///                urls&.size&.positive? is the LHS whose start column is what end should align with
+///   if adjustment_type == "removal" && article.tag_list.none? do |tag|
+///                                      ^^^^ call starts here, && before it
+///      adjustment_type is the LHS (col 7)
 ///
-/// Returns the column of the first non-whitespace identifier before the `&&`/`||` on the same line.
+/// Returns the column of the first non-whitespace token of the LHS expression.
 fn find_same_line_operator_lhs(bytes: &[u8], call_start_offset: usize) -> Option<usize> {
     let mut line_start = call_start_offset;
     while line_start > 0 && bytes[line_start - 1] != b'\n' {
@@ -712,8 +827,10 @@ fn find_same_line_operator_lhs(bytes: &[u8], call_start_offset: usize) -> Option
             while pos > line_start && bytes[pos - 1] == b' ' {
                 pos -= 1;
             }
-            // Walk backward through the LHS expression to find its start
-            // (identifiers, method calls, etc.)
+            // Walk backward through the LHS expression to find its start.
+            // The LHS can contain any Ruby expression (strings, comparisons, etc.),
+            // so we use a permissive walk that handles balanced parens/brackets/quotes
+            // and stops only at unbalanced open delimiters or line start.
             let lhs_end = pos;
             let mut paren_depth: i32 = 0;
             while pos > line_start {
@@ -734,22 +851,80 @@ fn find_same_line_operator_lhs(bytes: &[u8], call_start_offset: usize) -> Option
                     _ if paren_depth > 0 => {
                         pos -= 1;
                     }
-                    _ if ch.is_ascii_alphanumeric()
-                        || ch == b'_'
-                        || ch == b'.'
-                        || ch == b'?'
-                        || ch == b'!'
-                        || ch == b'@'
-                        || ch == b'$'
-                        || ch == b'&' =>
-                    {
+                    // Walk through string literals (balanced quotes)
+                    b'"' => {
+                        pos -= 1; // skip closing quote
+                        while pos > line_start && bytes[pos - 1] != b'"' {
+                            pos -= 1;
+                        }
+                        if pos > line_start {
+                            pos -= 1; // skip opening quote
+                        }
+                    }
+                    b'\'' => {
+                        pos -= 1;
+                        while pos > line_start && bytes[pos - 1] != b'\'' {
+                            pos -= 1;
+                        }
+                        if pos > line_start {
+                            pos -= 1;
+                        }
+                    }
+                    // Accept most non-whitespace characters in the LHS expression
+                    _ if ch != b' ' && ch != b'\t' => {
                         pos -= 1;
                     }
-                    b':' if pos >= 2 + line_start && bytes[pos - 2] == b':' => {
-                        pos -= 2;
+                    // Stop at whitespace — but only if the next non-ws char before
+                    // it is not a keyword/identifier continuation
+                    _ => {
+                        // Skip this whitespace gap
+                        let gap_end = pos;
+                        while pos > line_start
+                            && (bytes[pos - 1] == b' ' || bytes[pos - 1] == b'\t')
+                        {
+                            pos -= 1;
+                        }
+                        // If we reached line start or an unbalanced open paren, stop
+                        if pos == line_start {
+                            break;
+                        }
+                        // Check what's before the gap — if it's a keyword like `if`, `unless`, etc.
+                        // stop here (the LHS starts after the keyword)
+                        let before_gap = &bytes[line_start..pos];
+                        if before_gap.ends_with(b"if")
+                            || before_gap.ends_with(b"unless")
+                            || before_gap.ends_with(b"while")
+                            || before_gap.ends_with(b"until")
+                            || before_gap.ends_with(b"return")
+                        {
+                            // Check it's a keyword (preceded by space or line start)
+                            let kw_len = if before_gap.ends_with(b"unless")
+                                || before_gap.ends_with(b"return")
+                            {
+                                6
+                            } else if before_gap.ends_with(b"while")
+                                || before_gap.ends_with(b"until")
+                            {
+                                5
+                            } else {
+                                2
+                            };
+                            let kw_start = pos - kw_len;
+                            if kw_start == line_start
+                                || bytes[kw_start - 1] == b' '
+                                || bytes[kw_start - 1] == b'\t'
+                            {
+                                pos = gap_end;
+                                break;
+                            }
+                        }
+                        // Otherwise continue walking through the gap
                     }
-                    _ => break,
                 }
+            }
+            // Skip any leading whitespace to get to the first non-ws character
+            while pos < lhs_end && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
+                pos += 1;
             }
             if pos < lhs_end {
                 return Some(pos - line_start);
@@ -1106,6 +1281,177 @@ mod tests {
             diags.len(),
             1,
             "Hash.new end at col 21 misaligned with NF_HASH_D at col 0. Got: {:?}",
+            diags
+        );
+    }
+
+    // FP: } followed by newline + .sort_by (chained via next-line dot)
+    #[test]
+    fn fp_brace_chained_next_line_dot() {
+        // } at col 16, followed by \n        .sort_by
+        // RuboCop accepts this — the block is chained
+        let source = b"      victims = replicas.select {\n                  !(it.destroy_set? || it.strand.label == \"destroy\")\n                }\n        .sort_by { |r| r.created_at }\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert!(
+            diags.is_empty(),
+            "FP: brace chained via next-line dot should not be flagged. Got: {:?}",
+            diags
+        );
+    }
+
+    // Known remaining FP: } inside parenthesized expression with rescue modifier
+    // (automaticmode__active_workflow, 1 FP). The } aligns with neither the
+    // assignment LHS nor the call expression start. RuboCop accepts it through
+    // AST parent walk that nitrocop can't replicate with byte-level heuristics.
+
+    // Known remaining FP: } aligned with block body for splat method arg block
+    // (flyerhzm__rails_best_practices, 1 FP). Deep indentation method arg pattern
+    // where } aligns with the block body, not any standard alignment target.
+
+    // FP: do..end block as part of if condition with &&
+    #[test]
+    fn fp_do_end_in_if_condition() {
+        // if adjustment_type == "removal" && article.tag_list.none? do |tag|
+        //      tag.casecmp(tag_name).zero?
+        //    end
+        let source = b"    if adjustment_type == \"removal\" && article.tag_list.none? do |tag|\n         tag.casecmp(tag_name).zero?\n       end\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert!(
+            diags.is_empty(),
+            "FP: do..end in if condition with && should not be flagged. Got: {:?}",
+            diags
+        );
+    }
+
+    // FP: end at col 6 for .reduce block with multiline assignment on previous line
+    #[test]
+    fn fp_reduce_multiline_assignment() {
+        let source = b"    def packages_lines(stdout)\n      packages_lines, last_package_lines =\n        stdout\n        .each_line\n        .map(&:strip)\n        .reject { |line| end_of_package_lines?(line) }\n        .reduce([[], []]) do |(packages_lines, package_lines), line|\n        if start_of_package_lines?(line)\n          packages_lines.push(package_lines) unless package_lines.empty?\n          [packages_lines, [line]]\n        else\n          package_lines.push(line)\n          [packages_lines, package_lines]\n        end\n      end\n\n      packages_lines.push(last_package_lines)\n    end\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert!(
+            diags.is_empty(),
+            "FP: end at col 6 matches multiline assignment LHS. Got: {:?}",
+            diags
+        );
+    }
+
+    // FN: end misaligned in multi-arg call with do block (Arachni pattern)
+    #[test]
+    fn fn_end_misaligned_in_multi_arg_call() {
+        // expect(auditable.audit( {},
+        //                   format: [...]) do |_, element|
+        //     injected << element.affected_input_value
+        // end).to be_nil
+        // end at col 24, but auditable.audit at col 31 and do-line indent ~42
+        let source = b"                        expect(auditable.audit( {},\n                                          format: [ Format::STRAIGHT ] ) do |_, element|\n                            injected << element.affected_input_value\n                        end).to be_nil\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "FN: end at col 24 misaligned in multi-arg call. Got: {:?}",
+            diags
+        );
+    }
+
+    // FN: } misaligned in brace block (seyhunak pattern)
+    #[test]
+    fn fn_brace_misaligned_deep_block() {
+        // have_tag(:div,
+        //   with: {class: "alert"}) {
+        //     have_tag(:button, ...)
+        //   }          <-- } at col 6, but call starts much deeper
+        let source = b"      expect(element).to have_tag(:div,\n        with: {class: \"alert\"}) {\n          have_tag(:button,\n            text: \"x\"\n          )\n\n      }\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "FN: brace at col 6 misaligned with have_tag at col 25. Got: {:?}",
+            diags
+        );
+    }
+
+    // FN: end misaligned off by 1 (randym pattern)
+    #[test]
+    fn fn_end_misaligned_by_one() {
+        // %w(...).each do |attr|
+        //    body
+        //  end         <-- end at col 4, but %w at col 3
+        let source = b"   %w(param1 param2).each do |attr|\n      assert_raise(ArgumentError) { @dn.send(attr) }\n    end\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "FN: end at col 4 misaligned with %w at col 3. Got: {:?}",
+            diags
+        );
+    }
+
+    // Known remaining FN: } misaligned in assignment context with chained closer
+    // (diaspora, 1 FN). `json = bob.contacts.map { ... }.to_json` — the chained
+    // `.to_json` causes nitrocop to accept call_start_col as alignment target.
+    // RuboCop uses AST parent walk to resolve through the chain to the assignment.
+
+    // FN: end misaligned in accepted_states.any? (sharetribe pattern)
+    #[test]
+    fn fn_end_misaligned_any_block() {
+        let source = b"        accepted_states.any? do |(status, reason)|\n        if reason.nil?\n          payment[:payment_status] == status\n        end\n          end\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "FN: end at col 10 misaligned with accepted_states at col 8. Got: {:?}",
+            diags
+        );
+    }
+
+    // FN: end misaligned by 2 in Thread::new block (trogdoro pattern)
+    #[test]
+    fn fn_thread_new_block_misaligned() {
+        let source = b"            Thread::new(iodat, main) do |iodat, main|\n              process(iodat)\n          end\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "FN: end at col 10 misaligned with Thread at col 12. Got: {:?}",
+            diags
+        );
+    }
+
+    // FN: end misaligned in combos block (bloom-lang pattern)
+    #[test]
+    fn fn_combos_block_misaligned() {
+        let source = b"    result <= (sem_hist * use_tiebreak * explicit_tc).combos(sem_hist.from => use_tiebreak.from,\n                                                             sem_hist.to => explicit_tc.from,\n                                                             sem_hist.from => explicit_tc.to) do |s,t,e|\n      [s.to, t.to]\n    end\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "FN: end at col 4 misaligned with result or (sem_hist. Got: {:?}",
+            diags
+        );
+    }
+
+    // FN: } misaligned lambda block (refinery pattern)
+    #[test]
+    fn fn_lambda_brace_misaligned() {
+        let source = b"  ->{\n    page.within_frame do\n      select_upload\n    end\n    }\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "FN: brace at col 4 misaligned with -> at col 2. Got: {:?}",
+            diags
+        );
+    }
+
+    // FN: end misaligned in %w[].each (floere pattern)
+    #[test]
+    fn fn_end_misaligned_each_block() {
+        let source = b"%w[cpu object].each do |thing|\n  profile thing do\n    10_000.times { method }\n  end\n end\n";
+        let diags = run_cop_full(&BlockAlignment, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "FN: end at col 1 misaligned with %w at col 0. Got: {:?}",
             diags
         );
     }

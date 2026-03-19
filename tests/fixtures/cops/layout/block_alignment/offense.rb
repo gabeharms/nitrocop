@@ -54,3 +54,39 @@ accepted_states.any? do |(status, reason)|
   end
     end
     ^^^ Layout/BlockAlignment: Align `end` with the start of the line where the block is defined.
+# FN: end misaligned in expect(auditable.audit do ... end) — Arachni pattern
+                        expect(auditable.audit( {},
+                                          format: [ Format::STRAIGHT ] ) do |_, element|
+                            injected << element.affected_input_value
+                        end).to be_nil
+                        ^^^ Layout/BlockAlignment: Align `end` with the start of the line where the block is defined.
+# FN: } misaligned in deep brace block (seyhunak pattern)
+      expect(element).to have_tag(:div,
+        with: {class: "alert"}) {
+          have_tag(:button,
+            text: "x"
+          )
+
+      }
+      ^ Layout/BlockAlignment: Align `}` with the start of the line where the block is defined.
+# FN: end misaligned by 1 with %w literal (floere pattern)
+%w[cpu object].each do |thing|
+  profile thing do
+    10_000.times { method }
+  end
+ end
+ ^^^ Layout/BlockAlignment: Align `end` with the start of the line where the block is defined.
+# FN: lambda brace } misaligned with -> (refinery pattern)
+  ->{
+    page.within_frame do
+      select_upload
+    end
+    }
+    ^ Layout/BlockAlignment: Align `}` with the start of the line where the block is defined.
+# FN: end misaligned in combos block (bloom-lang pattern)
+    result <= (sem_hist * use_tiebreak * tc).combos(sem_hist.from => use_tiebreak.from,
+                                                     sem_hist.to => tc.from,
+                                                     sem_hist.from => tc.to) do |s,t,e|
+      [s.to, t.to]
+    end
+    ^^^ Layout/BlockAlignment: Align `end` with the start of the line where the block is defined.
