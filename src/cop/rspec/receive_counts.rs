@@ -4,6 +4,11 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (2026-03-18): FN=2 from ruby-shoryuken/shoryuken.
+/// Pattern: `expect(sqs).to(receive(:get_queue_attributes).and_return(resp)).exactly(1).times`
+/// When `.to(...)` uses explicit parens, `.exactly` chains off the `.to()` result, not
+/// the receive chain. Fixed by checking `.to`/`.not_to`/`.to_not` arguments for `receive`
+/// in `has_receive_in_chain_up`.
 pub struct ReceiveCounts;
 
 impl Cop for ReceiveCounts {
@@ -119,7 +124,31 @@ fn has_receive_in_chain_up(call: &ruby_prism::CallNode<'_>) -> bool {
             if name == b"receive" {
                 return true;
             }
+            // When .exactly/.at_least/.at_most chains off .to(...), receive is
+            // in the argument to .to, not in the receiver chain.
+            if name == b"to" || name == b"not_to" || name == b"to_not" {
+                if let Some(args) = recv_call.arguments() {
+                    for arg in args.arguments().iter() {
+                        if has_receive_in_arg(&arg) {
+                            return true;
+                        }
+                    }
+                }
+            }
             return has_receive_in_chain_up(&recv_call);
+        }
+    }
+    false
+}
+
+/// Walk a call chain downward (via receiver) looking for `receive` as a method name.
+fn has_receive_in_arg(node: &ruby_prism::Node<'_>) -> bool {
+    if let Some(call) = node.as_call_node() {
+        if call.name().as_slice() == b"receive" {
+            return true;
+        }
+        if let Some(recv) = call.receiver() {
+            return has_receive_in_arg(&recv);
         }
     }
     false
