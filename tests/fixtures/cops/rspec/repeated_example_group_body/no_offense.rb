@@ -41,3 +41,12 @@ context 'backtick b' do
   before { `echo world` }
   it { should be_truthy }
 end
+
+# Different arg placement in call chain — not a repeated body
+context 'with one arg' do
+  it { expect(cmd.curry(data).call('User')).to eql(result) }
+end
+
+context 'with two args' do
+  it { expect(cmd.curry(data, 'User').call).to eql(result) }
+end

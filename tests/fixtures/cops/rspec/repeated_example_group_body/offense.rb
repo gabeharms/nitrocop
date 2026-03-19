@@ -81,3 +81,29 @@ else
     it { should be_nil }
   end
 end
+
+# Negative zero vs zero — Parser gem folds -0.0 into float literal where -0.0 == 0.0
+RSpec.describe 'Float#negative?' do
+  describe 'on zero' do
+  ^^^^^^^^^^^^^^^^^^^^^^ RSpec/RepeatedExampleGroupBody: Repeated describe block body on line(s) [75]
+    it { 0.0.negative?.should be_false }
+  end
+
+  describe 'on negative zero' do
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/RepeatedExampleGroupBody: Repeated describe block body on line(s) [71]
+    it { -0.0.negative?.should be_false }
+  end
+end
+
+# Empty block params || vs no params — Parser gem treats both as empty args
+RSpec.describe 'blocks' do
+  describe 'taking zero arguments' do
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/RepeatedExampleGroupBody: Repeated describe block body on line(s) [86]
+    it { @y.z { 1 }.should == 1 }
+  end
+
+  describe 'taking || arguments' do
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/RepeatedExampleGroupBody: Repeated describe block body on line(s) [82]
+    it { @y.z { || 1 }.should == 1 }
+  end
+end

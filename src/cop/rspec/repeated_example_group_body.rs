@@ -45,10 +45,28 @@ use std::hash::{Hash, Hasher};
 /// `subject(:command) do Class.new(...) do result :many; before :prepare; after :finalize;
 /// def execute(tuples)` but the `def execute` method bodies are cut off in the corpus
 /// context. Source file not in local corpus — cannot inspect full bodies.
-/// Root cause hypothesis: the `def execute` bodies differ in some way that the
-/// AstHashVisitor does not distinguish. Likely a missing hash handler for a node type
-/// that appears in the `execute` body (e.g., multi-assign, splat, or complex literal).
-/// No fix attempted without concrete reproduction.
+/// ## Corpus investigation (2026-03-19)
+///
+/// Corpus oracle reported FP=2, FN=14.
+///
+/// FP=2: Both in rom-rb/rom. Two context blocks with nearly identical bodies
+/// differing only in call chain argument placement: `cmd.curry(data).call('User')`
+/// vs `cmd.curry(data, 'User').call`. Root cause: `visit_call_node` did not hash
+/// argument count, so `curry(data) + call('User')` hashed identically to
+/// `curry(data, 'User') + call()` because the 'User' string argument produced
+/// the same hash sequence regardless of which call it belonged to. Fix: hash
+/// argument count before iterating arguments.
+///
+/// FN=14 (8 jruby, 6 natalie): Two patterns:
+/// 1. Float negative zero: `0.0.method` vs `-0.0.method` (8 FNs). Prism parses
+///    `-0.0` as CallNode(unary `-@` on FloatNode), but Parser gem folds it into
+///    `(float -0.0)`. Since Ruby's `-0.0 == 0.0`, RuboCop considers them identical.
+///    Fix: detect unary `-@` on float/int literals and fold into the literal hash,
+///    normalizing float zero values so `0.0` and `-0.0` hash identically.
+/// 2. Empty block params: `{ 1 }` vs `{ || 1 }` (6 FNs). Parser gem produces
+///    identical `(args)` for both; Prism distinguishes them (None vs empty
+///    BlockParametersNode). Fix: added `visit_block_node` that skips hashing
+///    empty BlockParametersNode, making both forms hash identically.
 pub struct RepeatedExampleGroupBody;
 
 impl Cop for RepeatedExampleGroupBody {
@@ -348,13 +366,26 @@ impl<'a, 'pr, H: Hasher> Visit<'pr> for AstHashVisitor<'a, H> {
     }
 
     fn visit_integer_node(&mut self, node: &ruby_prism::IntegerNode<'pr>) {
+        b"INT:".hash(self.hasher);
         let loc = node.location();
         self.src[loc.start_offset()..loc.end_offset()].hash(self.hasher);
     }
 
     fn visit_float_node(&mut self, node: &ruby_prism::FloatNode<'pr>) {
+        // Hash by actual float value so that Parser gem's folded representation matches.
+        // Normalize -0.0 to 0.0 (Ruby: -0.0 == 0.0).
         let loc = node.location();
-        self.src[loc.start_offset()..loc.end_offset()].hash(self.hasher);
+        let src = &self.src[loc.start_offset()..loc.end_offset()];
+        if let Ok(s) = std::str::from_utf8(src) {
+            if let Ok(v) = s.replace('_', "").parse::<f64>() {
+                let normalized = if v == 0.0 { 0.0_f64 } else { v };
+                b"FLOAT:".hash(self.hasher);
+                normalized.to_bits().hash(self.hasher);
+                return;
+            }
+        }
+        // Fallback to source text
+        src.hash(self.hasher);
     }
 
     fn visit_regular_expression_node(&mut self, node: &ruby_prism::RegularExpressionNode<'pr>) {
@@ -364,6 +395,40 @@ impl<'a, 'pr, H: Hasher> Visit<'pr> for AstHashVisitor<'a, H> {
     }
 
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        // Check for unary minus on numeric literal — Parser gem folds these into
+        // the literal node. `-0.0` becomes `(float -0.0)` and `-1` becomes `(int -1)`.
+        // Ruby's == considers `-0.0 == 0.0` (true) but `-1 == 1` (false).
+        // We fold the negation into the literal's hash value to match Parser gem behavior.
+        if node.name().as_slice() == b"-@" && node.arguments().is_none() {
+            if let Some(recv) = node.receiver() {
+                if let Some(flt) = recv.as_float_node() {
+                    // Hash as negated float value — this way -0.0 and 0.0 hash identically
+                    // (because -0.0_f64 == 0.0_f64 and they have the same bit pattern after to_bits)
+                    // Wait: f64::to_bits(-0.0) != f64::to_bits(0.0), so we use the value comparison.
+                    let loc = flt.location();
+                    let src = &self.src[loc.start_offset()..loc.end_offset()];
+                    if let Ok(s) = std::str::from_utf8(src) {
+                        if let Ok(v) = s.replace('_', "").parse::<f64>() {
+                            let neg = -v;
+                            // Hash using to_bits, but normalize -0.0 to 0.0
+                            let normalized = if neg == 0.0 { 0.0_f64 } else { neg };
+                            b"FLOAT:".hash(self.hasher);
+                            normalized.to_bits().hash(self.hasher);
+                            return;
+                        }
+                    }
+                } else if let Some(int) = recv.as_integer_node() {
+                    // Hash negated integer — just prepend minus to the source text
+                    b"INT:".hash(self.hasher);
+                    let loc = int.location();
+                    let src = &self.src[loc.start_offset()..loc.end_offset()];
+                    b"-".hash(self.hasher);
+                    src.hash(self.hasher);
+                    return;
+                }
+            }
+        }
+
         // Hash method name
         node.name().as_slice().hash(self.hasher);
         // Hash call operator type (&. vs . vs none)
@@ -379,16 +444,55 @@ impl<'a, 'pr, H: Hasher> Visit<'pr> for AstHashVisitor<'a, H> {
             self.visit(&recv);
         }
         if let Some(args) = node.arguments() {
+            let arg_count = args.arguments().len();
+            arg_count.hash(self.hasher);
             for arg in args.arguments().iter() {
                 b"A".hash(self.hasher);
                 self.visit(&arg);
             }
+        } else {
+            0usize.hash(self.hasher);
         }
         if let Some(block) = node.block() {
             b"B".hash(self.hasher);
             self.visit(&block);
         }
         // Do NOT call ruby_prism::visit_call_node — we handle children ourselves
+    }
+
+    fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
+        // Parser gem treats `{ 1 }` and `{ || 1 }` identically — both have
+        // empty `(args)`. Prism distinguishes them: `{ || 1 }` has
+        // BlockParametersNode with empty params while `{ 1 }` has None.
+        // Skip empty block parameters to match RuboCop's comparison.
+        if let Some(params) = node.parameters() {
+            if let Some(bp) = params.as_block_parameters_node() {
+                if bp.parameters().is_some_and(|p| {
+                    !p.requireds().is_empty()
+                        || !p.optionals().is_empty()
+                        || p.rest().is_some()
+                        || !p.posts().is_empty()
+                        || !p.keywords().is_empty()
+                        || p.keyword_rest().is_some()
+                        || p.block().is_some()
+                }) || !bp.locals().is_empty()
+                {
+                    // Non-empty params — hash normally
+                    self.visit(&params);
+                }
+                // Empty params (||) — skip to match no-params behavior
+            } else if let Some(np) = params.as_numbered_parameters_node() {
+                // Numbered parameters like _1, _2 — hash the count
+                np.maximum().hash(self.hasher);
+            } else {
+                // Unknown param type — hash it
+                self.visit(&params);
+            }
+        }
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+        // Do NOT call default recursion — handled above
     }
 
     fn visit_constant_read_node(&mut self, node: &ruby_prism::ConstantReadNode<'pr>) {
@@ -987,6 +1091,94 @@ end
             diags.len(),
             0,
             "bodies with different backtick strings should not match: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn negative_zero_vs_zero_considered_identical() {
+        // RuboCop's Parser gem folds `-0.0` into a float literal where -0.0 == 0.0,
+        // so bodies with `0.0.method` vs `-0.0.method` are considered identical.
+        let source = b"
+describe 'on zero' do
+  it 'returns false' do
+    0.0.negative?.should be_false
+  end
+end
+
+describe 'on negative zero' do
+  it 'returns false' do
+    -0.0.negative?.should be_false
+  end
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "0.0 and -0.0 should be considered identical: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn empty_block_params_vs_no_params_identical() {
+        // In Parser gem, `{ 1 }` and `{ || 1 }` produce identical ASTs (both have empty args).
+        // In Prism, `{ || 1 }` has explicit empty BlockParametersNode while `{ 1 }` has None.
+        let source = b"
+describe 'taking zero arguments' do
+  it 'works' do
+    @y.z { 1 }.should == 1
+  end
+end
+
+describe 'taking || arguments' do
+  it 'works' do
+    @y.z { || 1 }.should == 1
+  end
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            2,
+            "blocks with no params vs empty || params should be identical: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn different_arg_placement_not_flagged() {
+        // Bodies where arguments are placed differently in a call chain should NOT match.
+        // e.g., `cmd.curry(data).call('User')` vs `cmd.curry(data, 'User').call`
+        let source = b"
+RSpec.describe 'test' do
+  context 'with one arg' do
+    subject(:cmd) { build_cmd }
+    let(:data) { [1, 2] }
+
+    it 'works' do
+      expect(cmd.curry(data).call('User')).to eql(result)
+      expect(relation).to have_received(:insert).with(data)
+    end
+  end
+
+  context 'with two args' do
+    subject(:cmd) { build_cmd }
+    let(:data) { [1, 2] }
+
+    it 'works' do
+      expect(cmd.curry(data, 'User').call).to eql(result)
+      expect(relation).to have_received(:insert).with(data)
+    end
+  end
+end
+";
+        let diags = crate::testutil::run_cop_full(&RepeatedExampleGroupBody, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "different arg placement in call chain should not match: {:?}",
             diags
         );
     }
