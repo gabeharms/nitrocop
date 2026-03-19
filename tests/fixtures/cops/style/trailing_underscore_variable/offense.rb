@@ -18,3 +18,6 @@ a, *_, _, _ = foo
 
 a, (b, _) = foo
        ^^ Style/TrailingUnderscoreVariable: Trailing underscore variable(s) in parallel assignment are unnecessary.
+
+_, = foo
+^^ Style/TrailingUnderscoreVariable: Trailing underscore variable(s) in parallel assignment are unnecessary.

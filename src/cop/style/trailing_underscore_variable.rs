@@ -1,4 +1,6 @@
-use crate::cop::node_type::{LOCAL_VARIABLE_TARGET_NODE, MULTI_TARGET_NODE, MULTI_WRITE_NODE, SPLAT_NODE};
+use crate::cop::node_type::{
+    LOCAL_VARIABLE_TARGET_NODE, MULTI_TARGET_NODE, MULTI_WRITE_NODE, SPLAT_NODE,
+};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
@@ -41,7 +43,12 @@ impl Cop for TrailingUnderscoreVariable {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[LOCAL_VARIABLE_TARGET_NODE, MULTI_WRITE_NODE, SPLAT_NODE, MULTI_TARGET_NODE]
+        &[
+            LOCAL_VARIABLE_TARGET_NODE,
+            MULTI_WRITE_NODE,
+            SPLAT_NODE,
+            MULTI_TARGET_NODE,
+        ]
     }
 
     fn check_node(
@@ -67,7 +74,15 @@ impl Cop for TrailingUnderscoreVariable {
         let rights: Vec<_> = multi.rights().iter().collect();
 
         // Check the main node for trailing underscore offense
-        check_multi_assignment(self, source, &lefts, rest.as_ref(), &rights, allow_named, diagnostics);
+        check_multi_assignment(
+            self,
+            source,
+            &lefts,
+            rest.as_ref(),
+            &rights,
+            allow_named,
+            diagnostics,
+        );
 
         // Check nested MultiTargetNode children (e.g., `a, (b, _) = foo`)
         check_children_offenses(self, source, &lefts, allow_named, diagnostics);
@@ -157,7 +172,6 @@ fn check_multi_assignment(
         column,
         "Trailing underscore variable(s) in parallel assignment are unnecessary.".to_string(),
     ));
-
 }
 
 /// Check if there's a non-underscore splat variable before the first trailing underscore.
@@ -232,7 +246,15 @@ fn check_children_offenses(
             let rest = mt.rest();
             let rights: Vec<_> = mt.rights().iter().collect();
 
-            check_multi_assignment(cop, source, &lefts, rest.as_ref(), &rights, allow_named, diagnostics);
+            check_multi_assignment(
+                cop,
+                source,
+                &lefts,
+                rest.as_ref(),
+                &rights,
+                allow_named,
+                diagnostics,
+            );
 
             // Recurse into nested multi-target nodes
             check_children_offenses(cop, source, &lefts, allow_named, diagnostics);
@@ -268,6 +290,11 @@ fn is_underscore_var(node: &ruby_prism::Node<'_>, allow_named: bool) -> bool {
             // bare * (implicit rest)
             return true;
         }
+    }
+    // ImplicitRestNode — trailing comma like `_, = foo` or `a, b, = foo`
+    // This is an implicit discard, treated as underscore-like.
+    if node.as_implicit_rest_node().is_some() {
+        return true;
     }
     false
 }

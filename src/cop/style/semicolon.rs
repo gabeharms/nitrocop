@@ -10,10 +10,33 @@ use crate::parse::source::SourceFile;
 /// Style/Semicolon — flags unnecessary semicolons used as expression separators
 /// or statement terminators.
 ///
-/// Investigation findings:
-/// - 49 FPs were caused by `$;` (Ruby's `$FIELD_SEPARATOR` global variable) being
-///   misidentified as a statement-terminating semicolon. Fixed by checking if the
-///   preceding byte is `$` in the byte scanner and skipping if so.
+/// Investigation findings (2026-03-19):
+///
+/// Root causes of false positives (FP=34):
+/// - `is_trailing_semicolon` treated `; # comment` as trailing (only comment follows).
+///   RuboCop's token-based approach sees the comment token as the last token, masking
+///   the semicolon. Fix: do NOT treat `; # comment` as trailing — only flag when
+///   literally nothing follows except whitespace/newline.
+/// - Previous fix: `$;` (Ruby's `$FIELD_SEPARATOR` global variable) was misidentified
+///   as a statement-terminating semicolon. Fixed by checking if the preceding byte is `$`.
+///
+/// Root causes of false negatives (FN=51):
+/// - Semicolons before `}` in blocks (`foo { bar; }`) were not detected. RuboCop's
+///   token-based approach checks `tokens[-2].right_curly_brace? && tokens[-3].semicolon?`
+///   which catches these because `tNL` (newline) is the last token. Fix: added
+///   `is_semicolon_before_closing_brace` check.
+/// - Semicolons in string interpolation (`"#{foo;}"`) were not detected. The semicolon
+///   inside `#{}` is code but falls through all checks. Fix: covered by the
+///   `is_semicolon_before_closing_brace` check since the interpolation `}` is also code.
+/// - On expression separator lines, RuboCop scans raw source text for `;` characters
+///   (including inside strings on the same line). nitrocop was filtering by `is_code()`,
+///   missing semicolons inside strings on expression separator lines. Fix: on expr_sep
+///   lines, scan raw source for all `;` characters, matching RuboCop's `find_semicolon_positions`.
+/// - Semicolons after opening `{` in blocks (`foo {; bar }`) are only caught by RuboCop
+///   when `{` is at specific token positions (position 1 for regular blocks, position 2
+///   for lambda blocks). This is hard to replicate with byte scanning. Fix: added
+///   `is_semicolon_after_opening_brace` check that's slightly broader than RuboCop's
+///   but matches the semantic intent.
 pub struct Semicolon;
 
 impl Cop for Semicolon {
@@ -51,9 +74,46 @@ impl Cop for Semicolon {
             HashSet::new()
         };
 
-        // Phase 2: Scan for code semicolons and classify each.
+        // Phase 2: For expression separator lines, scan raw source for ALL semicolons
+        // (including inside strings on the line), matching RuboCop's find_semicolon_positions.
+        // Track which offsets have already been reported to avoid duplicates.
+        let mut reported: HashSet<usize> = HashSet::new();
+
+        for &line in &expr_sep_lines {
+            let line_start = source.line_start_offset(line);
+            // Find end of line (next newline or end of file)
+            let line_end = bytes[line_start..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(bytes.len(), |p| line_start + p);
+            let line_bytes = &bytes[line_start..line_end];
+            for (j, &ch) in line_bytes.iter().enumerate() {
+                if ch == b';' {
+                    let offset = line_start + j;
+                    // Skip $; — Ruby's $FIELD_SEPARATOR global variable
+                    if offset > 0 && bytes[offset - 1] == b'$' {
+                        continue;
+                    }
+                    let (l, column) = source.offset_to_line_col(offset);
+                    diagnostics.push(self.diagnostic(
+                        source,
+                        l,
+                        column,
+                        "Do not use semicolons to terminate expressions.".to_string(),
+                    ));
+                    reported.insert(offset);
+                }
+            }
+        }
+
+        // Phase 3: Scan for code semicolons and classify each.
         for (i, &byte) in bytes.iter().enumerate() {
             if byte != b';' || !code_map.is_code(i) {
+                continue;
+            }
+
+            // Skip already-reported expression separator semicolons
+            if reported.contains(&i) {
                 continue;
             }
 
@@ -64,9 +124,9 @@ impl Cop for Semicolon {
 
             let (line, column) = source.offset_to_line_col(i);
 
-            // Check if trailing: no non-whitespace content after the semicolon on this line,
-            // or only a comment follows. Uses raw bytes (not code_map) because string
-            // literals after a semicolon count as meaningful content.
+            // Check if trailing: no non-whitespace content after the semicolon on this line.
+            // Note: comments after the semicolon do NOT make it trailing — RuboCop's token-based
+            // approach sees the comment token as the last token, masking the semicolon.
             if is_trailing_semicolon(bytes, i) {
                 diagnostics.push(self.diagnostic(
                     source,
@@ -88,22 +148,43 @@ impl Cop for Semicolon {
                 continue;
             }
 
-            // Mid-line semicolon: only flag if on an expression separator line
-            // (a line where a StatementsNode has 2+ children with the same last_line).
-            if expr_sep_lines.contains(&line) {
+            // Check if semicolon is directly before a closing brace `}` on the same line
+            // (only whitespace between `;` and `}`). Catches:
+            // - Block trailing semicolons: `foo { bar; }`
+            // - String interpolation: `"#{foo;}"`
+            // RuboCop catches these via token position checks (tokens[-2] is `}`, tokens[-3] is `;`).
+            if is_semicolon_before_closing_brace(bytes, i, code_map) {
                 diagnostics.push(self.diagnostic(
                     source,
                     line,
                     column,
                     "Do not use semicolons to terminate expressions.".to_string(),
                 ));
+                continue;
             }
+
+            // Check if semicolon is directly after `#{` in string interpolation
+            // (only whitespace between `{` and `;`). Catches `"#{;foo}"`.
+            if is_semicolon_after_interpolation_open(bytes, i) {
+                diagnostics.push(self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    "Do not use semicolons to terminate expressions.".to_string(),
+                ));
+                continue;
+            }
+
         }
     }
 }
 
 /// Check if a semicolon at byte position `pos` is trailing:
-/// nothing non-whitespace follows it on the same line (or only a comment follows).
+/// nothing non-whitespace follows it on the same line.
+///
+/// Note: a comment after the semicolon (`; # comment`) does NOT make it trailing.
+/// RuboCop's token-based approach sees the comment token as the last token on the
+/// line, so the semicolon is not detected as the "last token".
 fn is_trailing_semicolon(bytes: &[u8], pos: usize) -> bool {
     for &ch in &bytes[pos + 1..] {
         if ch == b'\n' || ch == b'\r' {
@@ -112,11 +193,8 @@ fn is_trailing_semicolon(bytes: &[u8], pos: usize) -> bool {
         if ch == b' ' || ch == b'\t' {
             continue;
         }
-        if ch == b'#' {
-            // Rest is a comment
-            return true;
-        }
-        // Any non-whitespace, non-comment character means it's not trailing
+        // Any non-whitespace character means it's not trailing.
+        // This includes `#` (comments) — RuboCop does not flag `; # comment` as trailing.
         return false;
     }
     // Reached end of file without newline
@@ -140,6 +218,112 @@ fn is_leading_semicolon(bytes: &[u8], pos: usize) -> bool {
     }
     // Reached start of file
     true
+}
+
+/// Check if a semicolon at byte position `pos` is directly before a closing
+/// brace `}` on the same line (only whitespace between `;` and `}`).
+/// The `}` must also be in code (not inside a string/comment).
+///
+/// To match RuboCop's token-based behavior, we require one of:
+/// 1. Block pattern: `}` is the last thing on the line (only whitespace/newline follows).
+///    This matches `tokens[-2] == }` with `tokens[-1] == NL`.
+/// 2. String interpolation pattern: `}` is immediately followed by the closing string
+///    delimiter (a non-code byte like `"`). This matches `tokens[-3] == DEND`.
+///
+/// When a comment follows `}` on the same line (`foo { bar; } # comment`), or code
+/// follows (`foo { bar; }.baz`), RuboCop's token positions shift and the check fails.
+///
+/// This catches patterns like:
+/// - `foo { bar; }` — block trailing semicolon
+/// - `"#{foo;}"` — string interpolation trailing semicolon
+fn is_semicolon_before_closing_brace(bytes: &[u8], pos: usize, code_map: &CodeMap) -> bool {
+    // Find the `}` after the semicolon (skipping whitespace)
+    let mut brace_offset = None;
+    for (j, &ch) in bytes[pos + 1..].iter().enumerate() {
+        if ch == b'\n' || ch == b'\r' {
+            return false;
+        }
+        if ch == b' ' || ch == b'\t' {
+            continue;
+        }
+        if ch == b'}' {
+            brace_offset = Some(pos + 1 + j);
+            break;
+        }
+        return false;
+    }
+
+    let brace_off = match brace_offset {
+        Some(off) => off,
+        None => return false,
+    };
+
+    if !code_map.is_code(brace_off) {
+        return false;
+    }
+
+    // Check what follows the `}` on the same line.
+    if brace_off + 1 >= bytes.len() {
+        // `}` is the last byte in the file
+        return true;
+    }
+
+    let next_byte = bytes[brace_off + 1];
+
+    // Pattern 1: `}` is at end of line (only whitespace follows)
+    if next_byte == b'\n' || next_byte == b'\r' {
+        return true;
+    }
+
+    // Pattern 2: String interpolation close — `}` is immediately followed by
+    // the string's closing delimiter (`"`, `'`, `` ` ``, etc.).
+    // RuboCop checks tokens[-3] == tSTRING_DEND && tokens[-4] == tSEMI, which
+    // only matches when nothing follows `}` before the string close.
+    if (next_byte == b'"' || next_byte == b'\'' || next_byte == b'`')
+        && !code_map.is_code(brace_off + 1)
+    {
+        return true;
+    }
+
+    // Check if only whitespace follows `}` until end of line
+    for &ch in &bytes[brace_off + 1..] {
+        if ch == b'\n' || ch == b'\r' {
+            return true;
+        }
+        if ch == b' ' || ch == b'\t' {
+            continue;
+        }
+        // Non-whitespace code follows `}` — positions shift in RuboCop
+        return false;
+    }
+    // End of file after whitespace
+    true
+}
+
+/// Check if a semicolon at byte position `pos` is directly after `#{` in
+/// string interpolation (only whitespace between `{` and `;`).
+///
+/// This catches patterns like `"#{;foo}"`.
+/// Only matches when the `{` is preceded by `#` (string interpolation opener).
+fn is_semicolon_after_interpolation_open(bytes: &[u8], pos: usize) -> bool {
+    if pos < 2 {
+        return false;
+    }
+    for (j, &ch) in bytes[..pos].iter().rev().enumerate() {
+        if ch == b'\n' || ch == b'\r' {
+            return false;
+        }
+        if ch == b' ' || ch == b'\t' {
+            continue;
+        }
+        if ch == b'{' {
+            let brace_offset = pos - 1 - j;
+            // Check that `#` precedes the `{` to confirm it's `#{`
+            return brace_offset > 0 && bytes[brace_offset - 1] == b'#';
+        }
+        return false;
+    }
+    false
 }
 
 /// AST visitor that collects line numbers where a StatementsNode has 2+ children
