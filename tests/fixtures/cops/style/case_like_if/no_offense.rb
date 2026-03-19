@@ -148,3 +148,10 @@ if x == 1
 elsif x&.==(2)
 elsif x == 3
 end
+
+# Two branches + else (below default MinBranchesCount=3)
+if data['key'] == 'phone'
+elsif data['key'] == 'email'
+else
+  data['key']
+end

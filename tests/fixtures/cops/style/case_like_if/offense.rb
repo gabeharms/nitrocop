@@ -79,3 +79,21 @@ if /foo/ =~ line
 elsif line =~ /#{pattern}/
 elsif /baz/ =~ line
 end
+
+# Mix of match? and =~ in the same chain (regexp on LHS of =~)
+if /^branches/.match?(line)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/CaseLikeIf: Convert `if-elsif` to `case-when`.
+elsif /^revision/ =~ line
+elsif /^date/ =~ line
+else
+  do_something
+end
+
+# Hash-bracket target (obj['key'] compared against string literals)
+if data['status'] == 'active'
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/CaseLikeIf: Convert `if-elsif` to `case-when`.
+elsif data['status'] == 'inactive'
+elsif data['status'] == 'pending'
+else
+  default_action
+end
