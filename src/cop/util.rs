@@ -1059,6 +1059,26 @@ pub fn constant_name<'a>(node: &ruby_prism::Node<'a>) -> Option<&'a [u8]> {
     None
 }
 
+/// Check if a node is a simple constant matching `(const {nil? cbase} :Name)`.
+///
+/// Returns true for `Name` (ConstantReadNode) or `::Name` (ConstantPathNode with cbase parent),
+/// but NOT for qualified paths like `Foo::Name`.
+pub fn is_simple_constant(node: &ruby_prism::Node<'_>, name: &[u8]) -> bool {
+    if let Some(cr) = node.as_constant_read_node() {
+        return cr.name().as_slice() == name;
+    }
+    if let Some(cp) = node.as_constant_path_node() {
+        if let Some(n) = cp.name() {
+            if n.as_slice() != name {
+                return false;
+            }
+            // cbase: parent is None (e.g., `::Date`)
+            return cp.parent().is_none();
+        }
+    }
+    false
+}
+
 /// Get the full constant path string from source bytes.
 ///
 /// For a ConstantPathNode like `ActiveRecord::Base`, extracts the full text.
