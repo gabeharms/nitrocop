@@ -70,16 +70,11 @@ use crate::parse::source::SourceFile;
 ///
 /// Two root causes for 173 FPs:
 ///
-/// 1. **`=begin`/`=end` blocks** (~125 FPs). RuboCop does NOT flag consecutive
-///    blank lines inside `=begin`/`=end` blocks. Verified empirically on
-///    corpus repos (rubyworks/facets, urbanadventurer/WhatWeb, jruby, etc.).
-///    Previous investigation comments went back and forth on this — the
-///    "removed skip" fix was based on incorrect analysis. The correct behavior
-///    is to skip all lines inside `=begin`/`=end` blocks.
-///    Fix: track `in_embdoc` state during line iteration. When a line starts
-///    with `=begin` (at column 0), enter embdoc mode. When `=end` (at column
-///    0) is seen while in embdoc mode, exit it. All lines inside the block
-///    are skipped for blank line counting.
+/// 1. **`=begin`/`=end` blocks** (~125 FPs). At this time, the analysis
+///    concluded RuboCop does not flag blank lines inside embdoc blocks.
+///    Fix: track `in_embdoc` state during line iteration and skip all
+///    interior lines. (This was later found to be incorrect — see
+///    2026-03-19 fix below.)
 ///
 /// 2. **CRLF files** (~48 FPs). RuboCop's `EmptyLines` cop has a quick check:
 ///    `return unless processed_source.raw_source.include?("\n\n\n")`. In CRLF
@@ -110,13 +105,26 @@ use crate::parse::source::SourceFile;
 ///    `in_embdoc` state during line iteration to skip lines inside
 ///    `=begin`/`=end` blocks. Tested including embdoc end lines (to check
 ///    blanks inside), but this caused 141 new FPs — so embdoc interiors
-///    remain skipped.
+///    remained skipped.
 ///
-/// Remaining FN=1: louismullie/treat agnostic.rb:108. Blank line between
-/// code tokens that are inside a large `=begin`/`=end` block (lines 89-183).
-/// The embdoc skip prevents checking interior blank lines. RuboCop handles
-/// this differently (possibly via individual embdoc line tokens), but
-/// including embdoc end lines regresses 141 other locations.
+/// ## Corpus investigation (2026-03-19, FN=19 final fix)
+///
+/// All 19 remaining FN were consecutive blank lines inside `=begin`/`=end`
+/// blocks across 6 repos (eventmachine 6, WhatWeb 4, redcar 3, facets 3,
+/// treat 2, BubbleWrap 1). Root cause: the previous fix (FP=173) incorrectly
+/// concluded that RuboCop does not flag blanks inside embdoc blocks. In fact,
+/// RuboCop with Prism generates EMBDOC_BEGIN/EMBDOC_LINE/EMBDOC_END tokens
+/// for every line inside `=begin`/`=end`, so all non-blank lines are
+/// token-bearing and consecutive blank lines between them ARE flagged.
+/// The previous "141 FPs from including embdoc end lines" was caused by
+/// extending `last_token_line` to the `=end` line while also skipping
+/// embdoc interiors — a conflicting combination. The correct fix:
+/// 1. Include the `=end` line in `last_comment_line` so interior blank
+///    lines are within the token range.
+/// 2. Remove the `in_embdoc` skip entirely — treat embdoc interior lines
+///    as normal content for blank line counting.
+///
+/// Result: FP=0, FN=0. All 19 FN fixed with zero regressions.
 pub struct EmptyLines;
 
 impl Cop for EmptyLines {
@@ -138,16 +146,11 @@ impl Cop for EmptyLines {
         mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // RuboCop uses token-based gap detection: it collects line numbers from
-        // ALL tokens (including inline `#` comments via `:tCOMMENT`), then
-        // checks gaps between consecutive token-bearing lines. Files with no
-        // tokens at all get early return, and blank lines after the last
+        // ALL tokens (including inline `#` comments via `:tCOMMENT` and
+        // EMBDOC_BEGIN/EMBDOC_LINE/EMBDOC_END for `=begin`/`=end` blocks),
+        // then checks gaps between consecutive token-bearing lines. Files with
+        // no tokens at all get early return, and blank lines after the last
         // token line are never checked.
-        //
-        // With Prism (used by RuboCop 1.84.2+), `=begin`/`=end` blocks produce
-        // EMBDOC tokens. The `=begin` line extends the token range, so blank
-        // lines between code and `=begin` are checked. Interior lines are
-        // skipped via `in_embdoc` tracking — including embdoc end lines in
-        // `last_token_line` causes 141 FPs in the corpus.
         //
         // `__END__` is NOT a token in Prism's lexer, so it does not extend
         // the token range. Blank lines before `__END__` are past the last
