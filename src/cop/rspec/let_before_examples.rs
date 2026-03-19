@@ -18,11 +18,12 @@ use crate::parse::source::SourceFile;
 /// Fix: count example-inclusion calls only when they do not have blocks.
 /// Inline-block forms are setup wrappers and should not trigger ordering offenses.
 ///
-/// Acceptance gate after fix (`check-cop --verbose --rerun`):
-/// - Expected: 1,222
-/// - Actual: 1,218
-/// - Excess: 0
-/// - Missing: 4 (remaining FN work deferred)
+/// ## Corpus investigation (2026-03-18)
+///
+/// Remaining FN=4: all in avo-hq, `RSpec.feature` example group.
+/// Root cause: when receiver was `RSpec`, only `describe` was matched as an
+/// example group method. `RSpec.feature`, `RSpec.context`, etc. were ignored.
+/// Fix: use `is_rspec_example_group()` for receiver-qualified calls too.
 pub struct LetBeforeExamples;
 
 impl Cop for LetBeforeExamples {
@@ -63,7 +64,9 @@ impl Cop for LetBeforeExamples {
         // `example_group_with_body?` only matches ExampleGroups (describe/context/feature),
         // not SharedGroups, so let ordering inside shared_examples is allowed.
         let is_example_group = if let Some(recv) = call.receiver() {
-            util::constant_name(&recv).is_some_and(|n| n == b"RSpec") && method_name == b"describe"
+            util::constant_name(&recv).is_some_and(|n| n == b"RSpec")
+                && is_rspec_example_group(method_name)
+                && !is_shared_group(method_name)
         } else {
             is_rspec_example_group(method_name) && !is_shared_group(method_name)
         };
