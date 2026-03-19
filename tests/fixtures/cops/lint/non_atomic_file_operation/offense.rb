@@ -134,3 +134,14 @@ end
 File.delete path if File.exist? path
                  ^^^^^^^^^^^^^^^^^^^ Lint/NonAtomicFileOperation: Remove unnecessary existence check `File.exist?`.
 ^^^^^^^^^^^^^^^^ Lint/NonAtomicFileOperation: Use atomic file operation method `FileUtils.rm_f`.
+
+# Postfix if with File.delete and mismatched quote styles (single vs double)
+File.delete('./.slather.yml') if File.exist?("./.slather.yml")
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/NonAtomicFileOperation: Remove unnecessary existence check `File.exist?`.
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/NonAtomicFileOperation: Use atomic file operation method `FileUtils.rm_f`.
+
+# Negated condition using == false
+if Dir.exist?(catalogs_path) == false
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/NonAtomicFileOperation: Remove unnecessary existence check `Dir.exist?`.
+  FileUtils.mkdir_p catalogs_path
+end

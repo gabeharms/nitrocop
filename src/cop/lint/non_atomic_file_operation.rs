@@ -33,6 +33,16 @@ use crate::parse::source::SourceFile;
 /// RuboCop accepts ANY constant receiver (`node.receiver&.const_type?`), so patterns like
 /// `File.delete(path) if File.exist?(path)` and `File.unlink(path) if File.exist?(path)`
 /// were missed. The fix relaxes the receiver check to accept any constant, matching RuboCop.
+///
+/// ## Fix: handle `== false`/`== true` negation and quote-insensitive arg comparison (2 FN)
+///
+/// Two remaining FNs:
+/// 1. `File.delete('./.slather.yml') if File.exist?("./.slather.yml")` — mismatched quote
+///    styles (single vs double) caused the raw-source argument comparison to fail. Fixed by
+///    comparing unescaped string content for string arguments (canonical_arg helper).
+/// 2. `if Dir.exist?(catalogs_path) == false` — the `== false` negation pattern was not
+///    recognized by find_exist_info. Fixed by handling `== false` and `== true` as wrappers
+///    around the exist? call, extracting the receiver of the `==` call.
 pub struct NonAtomicFileOperation;
 
 const MAKE_METHODS: &[&[u8]] = &[b"mkdir"];
@@ -106,53 +116,71 @@ fn is_exist_call(call: &ruby_prism::CallNode<'_>) -> bool {
     false
 }
 
-/// Check if the condition contains an exist? call (direct, negated, or parenthesized).
-/// Returns true if found, and provides the exist call's first argument source and
-/// receiver/method info for the diagnostic message.
+/// Extract a canonical representation of an argument node for comparison.
+/// For string nodes, uses the unescaped content (so `'foo'` == `"foo"`).
+/// For everything else, uses the raw source bytes.
+fn canonical_arg(node: &ruby_prism::Node<'_>) -> Vec<u8> {
+    if let Some(s) = node.as_string_node() {
+        s.unescaped().to_vec()
+    } else {
+        node.location().as_slice().to_vec()
+    }
+}
+
+/// Extract ExistInfo from an exist? call node.
+fn exist_info_from_call(call: &ruby_prism::CallNode<'_>) -> Option<ExistInfo> {
+    if !is_exist_call(call) {
+        return None;
+    }
+    let first_arg = call
+        .arguments()
+        .and_then(|args| args.arguments().iter().next())
+        .map(|a| canonical_arg(&a));
+    let recv_name = if let Some(recv) = call.receiver() {
+        const_name(&recv).unwrap_or(b"File").to_vec()
+    } else {
+        b"File".to_vec()
+    };
+    let method_name = call.name().as_slice().to_vec();
+    Some(ExistInfo {
+        first_arg,
+        recv_name,
+        method_name,
+    })
+}
+
+/// Check if the condition contains an exist? call (direct, negated with `!`,
+/// or negated with `== false` / `== true`).
+/// Returns the exist call's first argument and receiver/method info for diagnostics.
 fn find_exist_info(condition: &ruby_prism::Node<'_>) -> Option<ExistInfo> {
     if let Some(call) = condition.as_call_node() {
         if call.name().as_slice() == b"!" {
             // Negated: `!File.exist?(path)`
             if let Some(inner) = call.receiver() {
                 if let Some(inner_call) = inner.as_call_node() {
-                    if is_exist_call(&inner_call) {
-                        let first_arg = inner_call
-                            .arguments()
-                            .and_then(|args| args.arguments().iter().next())
-                            .map(|a| a.location().as_slice().to_vec());
-                        let recv_name = if let Some(recv) = inner_call.receiver() {
-                            const_name(&recv).unwrap_or(b"File").to_vec()
-                        } else {
-                            b"File".to_vec()
-                        };
-                        let method_name = inner_call.name().as_slice().to_vec();
-                        return Some(ExistInfo {
-                            first_arg,
-                            recv_name,
-                            method_name,
-                        });
+                    return exist_info_from_call(&inner_call);
+                }
+            }
+            return None;
+        }
+        if call.name().as_slice() == b"==" {
+            // `File.exist?(path) == false` or `File.exist?(path) == true`
+            if let Some(args) = call.arguments() {
+                let arg_list: Vec<_> = args.arguments().iter().collect();
+                if arg_list.len() == 1
+                    && (arg_list[0].as_true_node().is_some()
+                        || arg_list[0].as_false_node().is_some())
+                {
+                    if let Some(recv) = call.receiver() {
+                        if let Some(recv_call) = recv.as_call_node() {
+                            return exist_info_from_call(&recv_call);
+                        }
                     }
                 }
             }
             return None;
         }
-        if is_exist_call(&call) {
-            let first_arg = call
-                .arguments()
-                .and_then(|args| args.arguments().iter().next())
-                .map(|a| a.location().as_slice().to_vec());
-            let recv_name = if let Some(recv) = call.receiver() {
-                const_name(&recv).unwrap_or(b"File").to_vec()
-            } else {
-                b"File".to_vec()
-            };
-            let method_name = call.name().as_slice().to_vec();
-            return Some(ExistInfo {
-                first_arg,
-                recv_name,
-                method_name,
-            });
-        }
+        return exist_info_from_call(&call);
     }
     None
 }
@@ -294,11 +322,11 @@ impl Cop for NonAtomicFileOperation {
             return;
         }
 
-        // Check first arguments match
+        // Check first arguments match (using canonical form for quote-insensitive comparison)
         let op_first_arg = file_op_call
             .arguments()
             .and_then(|args| args.arguments().iter().next())
-            .map(|a| a.location().as_slice().to_vec());
+            .map(|a| canonical_arg(&a));
         if exist_info.first_arg != op_first_arg {
             return;
         }
