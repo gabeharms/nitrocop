@@ -9,24 +9,38 @@ use crate::parse::source::SourceFile;
 
 pub struct DuplicatedGem;
 
-/// ## Corpus investigation (2026-03-03)
+/// ## Corpus investigation (2026-03-19)
 ///
-/// ### Round 4 — FP=0, FN=0
+/// ### Round 5 — Extended corpus FP=3, FN=7
+///
+/// **FP=3**: case/when/else with nested if/else inside else. RuboCop's
+/// `within_conditional?` checks `branch.child_nodes.include?(node)` using
+/// structural equality. In Parser gem, `if` node's child_nodes include
+/// if_body and else_body directly (single-statement). So gems inside a
+/// nested if that is the else branch of a case are found via structural
+/// equality against gems in other case branches. Fixed by changing Path 1
+/// from "all identical source" to per-gem check: each gem's source must
+/// match some "branch member" (gem with blocks_above==0 and same root).
+///
+/// **FN=7**: Two root causes:
+/// 1. Gems inside `path`/`git`/`source` blocks within conditionals were
+///    exempted by Path 1 (all identical source) even though their first
+///    non-begin ancestor is `:block`, not `:if`/`:when`. Fixed by requiring
+///    `first.blocks_above_conditional == 0` in the conditional check.
+/// 2. Modifier `if`/`unless` was treated as transparent (BeginLike), making
+///    gems inside them appear as direct children of the enclosing real
+///    conditional. In Parser gem, modifier if IS an `if` node and stops the
+///    ancestor search. Fixed by treating modifier ifs as conditional roots,
+///    and using `take()` on `pending_elsif_root` to prevent leaking into
+///    nested ifs.
+///
+/// ### Round 4 — FP=0, FN=0 (standard corpus)
 ///
 /// Fixed the Autolab FN: structural equality Path 1 used `any_conditional`
 /// (any declaration in a conditional) but RuboCop's `conditional_declaration?`
 /// checks `nodes[0]`'s ancestor first. When the first declaration is NOT in a
 /// conditional (e.g., in a `group` block), structural equality never applies.
 /// Fix: changed Path 1 to require `first.conditional_root.is_some()`.
-///
-/// ### Round 3 — FP=0, FN=1
-///
-/// Fixed structural equality: when all gem calls have identical source and the
-/// first is in a conditional, exempt the group. Matches RuboCop's `branch ==
-/// node` structural `==` in `within_conditional?`. Also fixed the pg_search
-/// FN which was NOT caused by `standard:disable` (nitrocop already rejects
-/// `standard:disable` directives) — it was simply that the offense was already
-/// being detected correctly with `--preview`.
 impl Cop for DuplicatedGem {
     fn name(&self) -> &'static str {
         "Bundler/DuplicatedGem"
@@ -75,25 +89,59 @@ impl Cop for DuplicatedGem {
 
             let first = &declarations[0];
 
-            // RuboCop structural equality: `conditional_declaration?` first checks
-            // if `nodes[0]`'s ancestor is an if/when. Only if YES does it then use
-            // `branch.child_nodes.include?(node)` (which uses structural `==`).
-            // So structural equality only applies when the FIRST declaration is
-            // inside a conditional — not when ANY declaration is.
-            let all_identical_source = declarations
-                .iter()
-                .all(|d| d.call_source == first.call_source);
+            // RuboCop's `conditional_declaration?` requires that nodes[0]'s first
+            // non-begin ancestor is an `:if` or `:when` node. In Prism terms, this
+            // means the first gem must have blocks_above_conditional == 0 and be
+            // inside a conditional root. Gems inside blocks (path/git/source/group)
+            // have blocks_above > 0 and are NOT considered conditional.
+            let first_root = match first.conditional_root {
+                Some(root) if first.blocks_above_conditional == 0 => root,
+                _ => {
+                    // First gem is not directly in a conditional — flag all duplicates.
+                    let gem_name = String::from_utf8_lossy(&first.gem_name);
+                    for duplicate in declarations.iter().skip(1) {
+                        diagnostics.push(self.diagnostic(
+                            source,
+                            duplicate.line,
+                            duplicate.column,
+                            format!(
+                                "Gem `{}` requirements already given on line {} of the Gemfile.",
+                                gem_name, first.line
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+            };
 
-            let is_conditional_declaration =
-                // Path 1: structural equality — first decl is conditional, all have identical source
-                (first.conditional_root.is_some() && all_identical_source)
-                // Path 2: standard conditional — all direct children of same conditional root
-                || (first.conditional_root.is_some()
-                    && declarations.iter().all(|decl| {
-                        decl.conditional_root == first.conditional_root
-                            && decl.blocks_above_conditional == 0
-                    }));
-            if is_conditional_declaration {
+            // Collect "accessible" gem sources: sources of gems that are reachable
+            // via `branch.child_nodes.include?(node)` from the root conditional.
+            // This includes:
+            // 1. Gems directly in the root conditional (same root, blocks_above=0)
+            // 2. Gems in nested conditionals within the root (their ancestor chain
+            //    contains the root, blocks_above=0 for their nearest conditional)
+            //
+            // This replicates RuboCop's structural equality where child_nodes of
+            // a branch (e.g., an `if` node that is the else body) expose single-
+            // statement bodies as direct children.
+            let accessible_sources: Vec<&[u8]> = declarations
+                .iter()
+                .filter(|d| {
+                    d.blocks_above_conditional == 0
+                        && d.ancestor_conditional_roots.contains(&first_root)
+                })
+                .map(|d| d.call_source.as_slice())
+                .collect();
+
+            // RuboCop's `within_conditional?` checks each gem individually:
+            // `branch == node || branch.child_nodes.include?(node)` using
+            // structural equality. A gem is "within" the conditional if its
+            // source matches any accessible source.
+            let all_within_conditional = declarations
+                .iter()
+                .all(|decl| accessible_sources.contains(&decl.call_source.as_slice()));
+
+            if all_within_conditional {
                 continue;
             }
 
@@ -146,9 +194,12 @@ struct GemDeclaration {
     blocks_above_conditional: usize,
     /// Full source bytes of the CallNode (e.g., `gem "redcarpet"`). Used to replicate
     /// RuboCop's AST structural equality in `within_conditional?` where `branch == node`
-    /// compares by structure, not identity. When all duplicate declarations have identical
-    /// source and any is inside a conditional, RuboCop considers them all conditional.
+    /// compares by structure, not identity.
     call_source: Vec<u8>,
+    /// All conditional root IDs in the gem's ancestry, from innermost to outermost.
+    /// Used for structural equality: when checking `within_conditional?`, the gem
+    /// might be nested inside a conditional that is itself a branch of the root.
+    ancestor_conditional_roots: Vec<usize>,
 }
 
 struct GemDeclarationVisitor<'a> {
@@ -160,14 +211,17 @@ struct GemDeclarationVisitor<'a> {
 }
 
 impl GemDeclarationVisitor<'_> {
-    /// Find the nearest conditional root and count opaque Block frames between
-    /// the current position and that root.
-    fn nearest_conditional_root(&self) -> (Option<usize>, usize) {
+    /// Find the nearest conditional root, count opaque Block frames, and collect
+    /// all conditional root IDs in the ancestry chain.
+    fn conditional_info(&self) -> (Option<usize>, usize, Vec<usize>) {
         let ancestors = self
             .ancestors
             .get(..self.ancestors.len().saturating_sub(1))
             .unwrap_or(&[]);
         let mut blocks_above = 0;
+        let mut nearest: Option<usize> = None;
+        let mut nearest_blocks = 0;
+        let mut all_roots = Vec::new();
         for frame in ancestors.iter().rev() {
             match frame.kind {
                 AncestorKind::BeginLike => continue,
@@ -175,12 +229,18 @@ impl GemDeclarationVisitor<'_> {
                     blocks_above += 1;
                     continue;
                 }
-                AncestorKind::If { root_id } => return (Some(root_id), blocks_above),
-                AncestorKind::When { root_id } => return (Some(root_id), blocks_above),
-                AncestorKind::Case { root_id } => return (Some(root_id), blocks_above),
+                AncestorKind::If { root_id }
+                | AncestorKind::When { root_id }
+                | AncestorKind::Case { root_id } => {
+                    if nearest.is_none() {
+                        nearest = Some(root_id);
+                        nearest_blocks = blocks_above;
+                    }
+                    all_roots.push(root_id);
+                }
             }
         }
-        (None, blocks_above)
+        (nearest, nearest_blocks, all_roots)
     }
 
     fn allocate_conditional_root_id(&mut self) -> usize {
@@ -209,31 +269,19 @@ fn gem_name_from_call(call: &ruby_prism::CallNode<'_>) -> Option<Vec<u8>> {
 /// opaque/transparent decision is made at the BlockNode level (matching
 /// Parser gem's structure).
 ///
-/// **Why single-statement BlockNode is transparent:** In Parser gem, a block
-/// with a single-statement body has the statement as a direct child_node of
-/// the block (not wrapped in `begin`). RuboCop's `branch.child_nodes.include?`
-/// check therefore includes gems in single-statement blocks as direct children.
+/// **BlockNode is opaque:** In Parser gem, `block` type is NOT `begin_type?`,
+/// so it stops the ancestor walk in `each_ancestor.find { |a| !a.begin_type? }`.
+/// This means gems inside ANY block (even single-statement) have `:block` as
+/// their first non-begin ancestor, NOT `:if`/`:when`. RuboCop's structural
+/// equality (`child_nodes.include?`) still finds gems through blocks, but
+/// that's handled separately via the `call_source` matching in Path 1.
 fn is_transparent_node(node: &ruby_prism::Node<'_>) -> bool {
-    if node.as_statements_node().is_some()
+    node.as_statements_node().is_some()
         || node.as_begin_node().is_some()
         || node.as_else_node().is_some()
         || node.as_program_node().is_some()
         || node.as_call_node().is_some()
         || node.as_arguments_node().is_some()
-    {
-        return true;
-    }
-
-    // Single-statement block bodies are transparent in Parser gem's AST.
-    if let Some(block_node) = node.as_block_node() {
-        let is_single_statement = block_node
-            .body()
-            .and_then(|b| b.as_statements_node())
-            .is_some_and(|s| s.body().len() == 1);
-        return is_single_statement;
-    }
-
-    false
 }
 
 impl<'pr> Visit<'pr> for GemDeclarationVisitor<'_> {
@@ -254,25 +302,14 @@ impl<'pr> Visit<'pr> for GemDeclarationVisitor<'_> {
     }
 
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
-        // Modifier if has no end keyword: `gem 'x' if cond`
-        // Block if always has an end keyword: `if cond; ...; end`
-        // Only modifier if should be transparent — block if creates a conditional root.
-        let is_modifier = node.end_keyword_loc().is_none();
-        if is_modifier {
-            if let Some(frame) = self.ancestors.last_mut() {
-                frame.kind = AncestorKind::BeginLike;
-            }
-            self.visit(&node.predicate());
-            if let Some(statements) = node.statements() {
-                for statement in statements.body().iter() {
-                    self.visit(&statement);
-                }
-            }
-            return;
-        }
-
+        // Both modifier and block `if` are conditional roots. In Parser gem,
+        // modifier `if` produces the same `(if ...)` AST node, and the gem's
+        // `each_ancestor.find { |a| !a.begin_type? }` stops at the `if` in
+        // both cases. Using `take()` to consume pending_elsif_root prevents
+        // it from leaking into nested ifs inside elsif/else bodies.
         let root_id = self
             .pending_elsif_root
+            .take()
             .unwrap_or_else(|| self.allocate_conditional_root_id());
         if let Some(frame) = self.ancestors.last_mut() {
             frame.kind = AncestorKind::If { root_id };
@@ -299,21 +336,9 @@ impl<'pr> Visit<'pr> for GemDeclarationVisitor<'_> {
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
-        // Modifier unless has no end keyword — same logic as modifier if.
-        let is_modifier = node.end_keyword_loc().is_none();
-        if is_modifier {
-            if let Some(frame) = self.ancestors.last_mut() {
-                frame.kind = AncestorKind::BeginLike;
-            }
-            self.visit(&node.predicate());
-            if let Some(statements) = node.statements() {
-                for statement in statements.body().iter() {
-                    self.visit(&statement);
-                }
-            }
-            return;
-        }
-
+        // Both modifier and block `unless` are conditional roots, matching
+        // Parser gem behavior where the gem's ancestor walk stops at `if`
+        // (unless is represented as if with inverted condition in Parser).
         let root_id = self.allocate_conditional_root_id();
         if let Some(frame) = self.ancestors.last_mut() {
             frame.kind = AncestorKind::If { root_id };
@@ -363,7 +388,8 @@ impl<'pr> Visit<'pr> for GemDeclarationVisitor<'_> {
         if let Some(gem_name) = gem_name_from_call(node) {
             let loc = node.message_loc().unwrap_or(node.location());
             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-            let (conditional_root, blocks_above_conditional) = self.nearest_conditional_root();
+            let (conditional_root, blocks_above_conditional, ancestor_conditional_roots) =
+                self.conditional_info();
             let call_loc = node.location();
             let call_source =
                 self.source.as_bytes()[call_loc.start_offset()..call_loc.end_offset()].to_vec();
@@ -374,6 +400,7 @@ impl<'pr> Visit<'pr> for GemDeclarationVisitor<'_> {
                 conditional_root,
                 blocks_above_conditional,
                 call_source,
+                ancestor_conditional_roots,
             });
         }
         ruby_prism::visit_call_node(self, node);

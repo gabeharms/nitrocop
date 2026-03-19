@@ -67,3 +67,36 @@ end
 group :test do
   gem "simplecov"
 end
+
+# Nested if inside else of an if/elsif chain — all gems are within
+# branches of the root conditional via child_nodes structural equality
+if ENV['RAILS'] >= "8.0"
+  gem 'mysql2', '~> 2.1'
+elsif ENV['RAILS'] >= "7.1"
+  gem 'mysql2', '~> 1.7'
+else
+  if ENV['RAILS'] >= "6.0"
+    gem 'mysql2', '~> 1.4'
+  else
+    gem 'mysql2', '~> 1.3'
+  end
+end
+
+# Case/when/else with nested if/else — gems in nested conditional branches
+# are found via structural equality (child_nodes.include? in Parser gem).
+# Each gem matches a structurally-equal child in some case branch.
+case rails_version
+when "master"
+  rails = { github: "rails/rails" }
+  gem 'sass-rails', '>= 4.0.2'
+when "default"
+  rails = ">= 3.1.0"
+  gem 'sass-rails'
+else
+  rails = "~> #{rails_version}"
+  if rails_version[0] == '4'
+    gem 'sass-rails', '>= 4.0.2'
+  else
+    gem 'sass-rails'
+  end
+end

@@ -12,22 +12,6 @@ gem 'nokogiri', '~> 1.0'
 gem 'nokogiri'
 ^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `nokogiri` requirements already given on line 9 of the Gemfile.
 
-# Nested if inside else of an if/elsif chain should be a separate conditional
-if ENV['RAILS'] >= "8.0"
-  gem 'sqlite3', '~> 2.1'
-elsif ENV['RAILS'] >= "7.1"
-  gem 'sqlite3', '~> 1.7'
-else
-  if ENV['RAILS'] >= "6.0"
-    gem 'sqlite3', '~> 1.4'
-  else
-    gem 'sqlite3', '~> 1.3'
-  end
-end
-# nitrocop-expect: 16:2 Bundler/DuplicatedGem: Gem `sqlite3` requirements already given on line 14 of the Gemfile.
-# nitrocop-expect: 19:4 Bundler/DuplicatedGem: Gem `sqlite3` requirements already given on line 14 of the Gemfile.
-# nitrocop-expect: 21:4 Bundler/DuplicatedGem: Gem `sqlite3` requirements already given on line 14 of the Gemfile.
-
 # Gems inside git blocks within case/when should be flagged as duplicates
 # because git blocks are not direct children of the conditional branch
 case rails
@@ -38,20 +22,20 @@ when /\//
 when /^v/
   git 'https://github.com/rails/rails.git', tag: rails do
     gem 'activesupport'
-    ^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activesupport` requirements already given on line 29 of the Gemfile.
+    ^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activesupport` requirements already given on line 16 of the Gemfile.
     gem 'activemodel'
-    ^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activemodel` requirements already given on line 30 of the Gemfile.
+    ^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activemodel` requirements already given on line 17 of the Gemfile.
     gem 'activerecord', require: false
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activerecord` requirements already given on line 31 of the Gemfile.
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activerecord` requirements already given on line 18 of the Gemfile.
   end
 else
   git 'https://github.com/rails/rails.git', branch: rails do
     gem 'activesupport'
-    ^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activesupport` requirements already given on line 29 of the Gemfile.
+    ^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activesupport` requirements already given on line 16 of the Gemfile.
     gem 'activemodel'
-    ^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activemodel` requirements already given on line 30 of the Gemfile.
+    ^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activemodel` requirements already given on line 17 of the Gemfile.
     gem 'activerecord', require: false
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activerecord` requirements already given on line 31 of the Gemfile.
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `activerecord` requirements already given on line 18 of the Gemfile.
   end
 end
 
@@ -59,7 +43,7 @@ end
 gem 'webpacker'
 group :development do
   gem 'webpacker', path: '/path/to/gem'
-  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `webpacker` requirements already given on line 47 of the Gemfile.
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `webpacker` requirements already given on line 34 of the Gemfile.
 end
 
 # Identical gem in group block + conditional — first decl is NOT conditional,
@@ -70,4 +54,67 @@ group :development do
 end
 if ENV['DEPLOY_METHOD'] == "docker"
   gem 'pg', '1.5.1'
-  ^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `pg` requirements already given on line 56 of the Gemfile.
+  ^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `pg` requirements already given on line 43 of the Gemfile.
+end
+
+# Identical gems inside blocks within case/when — blocks break the
+# conditional direct-child relationship so these should be flagged.
+# The first gem's non-begin ancestor is :block (not :when), so
+# conditional_declaration? returns false.
+case rails
+when /\//
+  path rails do
+    gem 'oj'
+  end
+when /^v/
+  git 'https://github.com/rails/rails.git', tag: rails do
+    gem 'oj'
+    ^^^^^^^^ Bundler/DuplicatedGem: Gem `oj` requirements already given on line 56 of the Gemfile.
+  end
+else
+  git 'https://github.com/rails/rails.git', branch: rails do
+    gem 'oj'
+    ^^^^^^^^ Bundler/DuplicatedGem: Gem `oj` requirements already given on line 56 of the Gemfile.
+  end
+end
+
+# Modifier if makes the gem's non-begin ancestor be the modifier if node,
+# not the enclosing block-form if. Different source means no structural
+# equality match, so the duplicate is flagged.
+if !defined?(JRUBY_VERSION)
+  gem 'google-protobuf', '< 3.12' if RUBY_VERSION < '2.5'
+  gem 'google-protobuf', '< 3.23' if RUBY_VERSION < '2.7'
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `google-protobuf` requirements already given on line 72 of the Gemfile.
+end
+
+# Gem inside source block in if, with different gem in else — first gem's
+# ancestor is :block, so not conditional.
+if ENV.has_key?('OS_BUILD_ID')
+  source 'https://rubygems.vpsfree.cz' do
+    gem 'libosctl'
+  end
+else
+  gem 'libosctl', path: '../libosctl'
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `libosctl` requirements already given on line 80 of the Gemfile.
+end
+
+# Gem in git block inside if, direct gem in else
+if version == 'master'
+  git 'https://github.com/rails/rails.git' do
+    gem 'myrails'
+  end
+else
+  gem 'myrails', "~> #{version}.0"
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `myrails` requirements already given on line 89 of the Gemfile.
+end
+
+# Modifier-if gem in if/elsif/else — modifier if is the root conditional,
+# other gem has different structure, not exempted
+if RUBY_VERSION =~ /^1\.?9/
+  gem 'json_pure', '<=2.0.1'
+  gem 'code-check', '0.41.2' if RUBY_VERSION =~ /^1\.?9/
+elsif RUBY_VERSION =~ /^1\.?8/
+  gem 'json_pure', '< 2.0.0'
+else
+  gem 'code-check'
+  ^^^^^^^^^^^^^^^^^ Bundler/DuplicatedGem: Gem `code-check` requirements already given on line 99 of the Gemfile.
