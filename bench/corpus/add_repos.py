@@ -29,6 +29,7 @@ MANIFEST_PATH = Path(__file__).parent / "manifest.jsonl"
 # Repos excluded from the corpus.
 # - Too large: RuboCop step alone exceeds the CI job timeout.
 # - Not Ruby: repo is miscategorized or contains no meaningful Ruby source.
+# - Broken: RuboCop crashes on the repo (e.g. malformed UTF-8).
 DENYLIST = {
     "rapid7/metasploit-framework",
     "gitlabhq/gitlabhq",
@@ -38,6 +39,15 @@ DENYLIST = {
     "googleapis/google-cloud-ruby",
     "Shopify/shopify-api-ruby",
     "collabnix/kubelabs",  # Kubernetes tutorials, zero Ruby source (only vendored gems)
+    "toretore/barby",  # RuboCop crashes on malformed UTF-8 in source files
+    "illacceptanything/illacceptanything",  # Not a Ruby project
+    "remote-jp/remote-in-japan",  # Markdown list, not Ruby source
+    "syxanash/awesome-web-desktops",  # Markdown list, not Ruby source
+    "lewagon/data-setup",  # Setup instructions, not Ruby source
+    "raganwald-deprecated/homoiconic",  # Deprecated blog/essays, not Ruby source
+    "fpsvogel/learn-ruby",  # Learning resource list, not Ruby source
+    "hahwul/MobileHackersWeapons",  # Security tool list, not Ruby source
+    "brunofacca/zen-rails-security-checklist",  # Markdown checklist, not Ruby source
 }
 
 
