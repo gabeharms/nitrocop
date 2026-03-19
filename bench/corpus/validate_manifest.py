@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Validate corpus manifest.jsonl for duplicates and structural issues.
+"""Validate corpus manifests for duplicates and structural issues.
+
+Checks manifest.jsonl and manifest_extended.jsonl (if present), including
+cross-file duplicate detection.
 
 Usage:
     python3 bench/corpus/validate_manifest.py
@@ -8,57 +11,72 @@ import json
 import sys
 from pathlib import Path
 
-MANIFEST = Path(__file__).parent / "manifest.jsonl"
+CORPUS_DIR = Path(__file__).parent
+MANIFESTS = [
+    CORPUS_DIR / "manifest.jsonl",
+    CORPUS_DIR / "manifest_extended.jsonl",
+]
 
 
 def main() -> int:
     errors = 0
-    entries = []
+    # Global dedup across all manifest files
+    all_ids: dict[str, str] = {}   # id -> "file:line"
+    all_urls: dict[str, str] = {}  # normalized url -> "file:line"
 
-    for i, line in enumerate(MANIFEST.read_text().splitlines(), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError as e:
-            print(f"ERROR: line {i}: invalid JSON: {e}")
-            errors += 1
+    for manifest_path in MANIFESTS:
+        if not manifest_path.exists():
             continue
 
-        for key in ("id", "repo_url", "sha"):
-            if key not in entry:
-                print(f"ERROR: line {i}: missing required key '{key}'")
+        label = manifest_path.name
+        entries = []
+
+        for i, line in enumerate(manifest_path.read_text().splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as e:
+                print(f"ERROR: {label}:{i}: invalid JSON: {e}")
                 errors += 1
+                continue
 
-        entries.append((i, entry))
+            for key in ("id", "repo_url", "sha"):
+                if key not in entry:
+                    print(f"ERROR: {label}:{i}: missing required key '{key}'")
+                    errors += 1
 
-    # Check duplicate IDs
-    ids = {}
-    for lineno, entry in entries:
-        rid = entry.get("id", "")
-        if rid in ids:
-            print(f"ERROR: duplicate id '{rid}' on lines {ids[rid]} and {lineno}")
-            errors += 1
-        else:
-            ids[rid] = lineno
+            entries.append((i, entry))
 
-    # Check duplicate repo URLs (normalized)
-    urls = {}
-    for lineno, entry in entries:
-        url = entry.get("repo_url", "").rstrip("/").lower()
-        if url in urls:
-            print(f"ERROR: duplicate repo_url '{url}' on lines {urls[url]} and {lineno}")
-            errors += 1
-        else:
-            urls[url] = lineno
+        # Check duplicate IDs (within file and across files)
+        for lineno, entry in entries:
+            rid = entry.get("id", "")
+            loc = f"{label}:{lineno}"
+            if rid in all_ids:
+                print(f"ERROR: duplicate id '{rid}' at {all_ids[rid]} and {loc}")
+                errors += 1
+            else:
+                all_ids[rid] = loc
 
-    total = len(entries)
+        # Check duplicate repo URLs (within file and across files)
+        for lineno, entry in entries:
+            url = entry.get("repo_url", "").rstrip("/").lower()
+            loc = f"{label}:{lineno}"
+            if url in all_urls:
+                print(f"ERROR: duplicate repo_url '{url}' at {all_urls[url]} and {loc}")
+                errors += 1
+            else:
+                all_urls[url] = loc
+
+        print(f"{label}: {len(entries)} entries", file=sys.stderr)
+
+    total = len(all_ids)
     if errors:
-        print(f"\nFAILED: {errors} error(s) in {total} entries")
+        print(f"\nFAILED: {errors} error(s) in {total} total entries")
         return 1
 
-    print(f"OK: {total} entries, no duplicates")
+    print(f"OK: {total} total entries across {sum(1 for p in MANIFESTS if p.exists())} file(s), no duplicates")
     return 0
 
 
