@@ -165,3 +165,32 @@ class O
     private :hidden
   end
 end
+
+# Single-line class << self; def ...; end; end — RuboCop does not flag
+class P; class << self; def mug; end; end; end
+Class.new { class << self; def meth; 1; end; end }.new
+@class = Class.new { class << self; def meth; 1; end; end }
+
+# Only def self.x inside class << self — no plain def
+class Q
+  class << self
+    def self.x
+    end
+  end
+end
+
+# class << not_self — not a self receiver
+class R
+  class << new.bar
+    def f; end
+  end
+end
+
+# alias + def with explicit receiver (not a plain def)
+class S
+  class << self
+    alias os_trap trap
+    def Signal.trap(sig, &block)
+    end
+  end
+end
