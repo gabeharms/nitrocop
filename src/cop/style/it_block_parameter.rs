@@ -1,4 +1,4 @@
-use crate::cop::node_type::{CALL_NODE, LAMBDA_NODE};
+use crate::cop::node_type::{CALL_NODE, FORWARDING_SUPER_NODE, LAMBDA_NODE, SUPER_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
@@ -44,6 +44,20 @@ use ruby_prism::Visit;
 ///    full expression including the receiver chain. Commit 8260fc1aa in RuboCop
 ///    explicitly reverted to this behavior ("allow_single_line targets the block,
 ///    not what is around it").
+///
+/// ## Investigation findings (2026-03-20)
+///
+/// FP=30, FN=1. Two root causes:
+///
+/// 1. **Bare `_1` as entire block body (FP=30)** — RuboCop's `find_block_variables`
+///    uses `node.body.each_descendant(:lvar)` which does NOT include the body node
+///    itself. When the block body IS the bare `_1` node (e.g., `{ _1 }`, `-> { _1 }`),
+///    `each_descendant` returns nothing. nitrocop's Visit-based finder found these.
+///    Fix: check if body has a single statement that is a bare `_1`/`it` read and skip it.
+///
+/// 2. **super with block (FN=1)** — `super { [_1.name, _1] }` creates a
+///    `ForwardingSuperNode` in Prism, not a `CallNode`. The cop wasn't checking
+///    ForwardingSuperNode or SuperNode. Fix: add both to interested_node_types.
 pub struct ItBlockParameter;
 
 impl Cop for ItBlockParameter {
@@ -52,7 +66,7 @@ impl Cop for ItBlockParameter {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[CALL_NODE, LAMBDA_NODE]
+        &[CALL_NODE, LAMBDA_NODE, SUPER_NODE, FORWARDING_SUPER_NODE]
     }
 
     fn check_node(
@@ -82,46 +96,62 @@ impl Cop for ItBlockParameter {
             return;
         }
 
-        let call = match node.as_call_node() {
-            Some(c) => c,
-            None => return,
-        };
-
-        let block = match call.block() {
-            Some(b) => b,
-            None => return,
-        };
-
-        let block_node = match block.as_block_node() {
-            Some(b) => b,
-            None => return,
-        };
-
-        let params = match block_node.parameters() {
-            Some(p) => p,
-            None => return,
-        };
-
-        // Handle itblock (implicit `it` parameter)
-        if params.as_it_parameters_node().is_some() {
-            self.check_itblock(source, node, &block_node, style, diagnostics);
+        // Extract block from CallNode, SuperNode, or ForwardingSuperNode.
+        // Each node type has its own block() return type, so we extract inline.
+        if let Some(call) = node.as_call_node() {
+            if let Some(block) = call.block() {
+                if let Some(block_node) = block.as_block_node() {
+                    self.check_block_params(source, node, &block_node, style, diagnostics);
+                }
+            }
             return;
         }
-
-        // Handle numblock (numbered parameters like _1)
-        if let Some(numbered) = params.as_numbered_parameters_node() {
-            self.check_numblock(source, &block_node, &numbered, style, diagnostics);
+        if let Some(super_node) = node.as_super_node() {
+            if let Some(block) = super_node.block() {
+                if let Some(block_node) = block.as_block_node() {
+                    self.check_block_params(source, node, &block_node, style, diagnostics);
+                }
+            }
             return;
         }
-
-        // Handle regular block with named params (only for `always` style)
-        if let Some(block_params) = params.as_block_parameters_node() {
-            self.check_named_block(source, &block_node, &block_params, style, diagnostics);
+        if let Some(fwd_super) = node.as_forwarding_super_node() {
+            if let Some(block_node) = fwd_super.block() {
+                self.check_block_params(source, node, &block_node, style, diagnostics);
+            }
         }
     }
 }
 
 impl ItBlockParameter {
+    /// Dispatch to itblock/numblock/named-block checks based on block parameters.
+    fn check_block_params(
+        &self,
+        source: &SourceFile,
+        call_node: &ruby_prism::Node<'_>,
+        block_node: &ruby_prism::BlockNode<'_>,
+        style: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let params = match block_node.parameters() {
+            Some(p) => p,
+            None => return,
+        };
+
+        if params.as_it_parameters_node().is_some() {
+            self.check_itblock(source, call_node, block_node, style, diagnostics);
+            return;
+        }
+
+        if let Some(numbered) = params.as_numbered_parameters_node() {
+            self.check_numblock(source, block_node, &numbered, style, diagnostics);
+            return;
+        }
+
+        if let Some(block_params) = params.as_block_parameters_node() {
+            self.check_named_block(source, block_node, &block_params, style, diagnostics);
+        }
+    }
+
     /// Check implicit `it` blocks (ItParametersNode).
     /// - allow_single_line: flag multi-line blocks
     /// - disallow: flag all `it` references
@@ -159,6 +189,10 @@ impl ItBlockParameter {
             "disallow" => {
                 // Flag each `it` reference in the block body
                 if let Some(body) = block_node.body() {
+                    // Match RuboCop's each_descendant: bare `it` as entire body not flagged
+                    if Self::is_body_bare_it_param(&body) {
+                        return;
+                    }
                     let mut finder = ItReferenceFinder {
                         locations: Vec::new(),
                     };
@@ -217,6 +251,9 @@ impl ItBlockParameter {
                 }
                 "disallow" => {
                     if let Some(body) = lambda.body() {
+                        if Self::is_body_bare_it_param(&body) {
+                            return;
+                        }
                         let mut finder = ItReferenceFinder {
                             locations: Vec::new(),
                         };
@@ -246,6 +283,10 @@ impl ItBlockParameter {
                 return;
             }
             if let Some(body) = lambda.body() {
+                // Match RuboCop's each_descendant behavior: bare _1 as entire body is not flagged
+                if Self::is_body_bare_numbered_param(&body) {
+                    return;
+                }
                 let mut finder = NumberedParamFinder {
                     locations: Vec::new(),
                 };
@@ -336,6 +377,12 @@ impl ItBlockParameter {
         }
 
         if let Some(body) = block_node.body() {
+            // Match RuboCop's `node.body.each_descendant(:lvar)` semantics:
+            // When the body is a bare `_1` (single statement, no wrapping expression),
+            // each_descendant on the body node itself finds no descendants (lvar is a leaf).
+            if Self::is_body_bare_numbered_param(&body) {
+                return;
+            }
             let mut finder = NumberedParamFinder {
                 locations: Vec::new(),
             };
@@ -350,6 +397,37 @@ impl ItBlockParameter {
                 ));
             }
         }
+    }
+
+    /// Check if the body is a bare `_1` numbered parameter read (single statement, no wrapping).
+    /// RuboCop's `node.body.each_descendant(:lvar)` doesn't find the body node itself when it's
+    /// a leaf `lvar` node. This matches that behavior.
+    fn is_body_bare_numbered_param(body: &ruby_prism::Node<'_>) -> bool {
+        if let Some(stmts) = body.as_statements_node() {
+            let body_nodes = stmts.body();
+            if body_nodes.len() == 1 {
+                if let Some(first) = body_nodes.iter().next() {
+                    if let Some(lvar) = first.as_local_variable_read_node() {
+                        return lvar.name().as_slice() == b"_1";
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if the body is a bare implicit `it` read (single statement, no wrapping).
+    /// Same as `is_body_bare_numbered_param` but for `ItLocalVariableReadNode`.
+    fn is_body_bare_it_param(body: &ruby_prism::Node<'_>) -> bool {
+        if let Some(stmts) = body.as_statements_node() {
+            let body_nodes = stmts.body();
+            if body_nodes.len() == 1 {
+                if let Some(first) = body_nodes.iter().next() {
+                    return first.as_it_local_variable_read_node().is_some();
+                }
+            }
+        }
+        false
     }
 
     /// Check regular blocks with named parameters (only for `always` style).

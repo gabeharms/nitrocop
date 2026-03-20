@@ -20,3 +20,9 @@ collection.each
 -> { _1 + _2 }
 # Lambda with single _2 is fine
 -> { _2 }
+# Bare _1 as entire block body — RuboCop's each_descendant skips the body node itself
+-> { _1 }.call("a")
+proc { _1 }.call("a")
+lambda { _1 }.call("a")
+["a"].map { _1 }
+block { _1 }

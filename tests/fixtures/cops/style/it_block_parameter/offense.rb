@@ -31,3 +31,7 @@ end
 ^ Style/ItBlockParameter: Avoid using `it` block parameter for multi-line blocks.
   it.to_s
 end
+# super with block containing _1 (ForwardingSuperNode)
+super { [_1.name, _1] }
+         ^^ Style/ItBlockParameter: Use `it` block parameter.
+                  ^^ Style/ItBlockParameter: Use `it` block parameter.
