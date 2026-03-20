@@ -708,3 +708,20 @@ def guard_then_if_with_if_in_return_string
     raise ConditionNotSupportedError
   end
 end
+
+# FP fix: block guard followed by another guard block whose condition continues
+# onto the next line with a comparison operator
+def attachments_too_large?(upload, optimized_1x, max_size)
+  if (
+    !upload.secure? && !stripped_upload_shas.include?(upload.sha1) &&
+      !stripped_upload_shas.include?(optimized_1x&.sha1)
+  )
+    return
+  end
+  if (optimized_1x&.filesize || upload.filesize) >
+       max_size
+    return
+  end
+
+  true
+end

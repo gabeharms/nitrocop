@@ -91,6 +91,14 @@ use crate::parse::source::SourceFile;
 /// node (including ternary `IfNode`), not when a bare `return` statement happens
 /// to contain a ternary expression in its value. Fix: reject ternary-guard
 /// suppression when the line itself starts with a guard keyword.
+///
+/// A remaining FP pattern came from consecutive guard blocks where the next
+/// `if` condition continues onto the next line after a plain comparison
+/// operator, e.g. `if (size || other) >` and the threshold on the next line.
+/// `is_multiline_guard_block` uses `ends_with_continuation()` to keep scanning
+/// condition lines, but that helper recognized `>=`/`<=` and not bare `>`/`<`.
+/// Fix: treat trailing `<` and `>` as continuation operators while scanning
+/// multi-line `if`/`unless` conditions.
 pub struct EmptyLineAfterGuardClause;
 
 /// Guard clause keywords that appear at the start of an expression.
@@ -819,6 +827,8 @@ fn ends_with_continuation(stripped: &[u8]) -> bool {
         || stripped.ends_with(b"\\")
         || stripped.ends_with(b",")
         || stripped.ends_with(b"+")
+        || stripped.ends_with(b">")
+        || stripped.ends_with(b"<")
         || stripped.ends_with(b"==")
         || stripped.ends_with(b"!=")
         || stripped.ends_with(b"===")
