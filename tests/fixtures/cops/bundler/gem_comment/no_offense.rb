@@ -32,3 +32,13 @@ gem 'stream_rails', github: 'GetStream/stream-rails',
 
 gem 'stripe_mock', github: 'stripe-ruby-mock/stripe-ruby-mock',
     require: 'stripe_mock' # Mock Stripe API
+
+# Gems inside block with trailing modifier unless — the modifier wraps
+# the block call, not the individual gem calls inside. Preceding-line
+# comments should still count as gem documentation.
+group :development do
+  # security scanner
+  gem 'brakeman', require: false
+  # Asset compressor
+  gem 'uglifier', '>= 1.3.0'
+end unless ENV['PACKAGING']

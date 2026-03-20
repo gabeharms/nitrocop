@@ -44,3 +44,11 @@ when 'HEAD' then gem 'mongoid', github: 'mongodb/mongoid'
 else gem 'mongoid', '~> 7.0'
      ^ Bundler/GemComment: Missing gem description comment.
 end
+
+# Comment preceding `if ... then gem` is for the `if`, not the gem
+# could have used groups, but this is easier. plays nice with hudson.
+if ENV['SINATRA'] == 'sinatra master' then gem 'sinatra', :git => "git://github.com/sinatra/sinatra.git"
+                                           ^ Bundler/GemComment: Missing gem description comment.
+else gem 'sinatra', '>= 1.0'
+     ^ Bundler/GemComment: Missing gem description comment.
+end

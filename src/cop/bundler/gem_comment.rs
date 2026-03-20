@@ -52,6 +52,20 @@ pub struct GemComment;
 /// `extract_gem_name()` requires lines to start with `gem`, missing these patterns.
 /// Fix: `extract_inline_gem()` finds `gem 'name'` patterns anywhere on a line when
 /// preceded by whitespace, catching `when 'foo' then gem 'bar'` and `else gem 'baz'`.
+///
+/// ### Extended corpus FP=3, FN=1 — FIXED (2026-03-20)
+///
+/// **FP=3**: Gems inside `group :dev do...end unless ENV['X']` — the modifier
+/// `unless` wraps the entire block call, but the `ModifierGemVisitor` propagated
+/// `in_modifier_conditional` into the block body. Gems inside the block body are
+/// not "directly" in the modifier conditional. Fix: reset `in_modifier_conditional`
+/// to false when entering a CallNode with a block child.
+///
+/// **FN=1**: `if ... then gem 'sinatra'` (rkh/big_band) — the gem appears after
+/// `then` on the same line as a preceding-line comment. The comment is for the
+/// `if` statement, not the gem. But nitrocop's line-based logic counted it as
+/// gem documentation. Fix: skip preceding-line comment check for inline gems
+/// (gems extracted by `extract_inline_gem`, not at column 0).
 impl Cop for GemComment {
     fn name(&self) -> &'static str {
         "Bundler/GemComment"
@@ -110,10 +124,14 @@ impl Cop for GemComment {
 
             // Try standard extraction first (line starts with `gem`)
             // then try extracting from `when ... then gem ...` / `else gem ...` patterns
-            let (gem_name, gem_col) = if let Some(name) = extract_gem_name(line_str) {
-                (name, 0usize)
+            let (gem_name, gem_col, is_inline) = if let Some(name) = extract_gem_name(line_str) {
+                (name, 0usize, false)
             } else if let Some((name, col)) = extract_inline_gem(trimmed) {
-                (name, line_str.len() - line_str.trim_start().len() + col)
+                (
+                    name,
+                    line_str.len() - line_str.trim_start().len() + col,
+                    true,
+                )
             } else {
                 continue;
             };
@@ -134,10 +152,13 @@ impl Cop for GemComment {
                 // Check if this gem line is inside a modifier if/unless
                 let is_modifier = modifier_gem_lines.contains(&line_num);
 
-                // Check if the preceding line is a comment, or this line has an inline comment
+                // Check if the preceding line is a comment, or this line has an inline comment.
+                // For inline gems (e.g., `if ... then gem 'x'`), the preceding-line
+                // comment is for the enclosing statement, not the gem — skip it.
                 let has_comment = has_inline_comment(line_str)
                     || has_continuation_comment(&lines, i)
                     || (!is_modifier
+                        && !is_inline
                         && i > 0
                         && std::str::from_utf8(lines[i - 1])
                             .unwrap_or("")
@@ -178,7 +199,17 @@ impl<'pr> Visit<'pr> for ModifierGemVisitor<'_> {
             let (line, _) = self.source.offset_to_line_col(loc.start_offset());
             self.modifier_gem_lines.insert(line);
         }
-        ruby_prism::visit_call_node(self, node);
+        // Don't propagate in_modifier_conditional into block bodies.
+        // `group :dev do...end unless cond` — the modifier wraps the block call,
+        // but gems inside the block body are not "directly" in the modifier.
+        if node.block().is_some() {
+            let prev = self.in_modifier_conditional;
+            self.in_modifier_conditional = false;
+            ruby_prism::visit_call_node(self, node);
+            self.in_modifier_conditional = prev;
+        } else {
+            ruby_prism::visit_call_node(self, node);
+        }
     }
 
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
