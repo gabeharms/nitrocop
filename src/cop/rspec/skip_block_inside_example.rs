@@ -1,4 +1,4 @@
-use crate::cop::node_type::{BLOCK_NODE, CALL_NODE, STATEMENTS_NODE};
+use crate::cop::node_type::CALL_NODE;
 use crate::cop::util::{RSPEC_DEFAULT_INCLUDE, is_rspec_example};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
@@ -8,6 +8,11 @@ pub struct SkipBlockInsideExample;
 
 /// Flags `skip 'reason' do ... end` inside an example.
 /// `skip` should not be passed a block.
+///
+/// Uses check_node to find example blocks (it, specify, etc.), then
+/// recursively searches all descendants for `skip` calls with a block.
+/// This handles `skip` nested arbitrarily deep inside helper method blocks,
+/// describe blocks, etc., as long as there's an example ancestor.
 impl Cop for SkipBlockInsideExample {
     fn name(&self) -> &'static str {
         "RSpec/SkipBlockInsideExample"
@@ -22,7 +27,7 @@ impl Cop for SkipBlockInsideExample {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[BLOCK_NODE, CALL_NODE, STATEMENTS_NODE]
+        &[CALL_NODE]
     }
 
     fn check_node(
@@ -34,7 +39,6 @@ impl Cop for SkipBlockInsideExample {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        // Look for example blocks (it, specify, etc.) and then find `skip` with a block inside
         let call = match node.as_call_node() {
             Some(c) => c,
             None => return,
@@ -57,39 +61,83 @@ impl Cop for SkipBlockInsideExample {
             None => return,
         };
 
-        find_skip_with_block(source, block_node, diagnostics, self);
+        if let Some(body) = block_node.body() {
+            find_skip_with_block_recursive(source, &body, diagnostics, self);
+        }
     }
 }
 
-fn find_skip_with_block(
+/// Recursively search inside a node for `skip` calls with a block.
+fn find_skip_with_block_recursive(
     source: &SourceFile,
-    block: ruby_prism::BlockNode<'_>,
+    node: &ruby_prism::Node<'_>,
     diagnostics: &mut Vec<Diagnostic>,
     cop: &SkipBlockInsideExample,
 ) {
-    let body = match block.body() {
-        Some(b) => b,
-        None => return,
-    };
-    let stmts = match body.as_statements_node() {
-        Some(s) => s,
-        None => return,
-    };
+    if let Some(call) = node.as_call_node() {
+        if call.name().as_slice() == b"skip" && call.receiver().is_none() && call.block().is_some()
+        {
+            let loc = call.location();
+            let (line, column) = source.offset_to_line_col(loc.start_offset());
+            diagnostics.push(cop.diagnostic(
+                source,
+                line,
+                column,
+                "Don't pass a block to `skip` inside examples.".to_string(),
+            ));
+            return; // Don't recurse into the skip block itself
+        }
+    }
 
-    for stmt in stmts.body().iter() {
-        if let Some(call) = stmt.as_call_node() {
-            if call.name().as_slice() == b"skip"
-                && call.receiver().is_none()
-                && call.block().is_some()
-            {
-                let loc = call.location();
-                let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(cop.diagnostic(
-                    source,
-                    line,
-                    column,
-                    "Don't pass a block to `skip` inside examples.".to_string(),
-                ));
+    // Recurse into child nodes — handle common container types
+    if let Some(stmts) = node.as_statements_node() {
+        for child in stmts.body().iter() {
+            find_skip_with_block_recursive(source, &child, diagnostics, cop);
+        }
+        return;
+    }
+    if let Some(call) = node.as_call_node() {
+        if let Some(recv) = call.receiver() {
+            find_skip_with_block_recursive(source, &recv, diagnostics, cop);
+        }
+        if let Some(args) = call.arguments() {
+            for arg in args.arguments().iter() {
+                find_skip_with_block_recursive(source, &arg, diagnostics, cop);
+            }
+        }
+        if let Some(block) = call.block() {
+            find_skip_with_block_recursive(source, &block, diagnostics, cop);
+        }
+        return;
+    }
+    if let Some(block) = node.as_block_node() {
+        if let Some(body) = block.body() {
+            find_skip_with_block_recursive(source, &body, diagnostics, cop);
+        }
+        return;
+    }
+    if let Some(begin) = node.as_begin_node() {
+        if let Some(stmts) = begin.statements() {
+            find_skip_with_block_recursive(source, &stmts.as_node(), diagnostics, cop);
+        }
+        return;
+    }
+    if let Some(if_node) = node.as_if_node() {
+        if let Some(stmts) = if_node.statements() {
+            find_skip_with_block_recursive(source, &stmts.as_node(), diagnostics, cop);
+        }
+        if let Some(subsequent) = if_node.subsequent() {
+            find_skip_with_block_recursive(source, &subsequent, diagnostics, cop);
+        }
+        return;
+    }
+    if let Some(unless_node) = node.as_unless_node() {
+        if let Some(stmts) = unless_node.statements() {
+            find_skip_with_block_recursive(source, &stmts.as_node(), diagnostics, cop);
+        }
+        if let Some(else_clause) = unless_node.else_clause() {
+            if let Some(stmts) = else_clause.statements() {
+                find_skip_with_block_recursive(source, &stmts.as_node(), diagnostics, cop);
             }
         }
     }
