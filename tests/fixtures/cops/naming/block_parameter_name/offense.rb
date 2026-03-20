@@ -10,3 +10,7 @@ foo { |___| bar }
        ^^^ Naming/BlockParameterName: Block parameter name is too short.
 foo { |____| bar }
        ^^^^ Naming/BlockParameterName: Block parameter name is too short.
+foo { |FOO:| bar }
+       ^^^ Naming/BlockParameterName: Block parameter must not contain capital letters.
+foo { |bar:, BAZ: nil| bar }
+             ^^^ Naming/BlockParameterName: Block parameter must not contain capital letters.

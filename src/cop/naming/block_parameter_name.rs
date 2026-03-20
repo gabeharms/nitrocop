@@ -1,10 +1,15 @@
 use crate::cop::node_type::{
-    BLOCK_NODE, BLOCK_PARAMETERS_NODE, OPTIONAL_PARAMETER_NODE, REQUIRED_PARAMETER_NODE,
+    BLOCK_NODE, BLOCK_PARAMETERS_NODE, OPTIONAL_KEYWORD_PARAMETER_NODE, OPTIONAL_PARAMETER_NODE,
+    REQUIRED_KEYWORD_PARAMETER_NODE, REQUIRED_PARAMETER_NODE,
 };
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Corpus investigation (2026-03-20): 64 FN all from keyword block parameters
+/// (RequiredKeywordParameterNode, OptionalKeywordParameterNode) which were not
+/// iterated. Fixed by adding `params_node.keywords()` iteration matching the
+/// pattern used in Naming/MethodParameterName.
 pub struct BlockParameterName;
 
 impl Cop for BlockParameterName {
@@ -16,7 +21,9 @@ impl Cop for BlockParameterName {
         &[
             BLOCK_NODE,
             BLOCK_PARAMETERS_NODE,
+            OPTIONAL_KEYWORD_PARAMETER_NODE,
             OPTIONAL_PARAMETER_NODE,
+            REQUIRED_KEYWORD_PARAMETER_NODE,
             REQUIRED_PARAMETER_NODE,
         ]
     }
@@ -78,6 +85,43 @@ impl Cop for BlockParameterName {
                     source,
                     name,
                     &opt.location(),
+                    min_length,
+                    config,
+                    diagnostics,
+                );
+            }
+        }
+
+        for param in params_node.keywords().iter() {
+            if let Some(kw) = param.as_required_keyword_parameter_node() {
+                let name = kw.name().as_slice();
+                let clean_name = if name.ends_with(b":") {
+                    &name[..name.len() - 1]
+                } else {
+                    name
+                };
+                check_param_name(
+                    self,
+                    source,
+                    clean_name,
+                    &kw.name_loc(),
+                    min_length,
+                    config,
+                    diagnostics,
+                );
+            }
+            if let Some(kw) = param.as_optional_keyword_parameter_node() {
+                let name = kw.name().as_slice();
+                let clean_name = if name.ends_with(b":") {
+                    &name[..name.len() - 1]
+                } else {
+                    name
+                };
+                check_param_name(
+                    self,
+                    source,
+                    clean_name,
+                    &kw.name_loc(),
                     min_length,
                     config,
                     diagnostics,
