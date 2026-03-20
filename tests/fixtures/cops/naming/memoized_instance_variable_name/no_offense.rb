@@ -188,3 +188,19 @@ def self.build_accessor(resource)
     @resource ||= ResourceReader.new(resource.new(id))
   end
 end
+
+# NOT memoization: ||= inside multi-statement block (FP fix for VCR.use_cassette pattern)
+def group
+  cassette("test") do
+    @ticket ||= create_record
+    @ticket ||= build_record
+  end
+end
+
+# NOT memoization: ||= inside multi-statement block within self.included
+def self.included(base)
+  base.setup do
+    @model ||= self.class.name.match(/(.*)Test$/)[1].constantize
+    @title_field ||= find_field(@model)
+  end
+end

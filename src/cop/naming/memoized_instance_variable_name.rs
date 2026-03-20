@@ -63,9 +63,68 @@ use crate::parse::source::SourceFile;
 /// Parser considers them equal, so RuboCop flags both. Nitrocop only found the else
 /// branch via `get_last_child_or_write`. Fix: after finding a mismatch, scan the
 /// method body for sibling `||=` nodes with the same ivar name and RHS source text.
+///
+/// ## Investigation (2026-03-20, extended corpus FP=3, FN=17)
+/// FP=3: `||=` inside multi-statement block bodies (VCR.use_cassette with 2 stmts,
+/// base.setup with 2 stmts). In Parser AST, multi-statement blocks are wrapped in
+/// `begin` which is not `or_asgn`, so `children.last` doesn't match. Fix: changed
+/// CallNode block handler in `get_last_child_or_write` to only unwrap single-statement
+/// block bodies (via `unwrap_single_stmt_to_or_write_or_recurse`).
+///
+/// FN=17 from several patterns where `||=` is nested inside another node:
+/// 1. `return @ivar ||= expr` (5 FN): ReturnNode wrapping ||=
+/// 2. `yield @ivar ||= expr` (4 FN): YieldNode wrapping ||=
+/// 3. `@ivar = @ivar ||= expr` (3 FN): InstanceVariableWriteNode wrapping ||=
+/// 4. `@a ||= @b ||= expr` (3 FN): chained ||= where inner doesn't match
+/// 5. `expr - @ivar ||= 0` (1 FN): CallNode (operator) with ||= as last arg
+/// 6. `define_method "name" do return @ivar ||= expr end` (1 FN): return inside define_method
+///
+/// Root cause: RuboCop's `on_or_asgn` fires for EVERY `||=` in the method body, then
+/// checks `body == node || body.children.last == node`. Parser's `children.last` returns
+/// the rightmost child of any node type (return→arg, yield→arg, ivasgn→value, send→last_arg,
+/// or_asgn→value). Nitrocop only checked specific node types in `get_last_child_or_write`.
+///
+/// Fix: (a) Added ReturnNode, YieldNode, InstanceVariableWriteNode, and CallNode-without-block
+/// handlers to `get_last_child_or_write`. (b) Added `check_or_write_chain` to recursively
+/// check nested `||=` in the value of an outer `||=` (chained pattern).
 pub struct MemoizedInstanceVariableName;
 
 impl MemoizedInstanceVariableName {
+    /// Check a `||=` node and also check nested `||=` in its value (chained pattern).
+    /// RuboCop's `on_or_asgn` fires for EVERY `||=`, so `@a ||= @b ||= expr`
+    /// flags both `@a` and `@b` independently. `body.children.last` for the outer
+    /// `||=` returns the inner `||=`, which equals the inner node.
+    fn check_or_write_chain(
+        &self,
+        source: &SourceFile,
+        or_write: ruby_prism::InstanceVariableOrWriteNode<'_>,
+        base_name: &str,
+        method_name_str: &str,
+        leading_underscore_style: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Extract value before or_write is moved into check_or_write
+        let value = or_write.value();
+        diagnostics.extend(self.check_or_write(
+            source,
+            or_write,
+            base_name,
+            method_name_str,
+            leading_underscore_style,
+        ));
+        // Check nested ||= in the value: @a ||= @b ||= expr
+        if let Some(inner) = value.as_instance_variable_or_write_node() {
+            self.check_or_write_chain(
+                source,
+                inner,
+                base_name,
+                method_name_str,
+                leading_underscore_style,
+                diagnostics,
+            );
+        }
+    }
+
     fn check_or_write(
         &self,
         source: &SourceFile,
@@ -426,11 +485,12 @@ fn get_last_child_or_write<'pr>(
         return None;
     }
 
-    // CallNode with block → block body
-    // Parser: `block` children = [send, args, body], last = body
-    // Skip define_method/define_singleton_method blocks — those create their own
-    // method context and are handled separately by check_dynamic_method. RuboCop's
-    // find_definition walks UP and finds the block first, not the enclosing def.
+    // CallNode — two cases:
+    // 1. With block → block body (Parser: `block` children = [send, args, body], last = body)
+    //    Skip define_method/define_singleton_method blocks — those create their own
+    //    method context and are handled separately by check_dynamic_method.
+    // 2. Without block → last argument (Parser: `send` children = [recv, method, ...args], last = last arg)
+    //    Handles patterns like `expr - @ivar ||= 0.0`
     if let Some(call_node) = node.as_call_node() {
         let method = call_node.name().as_slice();
         let method_str = std::str::from_utf8(method).unwrap_or("");
@@ -440,8 +500,16 @@ fn get_last_child_or_write<'pr>(
         if let Some(block) = call_node.block() {
             if let Some(block_node) = block.as_block_node() {
                 if let Some(body) = block_node.body() {
-                    return unwrap_to_or_write(&body);
+                    return unwrap_single_stmt_to_or_write_or_recurse(&body);
                 }
+            }
+            return None;
+        }
+        // No block: check last argument
+        if let Some(args) = call_node.arguments() {
+            let arg_list: Vec<_> = args.arguments().iter().collect();
+            if let Some(last) = arg_list.last() {
+                return last.as_instance_variable_or_write_node();
             }
         }
         return None;
@@ -450,18 +518,50 @@ fn get_last_child_or_write<'pr>(
     // ParenthesesNode → body
     if let Some(parens) = node.as_parentheses_node() {
         if let Some(body) = parens.body() {
-            return unwrap_to_or_write(&body);
+            return unwrap_single_stmt_to_or_write_or_recurse(&body);
         }
         return None;
+    }
+
+    // ReturnNode → last argument
+    // Parser: `return` children = [arg], last = arg
+    if let Some(ret_node) = node.as_return_node() {
+        if let Some(args) = ret_node.arguments() {
+            let arg_list: Vec<_> = args.arguments().iter().collect();
+            if let Some(last) = arg_list.last() {
+                return last.as_instance_variable_or_write_node();
+            }
+        }
+        return None;
+    }
+
+    // YieldNode → last argument
+    // Parser: `yield` children = [arg], last = arg
+    if let Some(yield_node) = node.as_yield_node() {
+        if let Some(args) = yield_node.arguments() {
+            let arg_list: Vec<_> = args.arguments().iter().collect();
+            if let Some(last) = arg_list.last() {
+                return last.as_instance_variable_or_write_node();
+            }
+        }
+        return None;
+    }
+
+    // InstanceVariableWriteNode → value
+    // Parser: `ivasgn` children = [name, value], last = value
+    // Handles `@service = @service ||= expr`
+    if let Some(ivar_write) = node.as_instance_variable_write_node() {
+        let value = ivar_write.value();
+        return value.as_instance_variable_or_write_node();
     }
 
     None
 }
 
-/// Unwrap a Node that may be a StatementsNode or a direct ||= node.
-/// This handles the Prism→Parser mapping where Parser doesn't wrap
-/// single values in a StatementsNode.
-fn unwrap_to_or_write<'pr>(
+/// Helper for block bodies: only unwrap single-statement bodies (matching Parser's
+/// `begin` wrapper behavior), and recurse into the single statement if it's not
+/// a direct `||=`.
+fn unwrap_single_stmt_to_or_write_or_recurse<'pr>(
     node: &ruby_prism::Node<'pr>,
 ) -> Option<ruby_prism::InstanceVariableOrWriteNode<'pr>> {
     if let Some(or_write) = node.as_instance_variable_or_write_node() {
@@ -469,9 +569,10 @@ fn unwrap_to_or_write<'pr>(
     }
     if let Some(stmts) = node.as_statements_node() {
         let body: Vec<_> = stmts.body().iter().collect();
-        if let Some(last) = body.last() {
-            return last.as_instance_variable_or_write_node();
+        if body.len() != 1 {
+            return None;
         }
+        return get_last_child_or_write(&body[0]);
     }
     None
 }
@@ -665,26 +766,28 @@ impl Cop for MemoizedInstanceVariableName {
 
         // Body could be a bare InstanceVariableOrWriteNode (single statement)
         if let Some(or_write) = body.as_instance_variable_or_write_node() {
-            diagnostics.extend(self.check_or_write(
+            self.check_or_write_chain(
                 source,
                 or_write,
                 base_name,
                 method_name_str,
                 enforced_style,
-            ));
+                diagnostics,
+            );
             return;
         }
 
         // Body could be a BeginNode (rescue/ensure) — check via recursive last child
         if body.as_begin_node().is_some() {
             if let Some(or_write) = get_last_child_or_write(&body) {
-                diagnostics.extend(self.check_or_write(
+                self.check_or_write_chain(
                     source,
                     or_write,
                     base_name,
                     method_name_str,
                     enforced_style,
-                ));
+                    diagnostics,
+                );
             }
             return;
         }
@@ -702,13 +805,14 @@ impl Cop for MemoizedInstanceVariableName {
         // Check the last statement directly for ||=
         let last = &body_nodes[body_nodes.len() - 1];
         if let Some(or_write) = last.as_instance_variable_or_write_node() {
-            diagnostics.extend(self.check_or_write(
+            self.check_or_write_chain(
                 source,
                 or_write,
                 base_name,
                 method_name_str,
                 enforced_style,
-            ));
+                diagnostics,
+            );
             return;
         }
 
@@ -722,19 +826,20 @@ impl Cop for MemoizedInstanceVariableName {
         // "children.last" traversal for single-statement bodies.
         if body_nodes.len() == 1 {
             if let Some(or_write) = get_last_child_or_write(last) {
-                // Extract values before or_write is moved into check_or_write
+                // Extract values before or_write is moved into check_or_write_chain
                 let ivar_name_bytes = or_write.name().as_slice().to_vec();
                 let value_src = or_write.value().location().as_slice().to_vec();
                 let ref_offset = or_write.location().start_offset();
-                let result = self.check_or_write(
+                let count_before = diagnostics.len();
+                self.check_or_write_chain(
                     source,
                     or_write,
                     base_name,
                     method_name_str,
                     enforced_style,
+                    diagnostics,
                 );
-                if !result.is_empty() {
-                    diagnostics.extend(result);
+                if diagnostics.len() > count_before {
                     // Parser structural equality: scan body for sibling ||= nodes
                     // with the same ivar name and value source. RuboCop's
                     // `body.children.last == node` uses Parser's s-expression

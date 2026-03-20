@@ -82,3 +82,27 @@ def set_items exp = nil
     ^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@items` does not match method name `set_items`.
   end
 end
+def supported?
+  return @data ||= begin
+         ^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@data` does not match method name `supported?`.
+    compute_support
+  end
+end
+def configure
+  yield @data ||= Configuration.new
+        ^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@data` does not match method name `configure`.
+end
+def find_or_create_service
+  @service = @service ||= RequestService.new
+             ^^^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@service` does not match method name `find_or_create_service`.
+end
+def expensive_value
+  @expensive_value ||= @cached_value ||= begin
+                       ^^^^^^^^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@cached_value` does not match method name `expensive_value`.
+    compute_expensive
+  end
+end
+define_method "accept_type" do
+  return @_accept_type ||= "text/html"
+         ^^^^^^^^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@_accept_type` does not match method name `accept_type`.
+end
