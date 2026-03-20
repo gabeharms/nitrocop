@@ -314,6 +314,15 @@ mod tests {
     }
 
     #[test]
+    fn index_op_asgn_plus_in_def_hash() {
+        // h[:b] += 1 inside def self.hash (IndexOperatorWriteNode)
+        crate::testutil::assert_cop_offenses_full(
+            &CompoundHash,
+            b"def self.hash\n  h = Hash[:a, 1, :b, 2]\n  h[:b] += 1\n  ^^^^^^^^^^ Security/CompoundHash: Use `[...].hash` instead of combining hash values manually.\nend\n",
+        );
+    }
+
+    #[test]
     fn bare_hash_in_array_is_redundant() {
         // Bare `hash` (no receiver) inside hashed array should be flagged
         let src = b"[name, id, hash, updated_at].hash\n";

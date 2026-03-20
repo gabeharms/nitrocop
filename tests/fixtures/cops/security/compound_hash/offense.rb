@@ -98,12 +98,12 @@ def hash
   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Security/CompoundHash: Use `[...].hash` instead of combining hash values manually.
 end
 
-# Combinator: index operator write (h[:key] += value) inside def hash
+# Combinator: index operator write (h[:key] ^= value) inside def hash
 def hash
-  h = 0
+  h = Hash.new(0)
   items.each do |item|
-    h ^= item.hash
-    ^^^^^^^^^^^^^^^ Security/CompoundHash: Use `[...].hash` instead of combining hash values manually.
+    h[:key] ^= item.hash
+    ^^^^^^^^^^^^^^^^^^^^^ Security/CompoundHash: Use `[...].hash` instead of combining hash values manually.
   end
   h
 end
