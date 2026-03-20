@@ -48,6 +48,46 @@ RSpec.describe Corge do
   end
 end
 
+# Named subject used chained (as receiver) should not count as a repeat of the bare name
+# Pattern: subject(:track) with `metric.values` in change block — metric is another subject
+# but used chained, so it should not be counted as a flaggable call. Only 1 bare `track` call.
+RSpec.describe Metric do
+  subject(:metric) { described_class.new(name) }
+
+  describe '#track' do
+    subject(:track) { metric.track(value) }
+
+    it 'tracks the value' do
+      expect { track }.to change { metric.values }
+    end
+
+    context 'tracking again' do
+      it 'updates values' do
+        metric.track(value)
+        expect { track }.to change { metric.values }
+      end
+    end
+  end
+end
+
+# Single subject call with non-subject expressions before it
+RSpec.describe Writer do
+  subject(:write) { writer.write(event) }
+
+  it "starts a worker thread" do
+    expect(writer.buffer).to receive(:push).with(event)
+    expect { write }.to change { writer.running? }
+  end
+end
+
+# Single subject call in expect block with non-subject call before it
+RSpec.describe Cleanup do
+  it 'does not delete root dir' do
+    expect(File.directory?(factory.root_dir)).to be(true)
+    expect { subject }.not_to change { File.directory?(factory.root_dir) }
+  end
+end
+
 # Different named subjects — each used once is not an offense
 RSpec.describe Grault do
   subject { do_something_else }
