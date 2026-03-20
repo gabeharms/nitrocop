@@ -125,6 +125,14 @@ use crate::parse::source::SourceFile;
 /// guard block body, even when both tokens were nested inside the block literal.
 /// RuboCop only treats the first branch statement itself as a guard clause.
 /// Fix: require operator guards inside block bodies to appear at top level too.
+///
+/// Another remaining FN cluster came from CRLF files. For modifier guards,
+/// the cop checks whether there is more code after the `if`/`unless` node on
+/// the same physical line and skips embedded expressions like
+/// `arr.each { return x if cond }`. In CRLF files, that raw suffix slice could
+/// begin with `\r`, and the old code treated `\r` as non-whitespace "code",
+/// causing real guard clauses to be skipped. Fix: treat `\r`/`\n` as ignorable
+/// whitespace in the same-line suffix check.
 pub struct EmptyLineAfterGuardClause;
 
 /// Guard clause keywords that appear at the start of an expression.
@@ -309,7 +317,10 @@ impl Cop for EmptyLineAfterGuardClause {
                 let after_pos = end_col + 1;
                 if after_pos < cur_line.len() {
                     let rest = &cur_line[after_pos..];
-                    if let Some(idx) = rest.iter().position(|&b| b != b' ' && b != b'\t') {
+                    if let Some(idx) = rest
+                        .iter()
+                        .position(|&b| b != b' ' && b != b'\t' && b != b'\r' && b != b'\n')
+                    {
                         if rest[idx] != b'#' {
                             return;
                         }
@@ -1698,6 +1709,32 @@ mod tests {
             diags.len(),
             1,
             "Expected 1 offense for return empty string unless guard, got {}: {:?}",
+            diags.len(),
+            diags
+        );
+    }
+
+    #[test]
+    fn fn_return_unless_before_local_assignment() {
+        let source = b"def checks_for_integer_overflow(nbits)\n  reset_subcounts()\n  return  unless nbits >= 6\n  nbits_int_min = n_bits_integer_min(nbits)\nend\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterGuardClause, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for `return unless` before local assignment, got {}: {:?}",
+            diags.len(),
+            diags
+        );
+    }
+
+    #[test]
+    fn fn_return_unless_before_local_assignment_crlf() {
+        let source = b"def checks_for_integer_overflow(nbits)\r\n  reset_subcounts()\r\n  return  unless nbits >= 6\r\n  nbits_int_min = n_bits_integer_min(nbits)\r\nend\r\n";
+        let diags = crate::testutil::run_cop_full(&EmptyLineAfterGuardClause, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected 1 offense for CRLF `return unless` before local assignment, got {}: {:?}",
             diags.len(),
             diags
         );
