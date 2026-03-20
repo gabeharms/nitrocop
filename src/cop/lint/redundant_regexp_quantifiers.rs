@@ -3,6 +3,18 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Lint/RedundantRegexpQuantifiers — flags quantifiers that can be combined
+/// (e.g. `(?:a+)+` → `a+`).
+///
+/// ## Investigation (2026-03-20)
+/// FP=6, FN=0. All 6 FPs were caused by `check_interval_with_reluctant`
+/// misinterpreting Unicode property escapes (`\p{Pd}`, `\P{...}`) and Unicode
+/// codepoint escapes (`\u{FEFF}`) as interval quantifiers. The `\` escape
+/// handler only skipped 2 bytes (`\p`), leaving the `{...}` suffix to be
+/// parsed as an interval quantifier `{,}` (no digits → min=None, max=None →
+/// normalized to `*`). When followed by `?`, this was incorrectly flagged as
+/// a redundant `{,}` + `?` pair. Fixed by extending the escape handler to
+/// recognize `\p`, `\P`, and `\u` and skip through the closing `}`.
 pub struct RedundantRegexpQuantifiers;
 
 impl Cop for RedundantRegexpQuantifiers {
@@ -420,7 +432,23 @@ fn check_interval_with_reluctant(
 
     while i < len {
         if bytes[i] == b'\\' {
-            i += 2;
+            // Skip escaped sequences. For \p{...}, \P{...}, \u{...} (Unicode
+            // property/codepoint escapes), also skip the braced part so that
+            // the `{` is not mistaken for an interval quantifier.
+            if i + 1 < len && (bytes[i + 1] == b'p' || bytes[i + 1] == b'P' || bytes[i + 1] == b'u')
+            {
+                i += 2; // skip `\p` / `\P` / `\u`
+                if i < len && bytes[i] == b'{' {
+                    while i < len && bytes[i] != b'}' {
+                        i += 1;
+                    }
+                    if i < len {
+                        i += 1; // skip `}`
+                    }
+                }
+            } else {
+                i += 2;
+            }
             continue;
         }
 
