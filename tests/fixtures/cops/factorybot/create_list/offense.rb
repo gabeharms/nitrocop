@@ -16,3 +16,10 @@ Array.new(5) { create(:player) }
 ^^^^^^^^^^^^ FactoryBot/CreateList: Prefer create_list.
 Array.new(3) { FactoryBot.create(:user) }
 ^^^^^^^^^^^^ FactoryBot/CreateList: Prefer create_list.
+# Value omission with local variable in scope: person IS a local var,
+# so Prism wraps LocalVariableReadNode (not CallNode). RuboCop flags this.
+person = create(:person)
+2.times.map do
+^^^^^^^^^^^ FactoryBot/CreateList: Prefer create_list.
+  create(:role_appointment, person:)
+end

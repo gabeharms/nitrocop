@@ -10,13 +10,27 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
-/// Corpus investigation (2026-03-19): 3 FP fixed.
-/// - 2 FP from `n.times { create(:factory, key:) }` where `key:` is Ruby 3.1+
-///   value omission. RuboCop skips these because `create_list` can't preserve
-///   the shorthand syntax. Fix: skip when any trailing arg has value omission.
+/// ## Corpus investigation (2026-03-19): 3 FP fixed.
+///
 /// - 1 FP from array literal `[create(...), create(...) { block }]` where one
 ///   element has a block and the other doesn't. These aren't truly identical calls.
 ///   Fix: check consistent block presence across all array elements.
+///
+/// ## Corpus investigation (2026-03-20): 1 FN fixed + value omission handling corrected.
+///
+/// FN=1: `2.times.map { create(:role_appointment, person:) }` where `person` was a
+/// local variable in scope. The old `has_any_value_omission` check blanket-skipped
+/// ALL value omission patterns, but RuboCop's behavior depends on whether the
+/// shorthand name is a local variable or a method call:
+/// - `person:` with local var `person` in scope → Parser sees `(lvar :person)` →
+///   NOT a method call → RuboCop flags it
+/// - `customer:` without local var → Parser sees `(send nil :customer)` →
+///   IS a method call → `arguments_include_method_call?` skips it
+/// In Prism, both cases use `ImplicitNode`, but the inner value differs:
+/// `ImplicitNode { LocalVariableReadNode }` vs `ImplicitNode { CallNode }`.
+/// Fix: removed blanket `has_any_value_omission` check, added `ImplicitNode`
+/// unwrapping to `contains_send_node` so it correctly detects method calls
+/// inside value omission. This matches RuboCop exactly (265/265 on corpus).
 pub struct CreateList;
 
 impl Cop for CreateList {
@@ -223,13 +237,6 @@ impl CreateList {
 
         // Check if arguments include a method call (rand, etc.)
         if arguments_include_method_call(&arg_list) {
-            return Vec::new();
-        }
-
-        // Check if arguments include any value omission (Ruby 3.1+ `key:` shorthand).
-        // RuboCop skips n.times blocks when create args use value omission because
-        // create_list can't preserve the shorthand syntax correctly.
-        if has_any_value_omission(&arg_list[1..]) {
             return Vec::new();
         }
 
@@ -443,6 +450,15 @@ fn arguments_include_method_call(args: &[ruby_prism::Node<'_>]) -> bool {
 }
 
 fn contains_send_node(node: &ruby_prism::Node<'_>) -> bool {
+    // Unwrap ImplicitNode (Ruby 3.1+ value omission: `key:`).
+    // When `key` is not a local variable, Prism wraps a CallNode inside ImplicitNode;
+    // when `key` IS a local variable, it wraps a LocalVariableReadNode.
+    // RuboCop's `arguments_include_method_call?` skips the method-call case
+    // because Parser represents it as `(send nil :key)`.
+    if let Some(implicit) = node.as_implicit_node() {
+        return contains_send_node(&implicit.value());
+    }
+
     if let Some(call) = node.as_call_node() {
         // A method call with receiver, arguments, or block
         if call.receiver().is_some() || call.arguments().is_some() || call.block().is_some() {
@@ -483,36 +499,6 @@ fn contains_send_node(node: &ruby_prism::Node<'_>) -> bool {
     }
 
     false
-}
-
-fn has_any_value_omission(args: &[ruby_prism::Node<'_>]) -> bool {
-    args.iter().any(|arg| {
-        hash_assoc_counts(arg).is_some_and(|(_assoc_count, implicit_count)| implicit_count > 0)
-    })
-}
-
-fn hash_assoc_counts(node: &ruby_prism::Node<'_>) -> Option<(usize, usize)> {
-    let elements = if let Some(hash) = node.as_keyword_hash_node() {
-        hash.elements()
-    } else if let Some(hash) = node.as_hash_node() {
-        hash.elements()
-    } else {
-        return None;
-    };
-
-    let mut assoc_count = 0usize;
-    let mut implicit_count = 0usize;
-    for elem in elements.iter() {
-        let Some(pair) = elem.as_assoc_node() else {
-            continue;
-        };
-        assoc_count += 1;
-        if pair.value().as_implicit_node().is_some() {
-            implicit_count += 1;
-        }
-    }
-
-    Some((assoc_count, implicit_count))
 }
 
 /// Get the source bytes of a call's arguments (for comparing create calls in arrays).

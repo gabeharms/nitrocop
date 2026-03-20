@@ -5,9 +5,6 @@ create_list(:user, 5, :trait)
 3.times { do_something }
 3.times {}
 3.times { |n| create :user, repositories_count: rand }
-# Value omission args should not be flagged
-3.times { create(:item, checklist:, checked: true) }
-2.times { create(:refund, purchase:, amount_cents: 10) }
 # Array with interpolated symbol factory names (not identical)
 %w[fandom character].each do |type|
   [create(:"canonical_#{type}"), create(:"canonical_#{type}")]
@@ -21,9 +18,12 @@ end
 # Array.new with create containing array args with method calls
 records = Array.new(3) { FactoryBot.create(:record, :tag_ids => [@tag.id]) }
 items = Array.new(5) { create(:item, names: [user.name]) }
-# n.times with value omission should not be flagged
+# Value omission without local variable: Prism wraps CallNode inside
+# ImplicitNode (Parser sees `(send nil :customer)`), so it's a method call.
+# RuboCop skips these via arguments_include_method_call?.
 3.times { create(:subscription, customer:) }
-2.times { create(:subscription, customer:) }
+3.times { create(:item, checklist:, checked: true) }
+2.times { create(:refund, purchase:, amount_cents: 10) }
 2.times.map do
   create(:role_appointment, person:)
 end
