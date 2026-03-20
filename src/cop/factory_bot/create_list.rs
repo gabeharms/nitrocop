@@ -31,6 +31,14 @@ use crate::parse::source::SourceFile;
 ///   Fix: removed blanket `has_any_value_omission` check, added `ImplicitNode`
 ///   unwrapping to `contains_send_node` so it correctly detects method calls
 ///   inside value omission. This matches RuboCop exactly (265/265 on corpus).
+///
+/// ## Corpus investigation (2026-03-20): 2 FP fixed on extended corpus.
+///
+/// FP=2: `11.times.map { create(:episode, ..., title: "##{_1}: #{query}") }` —
+/// block uses Ruby 2.7+ numbered parameters (`_1`). `block_param_is_used` only
+/// checked explicit `BlockParametersNode` params, missing `NumberedParametersNode`.
+/// Fix: detect `NumberedParametersNode` and return true (Prism only assigns it when
+/// numbered params appear in the body, so presence = used). Commit below.
 pub struct CreateList;
 
 impl Cop for CreateList {
@@ -366,6 +374,12 @@ fn block_param_is_used(block_node: &ruby_prism::BlockNode<'_>) -> bool {
         Some(p) => p,
         None => return false,
     };
+
+    // Numbered parameters (_1, _2, etc.) — Prism assigns NumberedParametersNode
+    // only when they appear in the body, so their presence means "used".
+    if params.as_numbered_parameters_node().is_some() {
+        return true;
+    }
 
     let block_params = match params.as_block_parameters_node() {
         Some(bp) => bp,

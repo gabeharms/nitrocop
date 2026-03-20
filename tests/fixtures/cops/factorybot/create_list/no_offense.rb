@@ -29,3 +29,6 @@ items = Array.new(5) { create(:item, names: [user.name]) }
 end
 # Array with create calls where one has a block and the other does not
 [create(:invoice, organization:), create(:invoice, organization:) { |i| create(:metadata, invoice: i) }]
+# Numbered block parameters (_1, _2, etc.) — block param is used, can't use create_list
+11.times.map { create(:episode, podcast:, title: "##{_1}: #{query}") }
+3.times { create(:user, name: "User #{_1}") }

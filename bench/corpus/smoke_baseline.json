@@ -2,7 +2,7 @@
   "bkeepers__dotenv__34156bf": {
     "fn": 19,
     "fp": 9,
-    "matches": 1914,
+    "matches": 1949,
     "nc_files": 35,
     "rate": 98.6,
     "rc_files": 35
@@ -10,41 +10,41 @@
   "doorkeeper__doorkeeper__b305358": {
     "fn": 302,
     "fp": 6,
-    "matches": 13424,
-    "nc_files": 258,
+    "matches": 13684,
+    "nc_files": 260,
     "rate": 97.8,
     "rc_files": 260
   },
   "multi_json__multi_json__c5fa9fc": {
     "fn": 16,
     "fp": 1,
-    "matches": 5812,
+    "matches": 5933,
     "nc_files": 121,
     "rate": 99.7,
     "rc_files": 121
   },
   "rubocop__rubocop-rspec__51dab28": {
-    "fn": 475,
+    "fn": 474,
     "fp": 15,
-    "matches": 3878,
-    "nc_files": 284,
-    "rate": 88.8,
+    "matches": 4167,
+    "nc_files": 288,
+    "rate": 89.5,
     "rc_files": 288
   },
   "ruby-formatter__rufo__a90e654": {
     "fn": 651,
-    "fp": 22,
-    "matches": 10096,
-    "nc_files": 150,
-    "rate": 93.8,
+    "fp": 19,
+    "matches": 10252,
+    "nc_files": 157,
+    "rate": 93.9,
     "rc_files": 158
   },
   "standardrb__standard__c886a57": {
     "fn": 33,
     "fp": 6,
-    "matches": 3040,
+    "matches": 3147,
     "nc_files": 107,
-    "rate": 98.7,
+    "rate": 98.8,
     "rc_files": 107
   }
 }
