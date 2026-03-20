@@ -225,3 +225,13 @@ def update?(cookies)
   cookies.each { |key, value| return true if previous_cookie(key) != value }
   false
 end
+
+# FN fix: next sibling if-block is not a guard when `and return` is nested in braces
+def find_executable(bin, exts)
+  return bin if executable_file.call(bin)
+  ^ Layout/EmptyLineAfterGuardClause: Add empty line after guard clause.
+  if exts
+    exts.each { |ext| executable_file.call(file = bin + ext) and return file }
+  end
+  nil
+end

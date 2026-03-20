@@ -117,6 +117,14 @@ use crate::parse::source::SourceFile;
 /// clause, not when the line merely contains an embedded guard expression.
 /// Fix: require the guard keyword and modifier keyword to appear at top level
 /// on the line (outside strings and bracketed subexpressions).
+///
+/// Another remaining FN pattern came from `if`/`unless` blocks whose first body
+/// line only contained an operator guard nested inside braces, e.g.
+/// `items.each { |x| predicate(x) and return x }`. `is_bare_guard_in_block`
+/// treated any line containing `and`/`or`/`&&`/`||` plus a guard keyword as a
+/// guard block body, even when both tokens were nested inside the block literal.
+/// RuboCop only treats the first branch statement itself as a guard clause.
+/// Fix: require operator guards inside block bodies to appear at top level too.
 pub struct EmptyLineAfterGuardClause;
 
 /// Guard clause keywords that appear at the start of an expression.
@@ -900,10 +908,13 @@ fn is_bare_guard_in_block(trimmed: &[u8], lines: &[&[u8]], line_idx: usize) -> b
 
     // Check for `and`/`or`/`&&`/`||` with guard keyword (e.g., `redirect_to(@work) && return`)
     let has_operator_guard = !has_guard_keyword
-        && GUARD_METHODS.iter().any(|kw| contains_word(trimmed, kw))
-        && (contains_word(trimmed, b"and")
-            || contains_word(trimmed, b"or")
-            || trimmed.windows(2).any(|w| w == b"&&" || w == b"||"));
+        && GUARD_METHODS
+            .iter()
+            .any(|kw| contains_word_at_top_level(trimmed, kw))
+        && (contains_word_at_top_level(trimmed, b"and")
+            || contains_word_at_top_level(trimmed, b"or")
+            || contains_pattern_at_top_level(trimmed, b"&&", false)
+            || contains_pattern_at_top_level(trimmed, b"||", false));
 
     if !has_guard_keyword && !has_operator_guard {
         return false;
@@ -1198,8 +1209,16 @@ fn contains_modifier_guard(content: &[u8]) -> bool {
 }
 
 fn contains_word_at_top_level(haystack: &[u8], word: &[u8]) -> bool {
-    let wlen = word.len();
-    if haystack.len() < wlen {
+    contains_pattern_at_top_level(haystack, word, true)
+}
+
+fn contains_pattern_at_top_level(
+    haystack: &[u8],
+    pattern: &[u8],
+    require_word_boundaries: bool,
+) -> bool {
+    let plen = pattern.len();
+    if haystack.len() < plen {
         return false;
     }
 
@@ -1257,10 +1276,11 @@ fn contains_word_at_top_level(haystack: &[u8], word: &[u8]) -> bool {
             _ => {}
         }
 
-        if depth == 0 && i + wlen <= haystack.len() && &haystack[i..i + wlen] == word {
-            let before_ok = i == 0 || !is_ident_char(haystack[i - 1]);
-            let after_ok = i + wlen >= haystack.len() || !is_ident_char(haystack[i + wlen]);
-            if before_ok && after_ok {
+        if depth == 0 && i + plen <= haystack.len() && &haystack[i..i + plen] == pattern {
+            let boundaries_ok = !require_word_boundaries
+                || ((i == 0 || !is_ident_char(haystack[i - 1]))
+                    && (i + plen >= haystack.len() || !is_ident_char(haystack[i + plen])));
+            if boundaries_ok {
                 return true;
             }
         }
