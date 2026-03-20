@@ -49,6 +49,14 @@ DENYLIST = {
     "fpsvogel/learn-ruby",  # Learning resource list, not Ruby source
     "hahwul/MobileHackersWeapons",  # Security tool list, not Ruby source
     "brunofacca/zen-rails-security-checklist",  # Markdown checklist, not Ruby source
+    "hahwul/mad-metasploit",  # Bundler can't load RuboCop — zero usable oracle data
+    "Shopify/ess",  # Layout/EndAlignment crash on vendored regression test file
+    "rails-engine/script_core",  # Layout/EndAlignment crash on vendored regression test file
+    "opencongress/opencongress",  # Invalid multibyte escape crashes RuboCop parser
+    "airesis/airesis",  # RuboCop parser crash, 162 files dropped
+    "smalruby/smalruby-editor",  # Ancient config format (no department given for LineLength)
+    "pubnub/ruby",  # RuboCop parser crash, 46 files dropped
+    "codeout/junoser",  # RuboCop parser crash, 32 files dropped
 }
 
 

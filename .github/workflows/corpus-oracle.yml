@@ -286,6 +286,10 @@ jobs:
             # Keeps one slow repo from killing the whole batch.
             REPO_TIMEOUT=900  # 15 minutes
 
+            # Resolve per-repo config (adds file exclusions for repos with known parser crashes)
+            REPO_CONFIG=$(python3 bench/corpus/gen_repo_config.py "$REPO_ID" bench/corpus/baseline_rubocop.yml "$DEST")
+            REPO_STRESS_CONFIG=$(python3 bench/corpus/gen_repo_config.py "$REPO_ID" bench/corpus/flipped_styles.yml "$DEST")
+
             # nitrocop
             echo "=== nitrocop: ${REPO_ID} ==="
             rc=0
@@ -296,7 +300,7 @@ jobs:
               --preview \
               --format json \
               --no-cache \
-              --config bench/corpus/baseline_rubocop.yml \
+              --config "$REPO_CONFIG" \
               "$DEST" \
               > "results/nitrocop/${REPO_ID}.json" 2>"results/nitrocop/${REPO_ID}.err" || rc=$?
 
@@ -312,7 +316,7 @@ jobs:
               env BUNDLE_GEMFILE=$PWD/bench/corpus/Gemfile \
                   BUNDLE_PATH=$PWD/bench/corpus/vendor/bundle \
               bundle exec rubocop \
-                --config bench/corpus/baseline_rubocop.yml \
+                --config "$REPO_CONFIG" \
                 --format json \
                 --force-exclusion \
                 --cache false \
@@ -365,7 +369,7 @@ jobs:
                 --preview \
                 --format json \
                 --no-cache \
-                --config bench/corpus/flipped_styles.yml \
+                --config "$REPO_STRESS_CONFIG" \
                 "$DEST" \
                 > "results/stress-nitrocop/${REPO_ID}.json" 2>/dev/null || rc=$?
 
@@ -380,7 +384,7 @@ jobs:
                 env BUNDLE_GEMFILE=$PWD/bench/corpus/Gemfile \
                     BUNDLE_PATH=$PWD/bench/corpus/vendor/bundle \
                 bundle exec rubocop \
-                  --config bench/corpus/flipped_styles.yml \
+                  --config "$REPO_STRESS_CONFIG" \
                   --format json \
                   --force-exclusion \
                   --cache false \
