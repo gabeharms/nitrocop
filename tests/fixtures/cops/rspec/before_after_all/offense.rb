@@ -11,3 +11,9 @@ context.after(:context) { cleanup }
 config.before :all do |group|
 end
 # nitrocop-expect: 6:0 RSpec/BeforeAfterAll: Beware of using `config.before :all` as it may cause state to leak between tests. If you are using `rspec-rails`, and `use_transactional_fixtures` is enabled, then records created in `config.before :all` are not automatically rolled back.
+state.before(:all).each { |b| b.call }
+^^^^^^^^^^^^^^^^^ RSpec/BeforeAfterAll: Beware of using `state.before(:all)` as it may cause state to leak between tests. If you are using `rspec-rails`, and `use_transactional_fixtures` is enabled, then records created in `state.before(:all)` are not automatically rolled back.
+expect(@state.before(:all)).to eq([@proc])
+       ^^^^^^^^^^^^^^^^^^^^ RSpec/BeforeAfterAll: Beware of using `@state.before(:all)` as it may cause state to leak between tests. If you are using `rspec-rails`, and `use_transactional_fixtures` is enabled, then records created in `@state.before(:all)` are not automatically rolled back.
+@shared.after(:all)
+^^^^^^^^^^^^^^^^^^^ RSpec/BeforeAfterAll: Beware of using `@shared.after(:all)` as it may cause state to leak between tests. If you are using `rspec-rails`, and `use_transactional_fixtures` is enabled, then records created in `@shared.after(:all)` are not automatically rolled back.

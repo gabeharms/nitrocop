@@ -7,11 +7,17 @@ after { do_something }
 config.before(:each) { do_something }
 config.after(:example) { do_something }
 
-# Method calls on objects with :all — not RSpec hooks (no block)
+# block_pass (&proc) adds an extra arg in Parser AST, so RuboCop doesn't match
 @state.before(:all, &@proc)
 proxy.before(:all, &callback)
 proxy.after(:all, &callback)
 parent.after(:all, &@c)
-expect(@state.before(:all)).to eq([@proc])
-obj.before(:all)
-obj.after(:context)
+
+# Extra arguments beyond :all — RuboCop requires exactly 1 arg
+config.before(:all, :with_monkey_patches => scope) { setup }
+config.before(:all, type: :integration) do
+  setup
+end
+config.before(:all, type: :controller) do
+  setup
+end

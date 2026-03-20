@@ -18,12 +18,16 @@ use crate::parse::source::SourceFile;
 /// RuboCop's `hook.source` output.
 ///
 /// ## Corpus investigation (2026-03-20)
-/// FP=27, FN=0. Root cause: RuboCop's NodePattern wraps the `send` in an outer
-/// `(block ...)` node, requiring an actual block (`do...end` or `{ }`). Calls
-/// like `@state.before(:all, &@proc)` use `BlockArgumentNode` (block_pass), not
-/// a real `BlockNode`, and should not be flagged. Similarly, bare calls like
-/// `obj.before(:all)` with no block at all should not be flagged.
-/// Fix: added `call.block().and_then(|b| b.as_block_node()).is_some()` guard.
+/// FP=4, FN=6. Root cause: RuboCop's NodePattern `$(send _ RESTRICT_ON_SEND
+/// (sym {:all :context}))` requires exactly 1 arg (the symbol) with no block
+/// requirement. In Parser AST, `block_pass` (`&proc`) is a child of `send`,
+/// adding to arg count, so `before(:all, &proc)` doesn't match. But calls
+/// without blocks like `@state.before(:all)` DO match.
+/// Previous fix over-corrected by requiring a real `BlockNode` (introduced 6 FN)
+/// and not enforcing exact arg count (allowed multi-arg FP).
+/// Fix: removed block requirement, added exact arg count check (`len() == 1`),
+/// added block_pass exclusion (Prism stores `&arg` in `call.block()` as
+/// `BlockArgumentNode`).
 pub struct BeforeAfterAll;
 
 impl Cop for BeforeAfterAll {
@@ -83,11 +87,15 @@ impl Cop for BeforeAfterAll {
             return;
         }
 
-        // RuboCop's NodePattern wraps the send in (block ...), requiring an actual
-        // block (do...end or {}). Calls with block_pass (&proc) or no block at all
-        // should not be flagged.
-        let has_block = call.block().and_then(|b| b.as_block_node()).is_some();
-        if !has_block {
+        // RuboCop's NodePattern requires exactly 1 arg (the symbol).
+        // In Parser AST, block_pass (&proc) is a child of send, so
+        // before(:all, &proc) has 2 args and doesn't match.
+        // In Prism, block_pass is stored in call.block() as BlockArgumentNode,
+        // not in arguments(), so we check for it separately.
+        let has_block_pass = call
+            .block()
+            .is_some_and(|b| b.as_block_argument_node().is_some());
+        if arg_list.len() != 1 || has_block_pass {
             return;
         }
 
