@@ -26,6 +26,11 @@ use crate::parse::source::SourceFile;
 ///    was above the outer def. Fix: switch from `check_node` on `DEF_NODE` to
 ///    `check_source` with a full-tree visitor that tracks both def depth and scope
 ///    depth across the entire AST.
+/// 5. **FN (parenthesized receivers, 2026-03-20):** `has_allowed_receiver` incorrectly
+///    treated `ParenthesesNode` as an allowed receiver type. In RuboCop (Parser gem),
+///    `def (expr).method` produces a `begin` node as receiver, which does not match
+///    `variable?`, `const_type?`, or `call_type?`. Pattern: `def (obj = Object.new).helper`
+///    inside another def was missed. Fix: removed the `as_parentheses_node()` check.
 pub struct NestedMethodDefinition;
 
 /// Full-tree visitor that tracks def nesting depth and scope-creating context depth.
@@ -78,10 +83,9 @@ fn has_allowed_receiver(def_node: &ruby_prism::DefNode<'_>) -> bool {
     if receiver.as_call_node().is_some() {
         return true;
     }
-    // Parenthesized expressions (e.g., def (do_something&.y).z)
-    if receiver.as_parentheses_node().is_some() {
-        return true;
-    }
+    // Parenthesized expressions are NOT allowed receivers. In the Parser gem,
+    // `def (expr).method` produces a `begin` node as receiver, and `begin` does
+    // not match `variable?`, `const_type?`, or `call_type?`.
     // self is NOT allowed — def self.y inside def is still an offense
     false
 }

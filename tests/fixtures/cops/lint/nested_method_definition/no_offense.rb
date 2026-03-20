@@ -60,14 +60,6 @@ class Foo
   end
 end
 
-# def on safe-navigation parenthesized receiver
-class Foo
-  def x
-    def (do_something&.y).z
-    end
-  end
-end
-
 # Scope-creating calls suppress offense
 def foo
   self.class.class_eval do

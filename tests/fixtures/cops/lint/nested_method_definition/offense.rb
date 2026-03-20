@@ -60,3 +60,20 @@ def baz
     end
   end
 end
+
+# Parenthesized receiver with assignment — NOT an allowed receiver type
+# In Parser gem, (lvasgn ...) is the receiver, which is not variable?/const_type?/call_type?
+def test_method
+  def (obj = Object.new).helper = true
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/NestedMethodDefinition: Method definitions must not be nested. Use `lambda` instead.
+end
+
+# Parenthesized safe-navigation receiver — NOT an allowed receiver type
+# In Parser gem, (begin (csend ...)) is the receiver; begin is not call_type?
+class Foo
+  def x
+    def (do_something&.y).z
+    ^^^^^^^^^^^^^^^^^^^^^^^ Lint/NestedMethodDefinition: Method definitions must not be nested. Use `lambda` instead.
+    end
+  end
+end
