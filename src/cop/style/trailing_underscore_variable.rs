@@ -26,6 +26,9 @@ use crate::parse::source::SourceFile;
 /// - Splat before trailing underscore: `a, *b, _ = foo` should NOT be flagged
 ///   because there's a non-underscore splat before the trailing underscore.
 ///   The cop was not checking this exemption.
+/// - Bare splat (`*`) was incorrectly treated as an underscore variable (FP=167).
+///   Patterns like `a, b, * = values` should not be flagged — RuboCop only treats
+///   named underscore splats (`*_`, `*_var`) as trailing underscore variables.
 ///
 /// **Fixes applied:**
 /// - Added `posts()` iteration to detect trailing underscores after rest.
@@ -294,8 +297,9 @@ fn is_underscore_var(node: &ruby_prism::Node<'_>, allow_named: bool) -> bool {
                 }
             }
         } else {
-            // bare * (implicit rest)
-            return true;
+            // bare * (implicit rest) — NOT an underscore variable.
+            // RuboCop doesn't treat bare splat as a trailing underscore.
+            return false;
         }
     }
     false
