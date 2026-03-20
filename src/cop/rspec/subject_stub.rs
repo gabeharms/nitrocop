@@ -51,6 +51,15 @@ use crate::parse::source::SourceFile;
 ///    the corpus oracle overrides this with `baseline_rubocop.yml`. Root cause of the
 ///    oracle miss is unknown — possibly rubocop 1.84.2 vs 1.85.1 difference, or a
 ///    transient CI issue. No cop logic fix needed; nitrocop is correct here.
+///
+/// Round 4 FN fix (1→0):
+/// 7. Subject stubs inside blocks on intermediate calls in a receiver chain: when
+///    `expect(Thread).to receive(:new) do |&block| expect(subject).to receive(:method)
+///    end.and_return(...)`, the `do...end` block is attached to `.to` but `.and_return`
+///    is the outermost AST node. The code only checked blocks on the outermost call,
+///    missing blocks on intermediate calls in the chain. Fixed by walking the receiver
+///    chain and recursing into blocks on each intermediate call node.
+///    Example: DataDog/dd-trace-rb configuration_spec.rb:612.
 pub struct SubjectStub;
 
 impl Cop for SubjectStub {
@@ -281,31 +290,11 @@ fn check_for_subject_stubs(
         }
 
         // Recurse into nested blocks (before, it, context, etc.)
-        if let Some(block) = call.block() {
-            if let Some(bn) = block.as_block_node() {
-                let call_name = call.name().as_slice();
-                if is_rspec_example_group(call_name) {
-                    // Nested example group — create new scope with inherited subject names
-                    let mut child_names = subject_names.to_vec();
-                    collect_subject_stub_offenses(source, bn, &mut child_names, diagnostics, cop);
-                } else {
-                    // Non-example-group block (before, it, specify, def, etc.)
-                    if let Some(body) = bn.body() {
-                        if let Some(stmts) = body.as_statements_node() {
-                            for s in stmts.body().iter() {
-                                check_for_subject_stubs(
-                                    source,
-                                    &s,
-                                    subject_names,
-                                    diagnostics,
-                                    cop,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Check blocks on the outermost call AND on calls in the receiver chain.
+        // This handles cases like: expect(Thread).to receive(:new) do |&block|
+        //   expect(subject).to receive(:method)  # block is on .to, not .and_return
+        // end.and_return(fake_thread)
+        recurse_into_call_blocks(&call, source, subject_names, diagnostics, cop);
     }
 
     // Check instance method def nodes for subject stubs too.
@@ -321,6 +310,49 @@ fn check_for_subject_stubs(
                     check_for_subject_stubs(source, &s, subject_names, diagnostics, cop);
                 }
             }
+        }
+    }
+}
+
+/// Recurse into blocks attached to a call node and any calls in its receiver chain.
+/// This ensures we find subject stubs inside blocks on intermediate calls, e.g.:
+///   expect(Thread).to receive(:new) do |&block|
+///     expect(subject).to receive(:shutdown!)  # block is on .to, buried in receiver chain
+///   end.and_return(fake_thread)
+fn recurse_into_call_blocks(
+    call: &ruby_prism::CallNode<'_>,
+    source: &SourceFile,
+    subject_names: &[Vec<u8>],
+    diagnostics: &mut Vec<Diagnostic>,
+    cop: &SubjectStub,
+) {
+    // Check block on this call
+    if let Some(block) = call.block() {
+        if let Some(bn) = block.as_block_node() {
+            let call_name = call.name().as_slice();
+            if is_rspec_example_group(call_name) {
+                // Nested example group — create new scope with inherited subject names
+                let mut child_names = subject_names.to_vec();
+                collect_subject_stub_offenses(source, bn, &mut child_names, diagnostics, cop);
+            } else {
+                // Non-example-group block (before, it, specify, def, etc.)
+                if let Some(body) = bn.body() {
+                    if let Some(stmts) = body.as_statements_node() {
+                        for s in stmts.body().iter() {
+                            check_for_subject_stubs(source, &s, subject_names, diagnostics, cop);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also recurse into blocks on calls in the receiver chain.
+    // This handles chained calls where a block is on an intermediate call
+    // (e.g., .to has a do...end block, but .and_return is the outermost call).
+    if let Some(recv) = call.receiver() {
+        if let Some(recv_call) = recv.as_call_node() {
+            recurse_into_call_blocks(&recv_call, source, subject_names, diagnostics, cop);
         }
     }
 }

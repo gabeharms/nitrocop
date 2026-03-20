@@ -69,3 +69,20 @@ describe Forwarder do
     forwarder.forward
   end
 end
+
+# Subject stub inside a nested block on an unrelated call chain
+# (e.g., expect(Thread).to receive(:new) do |&block| expect(subject_name).to receive(:method); block.call end)
+describe Worker do
+  subject(:worker) { described_class.new }
+
+  let(:fake_thread) { double }
+
+  it 'detects subject stub inside nested block' do
+    expect(Thread).to receive(:new) do |&block|
+      expect(worker).to receive(:shutdown!)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/SubjectStub: Do not stub methods of the object under test.
+      block.call
+    end.and_return(fake_thread)
+    worker.run
+  end
+end
