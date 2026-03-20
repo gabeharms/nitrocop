@@ -20,6 +20,19 @@ use crate::parse::source::SourceFile;
 /// expected=1,446, actual=1,477, CI baseline=1,445, raw excess=31,
 /// missing=0, file-drop noise=45. The rerun passes against the CI baseline
 /// once that existing parser-crash noise is applied.
+///
+/// ## Corpus investigation (2026-03-19)
+///
+/// FP=1 root cause:
+/// - RuboCop's semicolon escape checks only the trailing segment from the last
+///   block child to the closing delimiter (`node.children.compact.last...join`),
+///   not the entire line. In corpus code like:
+///   `Module.new {\n  def self.release\n    "1.0"\n  end; }`
+///   the relevant trailing segment is just `; }`, so RuboCop accepts it.
+///   Nitrocop was checking from the start of the line, seeing `end; }`, and
+///   reporting a false positive. Fixed by deriving the trailing segment from
+///   the block's last body expression (or block params when there is no body)
+///   before applying the `; end` / `; }` escape.
 pub struct BlockEndNewline;
 
 impl Cop for BlockEndNewline {
@@ -67,7 +80,7 @@ impl Cop for BlockEndNewline {
         let before_close = &bytes[pos..closing_loc.start_offset()];
         let begins_line = before_close.iter().all(|&b| b == b' ' || b == b'\t');
 
-        if begins_line || begins_with_allowed_semicolon(before_close) {
+        if begins_line || has_allowed_semicolon_escape(node, bytes, closing_loc.start_offset()) {
             return;
         }
 
@@ -84,16 +97,57 @@ impl Cop for BlockEndNewline {
     }
 }
 
-fn begins_with_allowed_semicolon(before_close: &[u8]) -> bool {
-    let Some(first_non_whitespace) = before_close
+fn has_allowed_semicolon_escape(
+    node: &ruby_prism::Node<'_>,
+    bytes: &[u8],
+    closing_start: usize,
+) -> bool {
+    let Some(trailing_start) = trailing_segment_start_offset(node) else {
+        return false;
+    };
+    if trailing_start >= closing_start {
+        return false;
+    }
+
+    let trailing = &bytes[trailing_start..closing_start];
+    let Some(first_non_whitespace) = trailing
         .iter()
-        .position(|&b| !matches!(b, b' ' | b'\t'))
+        .position(|&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
     else {
         return false;
     };
 
-    let trimmed = &before_close[first_non_whitespace..];
-    trimmed.starts_with(b";") && trimmed[1..].iter().all(|&b| matches!(b, b' ' | b'\t'))
+    trailing[first_non_whitespace..].starts_with(b";")
+}
+
+fn trailing_segment_start_offset(node: &ruby_prism::Node<'_>) -> Option<usize> {
+    if let Some(block_node) = node.as_block_node() {
+        if let Some(body) = block_node.body() {
+            return Some(last_expression_end_offset(&body));
+        }
+        if let Some(params) = block_node.parameters() {
+            return Some(params.location().end_offset());
+        }
+    } else if let Some(lambda_node) = node.as_lambda_node() {
+        if let Some(body) = lambda_node.body() {
+            return Some(last_expression_end_offset(&body));
+        }
+        if let Some(params) = lambda_node.parameters() {
+            return Some(params.location().end_offset());
+        }
+    }
+
+    None
+}
+
+fn last_expression_end_offset(node: &ruby_prism::Node<'_>) -> usize {
+    if let Some(stmts) = node.as_statements_node() {
+        if let Some(last) = stmts.body().last() {
+            return last_expression_end_offset(&last);
+        }
+    }
+
+    node.location().end_offset()
 }
 
 #[cfg(test)]

@@ -19,3 +19,8 @@ end
 -> {
   foo
 ; }
+
+Module.new {
+  def self.release
+    "1.0"
+  end; }
