@@ -198,9 +198,7 @@ fn is_array_new_send(call: &ruby_prism::CallNode<'_>) -> bool {
         // `::Array.new` — receiver is ConstantPathNode with nil parent and "Array" name
         if let Some(const_path) = receiver.as_constant_path_node() {
             if const_path.parent().is_none() {
-                return const_path
-                    .name()
-                    .is_some_and(|n| n.as_slice() == b"Array");
+                return const_path.name().is_some_and(|n| n.as_slice() == b"Array");
             }
         }
     }
