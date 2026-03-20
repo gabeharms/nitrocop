@@ -25,6 +25,19 @@ use crate::parse::source::SourceFile;
 /// detection of inner nested `expect` calls. RuboCop's `def_node_search` finds
 /// ALL matching nodes in the subtree. Fix: continue recursion after reporting
 /// an offense instead of returning early.
+///
+/// ## Corpus investigation (2026-03-20)
+///
+/// FP=0, FN=4 (2 from pakyow/pakyow, 2 from shoes/shoes4).
+///
+/// **pakyow FN=2:** `let :error do ... rescue => error; expect(error)... end` —
+/// `BeginNode` handler only recursed into `statements()` (the body before rescue),
+/// not `rescue_clause()`. The `expect` was inside the rescue clause body.
+/// Fix: recurse into `begin_node.rescue_clause()` and `ensure_clause()`.
+///
+/// **shoes4 FN=2:** `let(:klazz) do Class.new(Base) { def visit_me; expect(...); end } end` —
+/// `expect` inside `DefNode` (method definition) within a class body within a let block.
+/// `find_expects_in_node` did not handle `DefNode`. Fix: add `DefNode` recursion.
 pub struct ExpectInLet;
 
 /// Expectation methods to flag inside let blocks.
@@ -191,16 +204,22 @@ fn find_expects_in_node(
         if let Some(stmts) = begin_node.statements() {
             find_expects_in_node(&stmts.as_node(), source, cop, diagnostics);
         }
+        if let Some(rescue_clause) = begin_node.rescue_clause() {
+            find_expects_in_node(&rescue_clause.as_node(), source, cop, diagnostics);
+        }
+        if let Some(ensure_clause) = begin_node.ensure_clause() {
+            find_expects_in_node(&ensure_clause.as_node(), source, cop, diagnostics);
+        }
         return;
     }
     if let Some(rescue_node) = node.as_rescue_node() {
-        // Recurse into the rescue body (statements before rescue clauses)
+        // Recurse into the rescue clause body
         if let Some(stmts) = rescue_node.statements() {
             find_expects_in_node(&stmts.as_node(), source, cop, diagnostics);
         }
-        // Recurse into each rescue clause
-        for exception in rescue_node.exceptions().iter() {
-            find_expects_in_node(&exception, source, cop, diagnostics);
+        // Recurse into chained rescue clauses (rescue A => ... rescue B => ...)
+        if let Some(consequent) = rescue_node.subsequent() {
+            find_expects_in_node(&consequent.as_node(), source, cop, diagnostics);
         }
         return;
     }
@@ -264,6 +283,13 @@ fn find_expects_in_node(
     if let Some(or_node) = node.as_or_node() {
         find_expects_in_node(&or_node.left(), source, cop, diagnostics);
         find_expects_in_node(&or_node.right(), source, cop, diagnostics);
+        return;
+    }
+    // DefNode — expect inside method definitions within let bodies (e.g., Class.new { def foo; expect(...); end })
+    if let Some(def_node) = node.as_def_node() {
+        if let Some(body) = def_node.body() {
+            find_expects_in_node(&body, source, cop, diagnostics);
+        }
         return;
     }
     // Lambda literal

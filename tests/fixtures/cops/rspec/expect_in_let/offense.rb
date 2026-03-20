@@ -45,3 +45,34 @@ let(:nested_expect) do
     end.not_to update_index(DummiesIndex)
   end
 end
+let :symbol_syntax do
+  expect(value).to eq(1)
+  ^^^^^^ RSpec/ExpectInLet: Do not use `expect` in let
+end
+let :rescue_symbol do
+  begin
+    fail "something went wrong"
+  rescue => error
+    expect(error).to receive(:backtrace).and_return([])
+    ^^^^^^ RSpec/ExpectInLet: Do not use `expect` in let
+    error
+  end
+end
+let(:with_def) do
+  Class.new(Base) do
+    include RSpec::Matchers
+    def visit_me
+      expect(location).to eq '/visit_me'
+      ^^^^^^ RSpec/ExpectInLet: Do not use `expect` in let
+    end
+  end
+end
+let!(:with_def_bang) do
+  Class.new(Base) do
+    include RSpec::Matchers
+    def check_value
+      expect(self).to respond_to :something
+      ^^^^^^ RSpec/ExpectInLet: Do not use `expect` in let
+    end
+  end
+end
