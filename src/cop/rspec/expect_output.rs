@@ -177,8 +177,15 @@ impl<'pr> Visit<'pr> for ExpectOutputVisitor<'_> {
         ruby_prism::visit_call_node(self, node);
     }
 
-    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {
-        // Skip method definitions — assignments inside defs are not in example scope
+    fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+        // Method definitions are NOT example scope themselves, but they may
+        // contain hooks/examples (e.g., `def capture_output!; around do ...`).
+        // Reset in_example_scope to false and continue traversal so that any
+        // hooks or examples nested inside the def are still detected.
+        let old = self.in_example_scope;
+        self.in_example_scope = false;
+        ruby_prism::visit_def_node(self, node);
+        self.in_example_scope = old;
     }
 }
 

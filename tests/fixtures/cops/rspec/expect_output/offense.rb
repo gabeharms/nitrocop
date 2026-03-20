@@ -78,3 +78,16 @@ it 'reassigns stdout as first target' do
   $stdout, @old = StringIO.new, $stdout
   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ RSpec/ExpectOutput: Use `expect { ... }.to output(...).to_stdout` instead of mutating $stdout.
 end
+
+# Assignment inside an around hook nested in a method definition
+def capture_output!(variable)
+  around do |example|
+    @captured_stream = StringIO.new
+    original_stream = $stdout
+    $stdout = @captured_stream
+    ^^^^^^^ RSpec/ExpectOutput: Use `expect { ... }.to output(...).to_stdout` instead of mutating $stdout.
+    example.run
+    $stdout = original_stream
+    ^^^^^^^ RSpec/ExpectOutput: Use `expect { ... }.to output(...).to_stdout` instead of mutating $stdout.
+  end
+end
