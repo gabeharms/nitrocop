@@ -33,6 +33,18 @@ use crate::parse::source::SourceFile;
 /// excludes digits 0-9 from valid escape chars: `\\[^AbBdDgGhHkpPRwWXsSzZ0-9]`. Our
 /// `is_deterministic_single_char_regex` was missing `0-9`, `g`, `k`, `X` from its exclusion
 /// list. Fixed by adding those to the match arm that rejects non-literal escape sequences.
+///
+/// ## Corpus investigation (2026-03-20)
+///
+/// Extended corpus oracle reported FP=4 (3 cop logic, 1 vendored-path infrastructure).
+///
+/// FP=3: Braced unicode escapes `\u{2028}`, `\u{000c}`, `\u{a0}` in regex patterns.
+/// RuboCop's LITERAL_REGEX only accepts `\\u[\da-fA-F]{4}` (4-digit form `\uXXXX`),
+/// not the braced form `\u{XXXX}`. Fixed by returning false for braced unicode escapes
+/// in `is_deterministic_single_char_regex`.
+///
+/// FP=1: `gsub( / /, "_" )` in `databasically__lowdown` from vendored path
+/// (`vendor/rails/...`) — file-exclusion infrastructure issue, not fixable per-cop.
 pub struct StringReplacement;
 
 impl Cop for StringReplacement {
@@ -211,22 +223,18 @@ fn is_deterministic_single_char_regex(regex: ruby_prism::RegularExpressionNode<'
                     | b'k'
                     | b'X'
                     | b'0'..=b'9' => return false,
-                    // Unicode escape: \uXXXX or \u{...} — counts as one char
+                    // Unicode escape: \uXXXX — counts as one char.
+                    // RuboCop's LITERAL_REGEX only accepts \\u[\da-fA-F]{4} (4-digit form),
+                    // NOT the braced form \u{XXXX}.
                     b'u' => {
                         i += 2;
                         if i < content.len() && content[i] == b'{' {
-                            // \u{XXXX} form
-                            while i < content.len() && content[i] != b'}' {
-                                i += 1;
-                            }
-                            if i < content.len() {
-                                i += 1; // skip '}'
-                            }
-                        } else {
-                            // \uXXXX form — skip 4 hex digits
-                            let end = std::cmp::min(i + 4, content.len());
-                            i = end;
+                            // \u{XXXX} braced form — not accepted by RuboCop
+                            return false;
                         }
+                        // \uXXXX form — skip 4 hex digits
+                        let end = std::cmp::min(i + 4, content.len());
+                        i = end;
                         char_count += 1;
                         continue;
                     }
