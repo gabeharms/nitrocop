@@ -43,6 +43,17 @@ use crate::parse::source::SourceFile;
 ///   (multi-statement block bodies). Prism uses `BeginNode`. ExampleFinder descended
 ///   into it. Fix: override `visit_begin_node` in ExampleFinder to skip.
 /// - Constant-only groups and conditional-skip patterns also matched these root causes.
+///
+/// ## Corpus investigation (2026-03-20, second pass)
+///
+/// FP=0, FN=1.
+///
+/// FN=1: `describe '#to_type'` containing only `FORMATS = {...}.each do |f,t| it ... end`.
+/// The `ExampleFinder` descended into `ConstantWriteNode` and found `it` inside the
+/// chained `.each` block, incorrectly treating the group as non-empty. RuboCop's
+/// `examples?` pattern only matches direct children of the body (`send`, `block`),
+/// not `casgn` (constant assignment). Fix: override `visit_constant_write_node` in
+/// `ExampleFinder` to skip, matching RuboCop's behavior.
 pub struct EmptyExampleGroup;
 
 impl Cop for EmptyExampleGroup {
@@ -247,6 +258,17 @@ impl<'pr> Visit<'pr> for ExampleFinder {
     fn visit_begin_node(&mut self, _node: &ruby_prism::BeginNode<'pr>) {
         // Skip — examples inside explicit begin..end don't count
     }
+
+    // Don't descend into constant assignments. RuboCop's `examples?` pattern
+    // only matches direct children of the example group body (send, block nodes).
+    // A constant assignment like `FORMATS = {...}.each { |k,v| it ... }` is a
+    // `casgn` in RuboCop's AST, which doesn't match any of the example patterns.
+    // Without this, ExampleFinder descends into the value expression, finds
+    // `it` inside the chained `.each` block, and incorrectly treats the group
+    // as non-empty.
+    fn visit_constant_write_node(&mut self, _node: &ruby_prism::ConstantWriteNode<'pr>) {
+        // Skip — examples inside constant assignments don't make the group non-empty
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +284,6 @@ mod tests {
         scenario_def_self_example_factory = "def_self_example_factory.rb",
         scenario_lambda_with_examples = "lambda_with_examples.rb",
         scenario_begin_block_with_examples = "begin_block_with_examples.rb",
+        scenario_constant_only = "constant_only.rb",
     );
 }
