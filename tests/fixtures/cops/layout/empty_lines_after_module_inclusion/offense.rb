@@ -100,3 +100,81 @@ module Helpers
   ^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
   def setup; end
 end
+
+# include before rescue clause still needs a separating blank line
+begin
+  extend DynamicBehavior
+  ^^^^^^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+rescue NameError
+  use_fallback
+end
+
+# rescue-modified include breaks the inclusion group
+class Legacy
+  include Serializable rescue NameError
+  ^^^^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+  include Comparable
+
+  def setup; end
+end
+
+# rescue-modified include is not grouped with adjacent includes on either side
+class Windows
+  include ShellOut
+  ^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+  include Error rescue LoadError
+  ^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+  include Constants
+
+  AUTO_START = "auto".freeze
+end
+
+# include inside a nested block within a single-statement if body should still be checked
+if windows?
+  do_work do
+    mod = Module.new do
+      extend FFI::Library
+      ^^^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+      ffi_lib "c"
+    end
+
+    mod.ffi_libraries
+  end
+end
+
+# single-statement blocks should not suppress nested begin/rescue bodies
+klass.class_eval do
+  begin
+    include Submodule
+    ^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+  rescue NameError
+  end
+end
+
+# single-statement blocks should not suppress nested if bodies
+included do
+  if defined?(ActionController::StrongParameters)
+    include ActionController::StrongParameters
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+    map_error! ActionController::ParameterMissing, RocketPants::BadRequest
+  end
+end
+
+# single-statement blocks should not suppress nested def bodies
+class_methods do
+  def enable_url_helpers
+    include Rails.application.routes.url_helpers
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+    Rails.application.routes.default_url_options[:host] = "example.com"
+  end
+end
+
+# single-statement if bodies should not suppress nested begin/rescue bodies
+if !ENV["CI"]
+  begin
+    include SimpleCovHelper
+    ^^^^^^^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAfterModuleInclusion: Add an empty line after module inclusion.
+    start_simple_cov("suite")
+  rescue LoadError
+  end
+end

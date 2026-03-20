@@ -25,8 +25,8 @@ use crate::parse::source::SourceFile;
 /// - Whitespace-only lines after an inclusion should count as blank.
 /// - Inline/same-line continuations like `class A; include M; end` should not
 ///   require a synthetic blank line.
-/// - Structural/clause followers such as `})`, `else`, `rescue`, `ensure`,
-///   `elsif`, and `when` should be treated as allowed siblings.
+/// - Structural/clause followers such as `})`, `else`, `ensure`, `elsif`,
+///   and `when` should be treated as allowed siblings.
 ///
 /// The cop now follows RuboCop's sibling-oriented behavior instead of trying
 /// to infer a narrower "real module body" context from surrounding nodes.
@@ -48,13 +48,12 @@ use crate::parse::source::SourceFile;
 ///    `visit_rescue_modifier_node` to pass the modifier's end_offset,
 ///    bypassing the trailing-code check.
 ///
-/// ## Investigation findings (2026-03-17, FP=1, FN=43)
+/// ## Investigation findings (2026-03-17, 2026-03-20, FP=1, FN=43)
 ///
-/// FP=1: `prepend :funcname do` in rouge-ruby/rouge treated as module
-/// inclusion. It's actually a method call with a symbol argument and block,
-/// not a module prepend. Root cause: `is_module_inclusion_line` matches
-/// bare `prepend` keyword regardless of arguments. Fix needed: check that
-/// the argument is a constant (module name), not a symbol or string.
+/// FP=1: local repro and fixture coverage on 2026-03-20 confirmed that
+/// `prepend :funcname do` in rouge is a non-inclusion block-form method call.
+/// Fix: skip include/extend/prepend calls that themselves have an attached
+/// block; they are not module inclusion declarations.
 ///
 /// FN=43 across 25 repos. Three distinct patterns:
 ///
@@ -68,18 +67,35 @@ use crate::parse::source::SourceFile;
 ///
 /// 2. **Module.new / Class.new blocks** (jruby, ffi): e.g.,
 ///    `Module.new do; extend FFI::Library; ffi_lib ...`.
-///    The `in_block_or_send` flag suppresses these because the include is
-///    inside a block. But RuboCop checks `node.parent.if_type?` and
-///    `node.parent.type?(:send, :any_block, :array)` — in Parser AST,
-///    multi-statement block bodies use `begin` parent, so `any_block?` is
-///    false. The current single-vs-multi statement heuristic may not
-///    correctly handle all Module.new block patterns.
+///    The remaining gap was not the block-body size check itself; it was
+///    `in_if_body` leaking from a single-statement `if` branch into nested
+///    blocks. Fix: reset `in_if_body` when descending into nested block/lambda
+///    bodies because their descendants are no longer direct `if` children.
 ///
-/// 3. **Consecutive includes where one has `rescue` modifier** (chef):
+/// 3. **Consecutive includes where one has `rescue` modifier or clause** (chef, sorcery):
 ///    `include X; include Y rescue LoadError; include Z` — RuboCop may
 ///    treat the `rescue` modifier as breaking the inclusion group, requiring
-///    a blank line after each individual include. Needs more investigation
-///    to confirm exact RuboCop grouping behavior with rescue modifiers.
+///    a blank line after each individual include. Confirmed with direct
+///    RuboCop repro on 2026-03-20: rescue-modified inclusions break grouping
+///    on both sides, and a `rescue` clause on the next line is NOT an allowed
+///    follower. `rescue` must not be treated as a blank-line substitute here.
+///
+/// ## Investigation findings (2026-03-20, final local pass)
+///
+/// Local TDD + corpus verification fixed the remaining stale oracle gaps:
+///
+/// - block-form pseudo-inclusions like `prepend :funcname do` are skipped
+/// - rescue modifiers and rescue clauses no longer count as grouped followers
+/// - `in_if_body` / `in_block_or_send` no longer leak through nested
+///   `begin`/`if`/`def` containers
+/// - same-line `; ...` followers are treated as real siblings
+/// - CRLF line endings no longer look like trailing code
+///
+/// `verify-cop-locations.py Layout/EmptyLinesAfterModuleInclusion` now reports
+/// FP=0 and FN=0 against the CI oracle examples. `check-cop.py --rerun` still
+/// reports aggregate excess in batch `--corpus-check` mode, but that output is
+/// within file-drop noise from parser-crash repos and no longer reflects the
+/// known exact-location mismatches for this cop.
 pub struct EmptyLinesAfterModuleInclusion;
 
 const MODULE_INCLUSION_METHODS: &[&[u8]] = &[b"include", b"extend", b"prepend"];
@@ -97,10 +113,48 @@ fn is_module_inclusion_line(trimmed: &[u8]) -> bool {
     false
 }
 
+fn strip_inline_comment(trimmed: &[u8]) -> &[u8] {
+    if let Some(pos) = trimmed.iter().position(|&b| b == b'#') {
+        &trimmed[..pos]
+    } else {
+        trimmed
+    }
+}
+
+fn contains_standalone_keyword(source: &[u8], keyword: &[u8]) -> bool {
+    source
+        .windows(keyword.len())
+        .enumerate()
+        .any(|(idx, window)| {
+            if window != keyword {
+                return false;
+            }
+
+            let before_ok = idx == 0
+                || !matches!(
+                    source[idx - 1],
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'
+                );
+            let after_idx = idx + keyword.len();
+            let after_ok = after_idx == source.len()
+                || !matches!(
+                    source[after_idx],
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'
+                );
+            before_ok && after_ok
+        })
+}
+
+fn is_groupable_inclusion_line(trimmed: &[u8]) -> bool {
+    let code = strip_inline_comment(trimmed);
+    (is_module_inclusion_line(code) || line_has_inclusion_method_call(code))
+        && !contains_standalone_keyword(code, b"rescue")
+}
+
 fn trim_leading(line: &[u8]) -> &[u8] {
     let start = line
         .iter()
-        .position(|&b| b != b' ' && b != b'\t')
+        .position(|&b| b != b' ' && b != b'\t' && b != b'\r')
         .unwrap_or(line.len());
     &line[start..]
 }
@@ -144,13 +198,11 @@ fn line_has_inclusion_method_call(trimmed: &[u8]) -> bool {
     false
 }
 
-fn is_allowed_following_line(trimmed: &[u8]) -> bool {
-    is_module_inclusion_line(trimmed)
-        || line_has_inclusion_method_call(trimmed)
+fn is_allowed_following_line(trimmed: &[u8], allow_grouped_inclusions: bool) -> bool {
+    (allow_grouped_inclusions && is_groupable_inclusion_line(trimmed))
         || starts_with_keyword(trimmed, b"end")
         || starts_with_keyword(trimmed, b"else")
         || starts_with_keyword(trimmed, b"elsif")
-        || starts_with_keyword(trimmed, b"rescue")
         || starts_with_keyword(trimmed, b"ensure")
         || starts_with_keyword(trimmed, b"when")
         || trimmed.starts_with(b"}")
@@ -158,16 +210,25 @@ fn is_allowed_following_line(trimmed: &[u8]) -> bool {
         || trimmed.starts_with(b"]")
 }
 
-fn line_has_trailing_code(source: &SourceFile, loc: &ruby_prism::Location<'_>) -> bool {
+fn trailing_code_after<'a>(source: &'a SourceFile, end_offset: usize) -> &'a [u8] {
     let bytes = source.as_bytes();
-    let end = loc.end_offset().min(bytes.len());
+    let end = end_offset.min(bytes.len());
     let line_end = bytes[end..]
         .iter()
         .position(|&b| b == b'\n')
         .map(|offset| end + offset)
         .unwrap_or(bytes.len());
     let trailing = trim_leading(&bytes[end..line_end]);
-    !trailing.is_empty() && !trailing.starts_with(b"#")
+    if trailing.starts_with(b"#") {
+        b""
+    } else {
+        trailing
+    }
+}
+
+fn same_line_following_statement(trailing: &[u8]) -> Option<&[u8]> {
+    let rest = trim_leading(trailing).strip_prefix(b";")?;
+    Some(trim_leading(rest))
 }
 
 impl Cop for EmptyLinesAfterModuleInclusion {
@@ -221,11 +282,35 @@ struct InclusionVisitor<'a> {
 }
 
 impl InclusionVisitor<'_> {
+    fn add_offense(&mut self, start_offset: usize, correction_offset: Option<usize>) {
+        let (line, col) = self.source.offset_to_line_col(start_offset);
+        self.diagnostics.push(self.cop.diagnostic(
+            self.source,
+            line,
+            col,
+            "Add an empty line after module inclusion.".to_string(),
+        ));
+        if let Some(offset) = correction_offset {
+            self.corrections.push(crate::correction::Correction {
+                start: offset,
+                end: offset,
+                replacement: "\n".to_string(),
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+        }
+    }
+
     /// Check whether a call node is an include/extend/prepend at module level.
     /// `end_offset_override` allows rescue modifiers to pass their own end offset,
     /// since `include Foo rescue Bar` has trailing code after the call but before
     /// the rescue modifier's end.
-    fn check_call(&mut self, call: &ruby_prism::CallNode<'_>, end_offset_override: Option<usize>) {
+    fn check_call(
+        &mut self,
+        call: &ruby_prism::CallNode<'_>,
+        end_offset_override: Option<usize>,
+        allow_grouped_inclusions: bool,
+    ) {
         // Must be a bare call (no receiver)
         if call.receiver().is_some() {
             return;
@@ -233,6 +318,12 @@ impl InclusionVisitor<'_> {
 
         let method_name = call.name().as_slice();
         if !MODULE_INCLUSION_METHODS.contains(&method_name) {
+            return;
+        }
+
+        // `prepend :name do ... end` and similar block-form calls are regular
+        // method calls, not module inclusion declarations.
+        if call.block().is_some() {
             return;
         }
 
@@ -262,8 +353,21 @@ impl InclusionVisitor<'_> {
 
         // Only check for trailing code when no end_offset_override is provided
         // (rescue modifiers provide their own end offset so trailing code is expected)
-        if end_offset_override.is_none() && line_has_trailing_code(self.source, &loc) {
-            return;
+        if end_offset_override.is_none() {
+            let trailing = trailing_code_after(self.source, loc.end_offset());
+            if !trailing.is_empty() {
+                if let Some(next_same_line) = same_line_following_statement(trailing) {
+                    if next_same_line.is_empty()
+                        || next_same_line.starts_with(b"#")
+                        || is_allowed_following_line(next_same_line, allow_grouped_inclusions)
+                    {
+                        return;
+                    }
+                    self.add_offense(loc.start_offset(), None);
+                    return;
+                }
+                return;
+            }
         }
 
         // Check if the next line exists
@@ -279,7 +383,7 @@ impl InclusionVisitor<'_> {
         }
 
         let next_trimmed = trim_leading(next_line);
-        if is_allowed_following_line(next_trimmed) {
+        if is_allowed_following_line(next_trimmed, allow_grouped_inclusions) {
             return;
         }
 
@@ -304,37 +408,22 @@ impl InclusionVisitor<'_> {
                     idx += 1;
                     continue;
                 }
-                if is_allowed_following_line(line_trimmed) {
+                if is_allowed_following_line(line_trimmed, allow_grouped_inclusions) {
                     return;
                 }
                 break;
             }
         }
 
-        let (line, col) = self.source.offset_to_line_col(loc.start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
-            self.source,
-            line,
-            col,
-            "Add an empty line after module inclusion.".to_string(),
-        ));
-        // Insert a blank line after the inclusion line
-        if let Some(offset) = self.source.line_col_to_offset(last_line + 1, 0) {
-            self.corrections.push(crate::correction::Correction {
-                start: offset,
-                end: offset,
-                replacement: "\n".to_string(),
-                cop_name: self.cop.name(),
-                cop_index: 0,
-            });
-        }
+        let correction_offset = self.source.line_col_to_offset(last_line + 1, 0);
+        self.add_offense(loc.start_offset(), correction_offset);
     }
 }
 
 impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         // Check if this call is an include/extend/prepend at the right level
-        self.check_call(node, None);
+        self.check_call(node, None, true);
 
         // When descending into arguments of a call node, mark that we're
         // inside a "send" context. This prevents include/extend/prepend
@@ -369,12 +458,14 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
 
     fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
         let was = self.in_block_or_send;
+        let was_if = self.in_if_body;
         // In RuboCop, `return if node.parent&.type?(:send, :any_block, :array)`.
         // This only skips when the include's *direct parent* is a block.
         // In Prism, when a block body has multiple statements, they are children
         // of a StatementsNode, so the include's parent is NOT the block.
         // Only set in_block_or_send for single-statement block bodies.
         // For multi-statement bodies, RESET to false so nested includes are checked.
+        self.in_if_body = false;
         if let Some(body) = node.body() {
             if let Some(stmts) = body.as_statements_node() {
                 if stmts.body().len() <= 1 {
@@ -392,11 +483,14 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
             self.visit(&params);
         }
         self.in_block_or_send = was;
+        self.in_if_body = was_if;
     }
 
     fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
         let was = self.in_block_or_send;
+        let was_if = self.in_if_body;
         // Same logic as block_node: only set in_block_or_send for single-statement bodies
+        self.in_if_body = false;
         if let Some(body) = node.body() {
             if let Some(stmts) = body.as_statements_node() {
                 self.in_block_or_send = stmts.body().len() <= 1;
@@ -407,6 +501,7 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
             self.visit(&params);
         }
         self.in_block_or_send = was;
+        self.in_if_body = was_if;
     }
 
     fn visit_array_node(&mut self, node: &ruby_prism::ArrayNode<'pr>) {
@@ -467,6 +562,8 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
     // branch has exactly 1 statement (matching RuboCop's single-child parent).
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
         let was = self.in_if_body;
+        let was_block = self.in_block_or_send;
+        self.in_block_or_send = false;
 
         // Visit predicate normally
         self.visit(&node.predicate());
@@ -494,10 +591,13 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
         }
 
         self.in_if_body = was;
+        self.in_block_or_send = was_block;
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
         let was = self.in_if_body;
+        let was_block = self.in_block_or_send;
+        self.in_block_or_send = false;
 
         // Visit predicate normally
         self.visit(&node.predicate());
@@ -517,6 +617,17 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
         }
 
         self.in_if_body = was;
+        self.in_block_or_send = was_block;
+    }
+
+    fn visit_begin_node(&mut self, node: &ruby_prism::BeginNode<'pr>) {
+        let was = self.in_block_or_send;
+        let was_if = self.in_if_body;
+        self.in_block_or_send = false;
+        self.in_if_body = false;
+        ruby_prism::visit_begin_node(self, node);
+        self.in_block_or_send = was;
+        self.in_if_body = was_if;
     }
 
     // Rescue modifier: `include Foo rescue Bar` wraps the include call
@@ -528,7 +639,7 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
     fn visit_rescue_modifier_node(&mut self, node: &ruby_prism::RescueModifierNode<'pr>) {
         let expr = node.expression();
         if let Some(call) = expr.as_call_node() {
-            self.check_call(&call, Some(node.location().end_offset()));
+            self.check_call(&call, Some(node.location().end_offset()), false);
         } else {
             self.visit(&expr);
         }
@@ -536,15 +647,22 @@ impl<'pr> Visit<'pr> for InclusionVisitor<'_> {
     }
 
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+        let was_block = self.in_block_or_send;
+        let was_if = self.in_if_body;
+        self.in_block_or_send = false;
+        self.in_if_body = false;
         if let Some(body) = node.body() {
             self.visit(&body);
         }
+        self.in_block_or_send = was_block;
+        self.in_if_body = was_if;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(
         EmptyLinesAfterModuleInclusion,
@@ -554,4 +672,52 @@ mod tests {
         EmptyLinesAfterModuleInclusion,
         "cops/layout/empty_lines_after_module_inclusion"
     );
+
+    #[test]
+    fn same_line_class_body_is_checked() {
+        let diagnostics = run_cop_full(
+            &EmptyLinesAfterModuleInclusion,
+            b"class << obj\n  class A; def foo; 1; end; end\n  module B; end\n  class C < A; include B; def bar; foo; end; end\n  result = C.new.bar\nend\n",
+        );
+
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diag| (diag.location.line, diag.location.column))
+                .collect::<Vec<_>>(),
+            vec![(4, 15)]
+        );
+    }
+
+    #[test]
+    fn same_line_brace_block_body_is_checked() {
+        let diagnostics = run_cop_full(
+            &EmptyLinesAfterModuleInclusion,
+            b"mod = Module.new do\n  include BeanLikeInterface\nend\nchild = Class.new(Object) { include java.lang.Cloneable; def get_value; 1; end }\nchild.new\n",
+        );
+
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diag| (diag.location.line, diag.location.column))
+                .collect::<Vec<_>>(),
+            vec![(4, 28)]
+        );
+    }
+
+    #[test]
+    fn crlf_line_endings_do_not_count_as_trailing_code() {
+        let diagnostics = run_cop_full(
+            &EmptyLinesAfterModuleInclusion,
+            b"class DelimScanner\r\n  extend Forwardable\r\n  StringScanner.must_C_version\r\nend\r\n",
+        );
+
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diag| (diag.location.line, diag.location.column))
+                .collect::<Vec<_>>(),
+            vec![(2, 2)]
+        );
+    }
 }

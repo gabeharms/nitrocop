@@ -65,13 +65,6 @@ else
   disable_feature
 end
 
-# extend before rescue is allowed
-begin
-  extend DynamicBehavior
-rescue NameError
-  use_fallback
-end
-
 # include inside if/else branches (RuboCop skips when parent is if_type?)
 class Account
   if condition
@@ -162,14 +155,6 @@ def expected_items
     .and(not_include(excluded_item.uri))
 end
 
-# include with rescue modifier followed by another include (grouped)
-class Legacy
-  include Serializable rescue NameError
-  include Comparable
-
-  def setup; end
-end
-
 # include inside multi-statement if followed by empty line (no offense)
 class Config
   if RUBY_VERSION >= '1.9'
@@ -178,5 +163,20 @@ class Config
     def <=>(other)
       name <=> other.name
     end
+  end
+end
+
+module Lexer
+  prepend :classname do
+    rule %r/x/, Text
+  end
+
+  prepend :funcname do
+    rule %r/x/, Text
+  end
+  # This is a fix for the way that function calls are lexed in the Python
+  # lexer. This should be moved to the Python lexer once confirmed that it
+  # does not cause any regressions.
+  state :func_call_fix do
   end
 end
