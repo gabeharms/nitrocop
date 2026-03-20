@@ -27,6 +27,20 @@ use ruby_prism::Visit;
 /// FP=1 fix (2026-03-07): The accumulator was still leaking into nested blocks (e.g.,
 /// `.each do` inside `each_with_object`). Fixed by saving/clearing the accumulator in
 /// `visit_call_node`'s else branch for non-each_with_object blocks.
+///
+/// FP=12 fix (2026-03-20, extended corpus): Multiple value_used tracking gaps:
+/// - and/or nodes: Both children have value_used=true (RuboCop's `and`/`or` fall through
+///   to `else true` in value_used?). Added visit_and_node/visit_or_node.
+/// - super arguments: Arguments to super are value_used. Added visit_super_node.
+/// - begin/rescue: In Parser AST, rescue wraps the body and falls through to `else true`,
+///   making body statements value_used. In Prism, BeginNode holds both statements and
+///   rescue_clause directly, so visit_begin_node now sets value_used=true when rescue or
+///   ensure clauses exist.
+/// - case..in (pattern matching): CaseMatchNode wasn't handled — children are value_used
+///   in RuboCop (falls through to `else true`). Added visit_case_match_node with
+///   accumulator clearing (same as visit_case_node).
+/// - Moved incorrect begin/rescue test case from offense.rb to no_offense.rb (verified
+///   RuboCop does not flag merge! inside begin/rescue).
 pub struct RedundantMerge;
 
 impl Cop for RedundantMerge {
@@ -485,9 +499,36 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
         self.value_used = prev;
     }
 
+    fn visit_and_node(&mut self, node: &ruby_prism::AndNode<'pr>) {
+        // Both children of `and`/`&&` have their values used by the operator.
+        // In RuboCop's Parser AST, `and` falls through to `else true` in value_used?.
+        let prev = self.value_used;
+        self.value_used = true;
+        ruby_prism::visit_and_node(self, node);
+        self.value_used = prev;
+    }
+
+    fn visit_or_node(&mut self, node: &ruby_prism::OrNode<'pr>) {
+        let prev = self.value_used;
+        self.value_used = true;
+        ruby_prism::visit_or_node(self, node);
+        self.value_used = prev;
+    }
+
     fn visit_begin_node(&mut self, node: &ruby_prism::BeginNode<'pr>) {
-        // begin..end passes through value_used to its statements
-        ruby_prism::visit_begin_node(self, node);
+        // In Parser AST, begin-with-rescue wraps the body in a `rescue` node,
+        // and `rescue` falls through to `else true` in value_used?. This means
+        // the body statements of a begin/rescue have value_used = true.
+        // In Prism, BeginNode directly holds statements + rescue_clause, so we
+        // must set value_used = true when rescue/ensure is present.
+        if node.rescue_clause().is_some() || node.ensure_clause().is_some() {
+            let prev = self.value_used;
+            self.value_used = true;
+            ruby_prism::visit_begin_node(self, node);
+            self.value_used = prev;
+        } else {
+            ruby_prism::visit_begin_node(self, node);
+        }
     }
 
     fn visit_rescue_node(&mut self, node: &ruby_prism::RescueNode<'pr>) {
@@ -497,6 +538,15 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
 
     fn visit_ensure_node(&mut self, node: &ruby_prism::EnsureNode<'pr>) {
         ruby_prism::visit_ensure_node(self, node);
+    }
+
+    fn visit_super_node(&mut self, node: &ruby_prism::SuperNode<'pr>) {
+        // Arguments to super have their values used.
+        // In RuboCop's Parser AST, `super` falls through to `else true`.
+        let prev = self.value_used;
+        self.value_used = true;
+        ruby_prism::visit_super_node(self, node);
+        self.value_used = prev;
     }
 
     fn visit_case_node(&mut self, node: &ruby_prism::CaseNode<'pr>) {
@@ -515,6 +565,29 @@ impl<'pr> Visit<'pr> for RedundantMergeVisitor<'_, '_> {
             self.visit_else_node(&else_clause);
         }
         self.each_with_object_accumulator = prev_acc;
+    }
+
+    fn visit_case_match_node(&mut self, node: &ruby_prism::CaseMatchNode<'pr>) {
+        // Pattern matching case...in — clear accumulator like visit_case_node.
+        // In RuboCop's Parser AST, case_match is not listed in value_used? so
+        // it falls through to `else true`, meaning children are value_used.
+        if let Some(pred) = node.predicate() {
+            let prev = self.value_used;
+            self.value_used = true;
+            self.visit(&pred);
+            self.value_used = prev;
+        }
+        let prev = self.value_used;
+        self.value_used = true;
+        let prev_acc = self.each_with_object_accumulator.take();
+        for condition in node.conditions().iter() {
+            self.visit(&condition);
+        }
+        if let Some(else_clause) = node.else_clause() {
+            self.visit_else_node(&else_clause);
+        }
+        self.each_with_object_accumulator = prev_acc;
+        self.value_used = prev;
     }
 
     fn visit_interpolated_string_node(&mut self, node: &ruby_prism::InterpolatedStringNode<'pr>) {

@@ -57,3 +57,24 @@ record_classes.each_with_object({}) do |klass, hash|
     hash.merge!(name => {})
   end
 end
+# merge! inside and/or expression — return value consumed by logical operator
+@files.get(identifier, :xml) and
+  ret.merge!(passthrough: true)
+check_something or opts.merge!(fallback: true)
+# merge! as argument to super — return value used
+super(app, options.merge!(cookie_only: true))
+# merge! inside begin/rescue — rescue makes body value_used in Parser AST
+begin
+  attributes.merge!(user_data: encode_data(data))
+rescue StandardError
+  warn("error")
+end
+# merge! inside case...in (pattern matching) inside each_with_object
+json.each_with_object({}) do |(key, value), result|
+  case value
+  in [Hash => first, *] => suggestions
+    result.merge!(key => suggestions)
+  end
+end
+# merge! result used in ternary (conditional expression)
+flag = ready ? opts.merge!(debug: true) : opts
