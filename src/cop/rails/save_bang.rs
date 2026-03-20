@@ -266,6 +266,34 @@ use ruby_prism::Visit;
 /// - 1 FN: neo4j association_proxy_spec.rb:225 (`Lesson.create` inside `[x, create]`
 ///   inside `+=` operator — may be an oracle artifact since `+=` RHS array isn't tracked
 ///   by VariableForce's `right_assignment_node`).
+///
+/// ## Corpus investigation (2026-03-20)
+///
+/// Oracle: FP=5, FN=1 (99.98% match rate on 32,755 offenses).
+///
+/// **FP fix: cross-scope persisted? detection (1 FP fixed).**
+/// discourse topic.rb:1112: `if (new_post = creator.create) && new_post.present?` with
+/// `new_post.persisted?` in the if body. The `should_suppress_create` mechanism only
+/// scanned direct statement children, missing assignments nested in if predicates.
+/// **Fix:** Added pre-scan (`CreateVarFinder` visitor + `suppressed_create_vars` set)
+/// that searches entire scope bodies for local variable create assignments with persisted?
+/// references anywhere in the same scope, including inside compound expressions.
+///
+/// **FN fix: operator_write void context (1 FN fixed).**
+/// neo4j association_proxy_spec.rb:225: `Lesson.create` inside array inside `+=`.
+/// RuboCop's `assignable_node` doesn't handle `op_asgn`, so persist calls in
+/// operator-write values are void context, not assignment.
+/// **Fix:** Changed all `*OperatorWriteNode` visitors from Assignment to VoidStatement.
+/// Also added receiver visiting in `CallOperatorWriteNode` to flag persist calls in
+/// receiver chains (e.g., `Student.create.lessons += [...]`).
+///
+/// **Remaining (4 FP, 0 FN):**
+/// - discourse export_csv_file.rb:85: create in local var, variable referenced but no
+///   persisted? check. RuboCop behavior unclear — may be corpus config artifact.
+/// - redmine project.rb:928/953: bare `save` in if body. Both tools should flag this
+///   based on source analysis; likely corpus config artifact.
+/// - taps operation.rb:510: `Taps::Multipart.create` in multi_write. Appears exempted
+///   by Assignment context (in_local_assignment=false); likely corpus config artifact.
 pub struct SaveBang;
 
 /// Modify-type persistence methods whose return value indicates success/failure.
@@ -374,6 +402,8 @@ impl Cop for SaveBang {
             in_local_assignment: false,
             in_compound_boolean: false,
             in_transparent_container: false,
+            suppressed_create_vars: Vec::new(),
+            current_local_var_name: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -404,6 +434,15 @@ struct SaveBangVisitor<'a, 'src> {
     /// not the enclosing assignment/argument. So block-bearing calls inside transparent
     /// containers lose their parent's exemption and are treated as void context.
     in_transparent_container: bool,
+    /// Variable names where create-in-assignment is suppressed because persisted? is checked
+    /// somewhere in the same scope. Pre-computed at scope entry to handle cases where the
+    /// create is nested inside compound expressions (if predicates, and/or nodes) and the
+    /// persisted? check is in a different branch of the same statement.
+    suppressed_create_vars: Vec<Vec<u8>>,
+    /// The name of the local variable currently being assigned (set inside
+    /// visit_local_variable_write_node). Used by process_persist_call to check
+    /// the suppressed_create_vars set.
+    current_local_var_name: Option<Vec<u8>>,
 }
 
 impl SaveBangVisitor<'_, '_> {
@@ -817,7 +856,16 @@ impl SaveBangVisitor<'_, '_> {
                 // only tracks locals; ivar/cvar/gvar assignments are treated as
                 // "return value used" by return_value_assigned? in on_send.
                 if is_create && !self.suppress_create_assignment && self.in_local_assignment {
-                    self.flag_create_assignment(call);
+                    // Also check the pre-scanned suppressed_create_vars set.
+                    // This handles nested patterns where the assignment is inside
+                    // compound expressions (if predicates, and/or nodes).
+                    let suppressed_by_scope = self
+                        .current_local_var_name
+                        .as_ref()
+                        .is_some_and(|name| self.suppressed_create_vars.contains(name));
+                    if !suppressed_by_scope {
+                        self.flag_create_assignment(call);
+                    }
                 }
             }
             Some(Context::Condition) => {
@@ -853,6 +901,27 @@ impl SaveBangVisitor<'_, '_> {
         let body: Vec<_> = node.body().iter().collect();
         let len = body.len();
 
+        // Pre-scan: find local variable create assignments where persisted? is checked
+        // anywhere in this scope. This handles nested patterns like:
+        //   if (record = Creator.create(opts)) && record.present?
+        //     increment if record.persisted?
+        //   end
+        // where the create is inside an if predicate and persisted? is in the body.
+        let saved_suppressed = std::mem::take(&mut self.suppressed_create_vars);
+        for stmt in body.iter() {
+            let mut finder = CreateVarFinder { found: Vec::new() };
+            finder.visit(stmt);
+            for var_name in finder.found {
+                // Search ALL statements in this scope for persisted? on this variable
+                let has_persisted = body
+                    .iter()
+                    .any(|s| Self::subtree_checks_persisted(s, &var_name));
+                if has_persisted {
+                    self.suppressed_create_vars.push(var_name);
+                }
+            }
+        }
+
         for (i, stmt) in body.iter().enumerate() {
             let is_last = i == len - 1;
 
@@ -879,6 +948,8 @@ impl SaveBangVisitor<'_, '_> {
                 self.suppress_create_assignment = false;
             }
         }
+
+        self.suppressed_create_vars = saved_suppressed;
     }
 }
 
@@ -914,6 +985,34 @@ impl<'pr> Visit<'pr> for PersistedFinder<'_> {
         }
         // Continue visiting children
         ruby_prism::visit_call_node(self, node);
+    }
+}
+
+/// A visitor that finds local variable names assigned to create call results.
+/// Used for pre-scanning scope bodies to identify variables that may have
+/// persisted? checked later, even when the assignment is nested inside compound
+/// expressions (if predicates, and/or nodes, etc.).
+struct CreateVarFinder {
+    found: Vec<Vec<u8>>,
+}
+
+impl CreateVarFinder {
+    fn value_is_create(node: &ruby_prism::Node<'_>) -> bool {
+        if let Some(call) = node.as_call_node() {
+            let name = call.name().as_slice();
+            return CREATE_PERSIST_METHODS.contains(&name);
+        }
+        false
+    }
+}
+
+impl<'pr> Visit<'pr> for CreateVarFinder {
+    fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
+        if Self::value_is_create(&node.value()) {
+            self.found.push(node.name().as_slice().to_vec());
+        }
+        // Continue visiting children for nested assignments
+        ruby_prism::visit_local_variable_write_node(self, node);
     }
 }
 
@@ -1138,9 +1237,12 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
 
     fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
         self.in_local_assignment = true;
+        let saved_var = self.current_local_var_name.take();
+        self.current_local_var_name = Some(node.name().as_slice().to_vec());
         self.context_stack.push(Context::Assignment);
         self.visit(&node.value());
         self.context_stack.pop();
+        self.current_local_var_name = saved_var;
         self.in_local_assignment = false;
     }
 
@@ -1298,7 +1400,8 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
         &mut self,
         node: &ruby_prism::ConstantPathOperatorWriteNode<'pr>,
     ) {
-        self.context_stack.push(Context::Assignment);
+        // RuboCop's assignable_node doesn't handle op_asgn
+        self.context_stack.push(Context::VoidStatement);
         self.visit(&node.value());
         self.context_stack.pop();
     }
@@ -1316,13 +1419,24 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
     }
 
     fn visit_index_operator_write_node(&mut self, node: &ruby_prism::IndexOperatorWriteNode<'pr>) {
-        self.context_stack.push(Context::Assignment);
+        // RuboCop's assignable_node doesn't handle op_asgn
+        self.context_stack.push(Context::VoidStatement);
         self.visit(&node.value());
         self.context_stack.pop();
     }
 
     fn visit_call_operator_write_node(&mut self, node: &ruby_prism::CallOperatorWriteNode<'pr>) {
-        self.context_stack.push(Context::Assignment);
+        // Visit receiver (e.g., Student.create in Student.create.lessons += [...])
+        // Receiver is in void context — the persist call's return value is used as
+        // a receiver of the read method, not meaningfully checked.
+        if let Some(receiver) = node.receiver() {
+            self.context_stack.push(Context::VoidStatement);
+            self.visit(&receiver);
+            self.context_stack.pop();
+        }
+        // RuboCop's assignable_node doesn't handle op_asgn — persist calls in
+        // operator-write values are treated as void context, not assignment.
+        self.context_stack.push(Context::VoidStatement);
         self.visit(&node.value());
         self.context_stack.pop();
     }
@@ -1339,13 +1453,15 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
         self.context_stack.pop();
     }
 
-    // ── Operator-write nodes (+=, -=, etc.): RHS is assignment context ──
+    // ── Operator-write nodes (+=, -=, etc.): RHS is void context ──
+    // RuboCop's assignable_node doesn't handle op_asgn, so persist calls
+    // in operator-write values are NOT treated as assigned — they're flagged.
 
     fn visit_local_variable_operator_write_node(
         &mut self,
         node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
     ) {
-        self.context_stack.push(Context::Assignment);
+        self.context_stack.push(Context::VoidStatement);
         self.visit(&node.value());
         self.context_stack.pop();
     }
@@ -1354,7 +1470,7 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
         &mut self,
         node: &ruby_prism::InstanceVariableOperatorWriteNode<'pr>,
     ) {
-        self.context_stack.push(Context::Assignment);
+        self.context_stack.push(Context::VoidStatement);
         self.visit(&node.value());
         self.context_stack.pop();
     }
@@ -1363,7 +1479,7 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
         &mut self,
         node: &ruby_prism::ClassVariableOperatorWriteNode<'pr>,
     ) {
-        self.context_stack.push(Context::Assignment);
+        self.context_stack.push(Context::VoidStatement);
         self.visit(&node.value());
         self.context_stack.pop();
     }
@@ -1372,7 +1488,7 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
         &mut self,
         node: &ruby_prism::GlobalVariableOperatorWriteNode<'pr>,
     ) {
-        self.context_stack.push(Context::Assignment);
+        self.context_stack.push(Context::VoidStatement);
         self.visit(&node.value());
         self.context_stack.pop();
     }

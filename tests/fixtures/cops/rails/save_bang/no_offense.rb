@@ -170,12 +170,6 @@ label ||= Project.create(title: params[:title])
 # CREATE in &&= assignment (same as ||=)
 record &&= User.create(name: 'Joe')
 
-# Operator-write assignment (+=, -=, etc.) — return value is used
-def process
-  packet += cipher.update(data)
-  nil
-end
-
 # Persist call with block argument: create(hash, &block) has 2 args → not expected_signature
 Model.create(name: 'Joe', &block)
 
@@ -251,3 +245,18 @@ Person.find_by(handle: id) || Person.new(key: key, pod: Pod.find_or_create_by(ur
 # Assignment inside assert — persisted? checked on next statement
 assert version = parent.versions.create(name: 'test', sharing: 'descendants')
 assert version.persisted?
+
+# CREATE in local assignment inside && in if predicate, with persisted? in if-body
+# (RuboCop: return_value_assigned? catches lvasgn parent, VariableForce finds persisted?)
+def create_in_and_predicate
+  if (record = Creator.create(opts)) && record.present?
+    increment if record.persisted?
+  end
+  nil
+end
+
+# Multi-write with create and block (return value assigned via masgn)
+# RuboCop: assignable_node climbs block → parent is masgn → assignment? true
+content, content_type = Formatter.create do |r|
+  r.attach name: :data
+end

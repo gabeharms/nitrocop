@@ -258,3 +258,16 @@ items.map { |v| Gem::Version.create(v) or raise }
 s = DomainSetup.create(domain: "x")
                 ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked. Or check `persisted?` on model returned from `create`.
 s if s&.persisted?
+
+# Operator-write (+=, -=, etc.): RuboCop's assignable_node doesn't handle op_asgn
+# So persist calls inside operator-write values are flagged as void context.
+def process_operator_write
+  packet += cipher.update(data)
+                   ^^^^^^ Rails/SaveBang: Use `update!` instead of `update` if the return value is not checked.
+  nil
+end
+
+# CREATE inside array inside += (CallOperatorWriteNode) — void context
+Student.create.lessons += [science, Lesson.create]
+        ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.
+                                           ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked.

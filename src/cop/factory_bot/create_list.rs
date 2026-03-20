@@ -26,11 +26,11 @@ use crate::parse::source::SourceFile;
 ///   NOT a method call → RuboCop flags it
 /// - `customer:` without local var → Parser sees `(send nil :customer)` →
 ///   IS a method call → `arguments_include_method_call?` skips it
-/// In Prism, both cases use `ImplicitNode`, but the inner value differs:
-/// `ImplicitNode { LocalVariableReadNode }` vs `ImplicitNode { CallNode }`.
-/// Fix: removed blanket `has_any_value_omission` check, added `ImplicitNode`
-/// unwrapping to `contains_send_node` so it correctly detects method calls
-/// inside value omission. This matches RuboCop exactly (265/265 on corpus).
+///   In Prism, both cases use `ImplicitNode`, but the inner value differs:
+///   `ImplicitNode { LocalVariableReadNode }` vs `ImplicitNode { CallNode }`.
+///   Fix: removed blanket `has_any_value_omission` check, added `ImplicitNode`
+///   unwrapping to `contains_send_node` so it correctly detects method calls
+///   inside value omission. This matches RuboCop exactly (265/265 on corpus).
 pub struct CreateList;
 
 impl Cop for CreateList {
