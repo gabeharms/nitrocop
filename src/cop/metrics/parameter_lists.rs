@@ -32,6 +32,16 @@ use ruby_prism::Visit;
 ///
 /// Fix applied in this batch: directive resolution now matches short cop names
 /// in `parse::directives` (framework-level), which this cop depends on.
+///
+/// ## Corpus investigation (2026-03-20)
+///
+/// FP=9 from extended corpus: all 9 FPs were `Proc.new do |many, params|`
+/// blocks being incorrectly flagged. RuboCop's `argument_to_lambda_or_proc?`
+/// uses `^lambda_or_proc?` which matches `Proc.new` blocks. nitrocop only
+/// exempted bare `proc` and `lambda` calls (no receiver), missing `Proc.new`.
+///
+/// Fix: added `is_proc_new()` helper to detect `Proc.new` and `::Proc.new`
+/// calls, extending the `is_proc_or_lambda` check in `visit_call_node`.
 pub struct ParameterLists;
 
 impl Cop for ParameterLists {
@@ -98,6 +108,27 @@ impl<'a> ParameterListsVisitor<'a> {
         }
 
         count
+    }
+
+    /// Check if a CallNode is Proc.new or ::Proc.new
+    fn is_proc_new(call: &ruby_prism::CallNode<'_>) -> bool {
+        if call.name().as_slice() != b"new" {
+            return false;
+        }
+        if let Some(receiver) = call.receiver() {
+            if let Some(cr) = receiver.as_constant_read_node() {
+                return cr.name().as_slice() == b"Proc";
+            }
+            if let Some(cp) = receiver.as_constant_path_node() {
+                // ::Proc (parent is None for cbase)
+                if cp.parent().is_none() {
+                    if let Some(child) = cp.name() {
+                        return child.as_slice() == b"Proc";
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Check if a CallNode is Struct.new or Data.define (or ::Struct.new / ::Data.define)
@@ -191,10 +222,17 @@ impl<'pr> Visit<'pr> for ParameterListsVisitor<'_> {
         // Check if this call has a block with parameters
         if let Some(block) = node.block() {
             if let Some(block_node) = block.as_block_node() {
-                // Skip proc/lambda blocks — their params are exempt
+                // Skip proc/lambda blocks — their params are exempt.
+                // Matches RuboCop's `argument_to_lambda_or_proc?` which uses
+                // `^lambda_or_proc?`. This covers: proc {}, lambda {},
+                // Proc.new {}, and ::Proc.new {}.
                 let name = node.name();
-                let is_proc_or_lambda = node.receiver().is_none()
-                    && (name.as_slice() == b"proc" || name.as_slice() == b"lambda");
+                let name_bytes = name.as_slice();
+                let is_proc_or_lambda = if node.receiver().is_none() {
+                    name_bytes == b"proc" || name_bytes == b"lambda"
+                } else {
+                    Self::is_proc_new(node)
+                };
 
                 if !is_proc_or_lambda {
                     self.check_block_params(&block_node);

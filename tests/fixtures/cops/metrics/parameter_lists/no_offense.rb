@@ -46,3 +46,19 @@ end
   def initialize(one:, two:, three:, four:, five:, six:)
   end
 end
+
+# Proc.new block parameters are exempt (like proc/lambda)
+Proc.new { |a, b, c, d, e, f| a }
+
+Proc.new do |a, b, c, d, e, f|
+  a
+end
+
+# ::Proc.new block parameters are also exempt
+::Proc.new { |a, b, c, d, e, f| a }
+
+# Multi-line Proc.new block parameters are exempt
+Proc.new do |one, two, three,
+             four, five, six|
+  one
+end
