@@ -116,7 +116,10 @@ impl Cop for ScatteredLet {
                 let has_block_pass = c
                     .block()
                     .is_some_and(|b| b.as_block_argument_node().is_some());
-                if c.receiver().is_none() && is_rspec_let(name) && (has_block_node || has_block_pass) {
+                if c.receiver().is_none()
+                    && is_rspec_let(name)
+                    && (has_block_node || has_block_pass)
+                {
                     if seen_non_let {
                         // This let is after a non-let statement
                         let loc = stmt.location();
