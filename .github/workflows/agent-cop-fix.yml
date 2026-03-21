@@ -450,13 +450,52 @@ jobs:
               echo ""
             fi
 
-            # Agent log tail
+            # Agent conversation log (extracted from JSONL)
+            LOGFILE=$(find ~/.claude/projects -name '*.jsonl' -newer /tmp/final-task.md 2>/dev/null | head -1)
+            if [ -n "$LOGFILE" ]; then
+              echo "## Agent Conversation"
+              echo ""
+              python3 -c "
+          import json, sys
+          for line in open(sys.argv[1]):
+              try:
+                  ev = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if ev.get('type') != 'assistant':
+                  continue
+              for block in ev.get('message', {}).get('content', []):
+                  if block.get('type') == 'text' and block.get('text', '').strip():
+                      print(block['text'].strip())
+                      print()
+                  elif block.get('type') == 'tool_use':
+                      name = block.get('name', '?')
+                      inp = block.get('input', {})
+                      if name == 'Bash':
+                          cmd = inp.get('command', '')
+                          print(f'> \`{name}\`: \`{cmd[:200]}\`')
+                      elif name in ('Read', 'Glob', 'Grep'):
+                          arg = inp.get('file_path') or inp.get('pattern') or ''
+                          print(f'> \`{name}\`: \`{arg[:200]}\`')
+                      elif name == 'Edit':
+                          fp = inp.get('file_path', '')
+                          print(f'> \`{name}\`: \`{fp}\`')
+                      else:
+                          print(f'> \`{name}\`')
+                      print()
+          " "$LOGFILE" 2>/dev/null | head -500
+              echo ""
+            fi
+
+            # Agent stderr log tail
             if [ -s /tmp/agent.log ]; then
-              echo "## Agent Log (last 30 lines)"
+              echo "<details>"
+              echo "<summary>Agent stderr (last 30 lines)</summary>"
               echo ""
               echo '```'
               tail -30 /tmp/agent.log
               echo '```'
+              echo "</details>"
             fi
           } > /tmp/summary.md
 
