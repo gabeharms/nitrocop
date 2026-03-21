@@ -1391,7 +1391,17 @@ fn load_config_recursive_inner(
                         if fallback.exists() {
                             match load_config_recursive(&fallback, working_dir, visited, gem_cache)
                             {
-                                Ok(layer) => merge_layer_into(&mut base_layer, &layer, None),
+                                Ok(mut layer) => {
+                                    let fb_config_dir = fallback.parent().unwrap_or(&gem_root);
+                                    make_excludes_absolute(
+                                        &mut layer.global_excludes,
+                                        fb_config_dir,
+                                    );
+                                    for cop_cfg in layer.cop_configs.values_mut() {
+                                        make_excludes_absolute(&mut cop_cfg.exclude, fb_config_dir);
+                                    }
+                                    merge_layer_into(&mut base_layer, &layer, None);
+                                }
                                 Err(e) => {
                                     eprintln!(
                                         "warning: failed to load default config for {}: {e:#}",
@@ -1404,7 +1414,20 @@ fn load_config_recursive_inner(
                     continue;
                 }
                 match load_config_recursive(&config_file, working_dir, visited, gem_cache) {
-                    Ok(layer) => merge_layer_into(&mut base_layer, &layer, None),
+                    Ok(mut layer) => {
+                        // RuboCop's make_excludes_absolute converts relative Exclude
+                        // patterns in gem configs to absolute paths relative to the
+                        // gem's config directory. This prevents gem-internal excludes
+                        // like `db/*schema.rb` (from rubocop-rails) from accidentally
+                        // matching project files. Without this, the pattern would match
+                        // the project's own db/schema.rb.
+                        let gem_config_dir = config_file.parent().unwrap_or(&gem_root);
+                        make_excludes_absolute(&mut layer.global_excludes, gem_config_dir);
+                        for cop_cfg in layer.cop_configs.values_mut() {
+                            make_excludes_absolute(&mut cop_cfg.exclude, gem_config_dir);
+                        }
+                        merge_layer_into(&mut base_layer, &layer, None);
+                    }
                     Err(e) => {
                         eprintln!(
                             "warning: failed to load default config for {}: {e:#}",
@@ -1580,7 +1603,16 @@ fn resolve_inherit_gem(
             );
         }
         match load_config_recursive(&full_path, working_dir, visited, gem_cache) {
-            Ok(layer) => layers.push(layer),
+            Ok(mut layer) => {
+                // Make excludes absolute relative to the gem config directory,
+                // matching RuboCop's make_excludes_absolute behavior.
+                let gem_config_dir = full_path.parent().unwrap_or(&gem_root);
+                make_excludes_absolute(&mut layer.global_excludes, gem_config_dir);
+                for cop_cfg in layer.cop_configs.values_mut() {
+                    make_excludes_absolute(&mut cop_cfg.exclude, gem_config_dir);
+                }
+                layers.push(layer);
+            }
             Err(e) => {
                 return Err(e).with_context(|| {
                     format!(
@@ -1699,6 +1731,22 @@ fn parse_config_layer(raw: &Value) -> ConfigLayer {
         target_rails_version,
         active_support_extensions_enabled,
         migrated_schema_version,
+    }
+}
+
+/// Convert relative exclude patterns to absolute paths by joining with the given
+/// config directory. This mirrors RuboCop's `Config#make_excludes_absolute`, which
+/// ensures exclude patterns from gem configs (e.g., `db/*schema.rb` in rubocop-rails)
+/// are resolved relative to the gem's config directory rather than the project root.
+/// Patterns that are already absolute or contain glob metacharacters that look like
+/// they're meant to match relative to a project (e.g., `**/*`) are left as-is only
+/// if they're already absolute.
+fn make_excludes_absolute(excludes: &mut [String], config_dir: &Path) {
+    for exc in excludes.iter_mut() {
+        let p = Path::new(exc.as_str());
+        if !p.is_absolute() {
+            *exc = config_dir.join(p).to_string_lossy().into_owned();
+        }
     }
 }
 
@@ -3652,6 +3700,29 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn make_excludes_absolute_converts_relative_paths() {
+        let mut excludes = vec![
+            "db/*schema.rb".to_string(),
+            "log/**/*".to_string(),
+            "/already/absolute/**/*".to_string(),
+        ];
+        let config_dir = Path::new("/gems/rubocop-rails-2.34.3/config");
+        make_excludes_absolute(&mut excludes, config_dir);
+        assert_eq!(
+            excludes[0], "/gems/rubocop-rails-2.34.3/config/db/*schema.rb",
+            "relative exclude should be made absolute"
+        );
+        assert_eq!(
+            excludes[1], "/gems/rubocop-rails-2.34.3/config/log/**/*",
+            "relative exclude should be made absolute"
+        );
+        assert_eq!(
+            excludes[2], "/already/absolute/**/*",
+            "absolute exclude should be left as-is"
+        );
     }
 
     #[test]
