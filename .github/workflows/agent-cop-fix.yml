@@ -42,11 +42,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # --- Rust toolchain + cache (before any file deletions) ---
+      # --- Rust toolchain + cache ---
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+
+      # Cache target/ for fast incremental builds (rust-cache only caches ~/.cargo)
+      - uses: actions/cache@v4
+        with:
+          path: target
+          key: agent-target-${{ hashFiles('Cargo.lock') }}
+          restore-keys: agent-target-
 
       # --- Fast steps ---
 
