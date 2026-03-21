@@ -102,7 +102,9 @@ jobs:
           CODEX_AUTH_JSON: ${{ github.event.inputs.backend == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
         run: |
           if [ "${{ github.event.inputs.backend }}" = "minimax" ]; then
-            claude -p --dangerously-skip-permissions "$(cat /tmp/task.md)" 2>&1 | tee /tmp/agent.log
+            claude -p --dangerously-skip-permissions \
+              --output-last-message /tmp/agent-result.md \
+              "$(cat /tmp/task.md)" 2>&1 | tee /tmp/agent.log
           else
             mkdir -p ~/.codex
             echo "$CODEX_AUTH_JSON" > ~/.codex/auth.json
@@ -116,7 +118,9 @@ jobs:
           name: agent-log-${{ github.event.inputs.cop }}
           path: |
             /tmp/agent.log
+            /tmp/agent-result.md
             /tmp/task.md
+            ~/.claude/projects/**/conversations/**/*.jsonl
           retention-days: 7
 
       # --- Validate + PR ---
