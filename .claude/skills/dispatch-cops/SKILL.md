@@ -28,32 +28,31 @@ See `docs/agent-dispatch.md` for setup instructions.
 
 ### Phase 1: Triage
 
-Show the user what needs fixing:
+Find cops with real code bugs (not just config noise):
 
 ```bash
-python3 scripts/agent/tier_cops.py --extended
+python3 scripts/agent/rank_dispatchable_cops.py
 ```
 
-Then show the specific tier they'll be working on:
+This runs pre-diagnostic on every cop's FP/FN examples to classify them as
+code bugs (agent can fix) vs config/context issues (agent can't). Only shows
+cops with at least 1 real code bug.
+
+For MiniMax, filter to cops with 3-10 total FP+FN and mostly code bugs:
 
 ```bash
-python3 scripts/agent/tier_cops.py --extended --tier 1   # easiest, start here
+python3 scripts/agent/rank_dispatchable_cops.py --min-bugs 2 --max-total 10
 ```
 
-**Tier 1 (1-50 FP+FN, ~319 cops):** No per-cop investigation needed. Dispatch
-with MiniMax M2.7-highspeed. The task packet includes corpus examples with
-source context — that IS the investigation.
-
-**Tier 2 (51-1000 FP+FN, ~88 cops):** Investigate before dispatching:
+For harder cops or overview by tier:
 
 ```bash
-python3 scripts/investigate-cop.py Department/CopName --extended --context
+python3 scripts/agent/tier_cops.py --extended --tier 1   # simple FP+FN count view
+python3 scripts/investigate-cop.py Department/CopName --extended --context  # deep dive
 ```
 
-Then dispatch with MiniMax (cheap) or Codex (stronger, for hard cops).
-
-**Tier 3 (1001+ FP+FN, ~61 cops):** Use `/fix-department` locally instead.
-These have fundamental gaps that need deep investigation.
+**Skip cops with 0 code bugs** — they're all config issues and the workflow
+will auto-skip them anyway (pre-diagnostic gate).
 
 ### Phase 2: Pilot (first run only)
 
@@ -90,13 +89,14 @@ its cop's files? Ask the user if the results look good before scaling.
 Ask the user which tier to dispatch. Then dispatch:
 
 ```bash
-# Tier 1 (minimax, default)
-python3 scripts/agent/tier_cops.py --extended --tier 1 --names | while read cop; do
+# Dispatch all cops with real code bugs (minimax, default)
+python3 scripts/agent/rank_dispatchable_cops.py --json | \
+  jq -r '.[].cop' | while read cop; do
   gh workflow run agent-cop-fix.yml -f cop="$cop"
   sleep 5
 done
 
-# Tier 2 (use Codex for stronger model, or MiniMax to try cheap first)
+# Or dispatch a specific tier with Codex for harder cops
 python3 scripts/agent/tier_cops.py --extended --tier 2 --names | while read cop; do
   gh workflow run agent-cop-fix.yml -f cop="$cop" -f backend="codex"
   sleep 5
