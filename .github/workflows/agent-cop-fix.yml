@@ -248,10 +248,14 @@ jobs:
           git config user.name "6[bot]"
           git config user.email "129682364+6[bot]@users.noreply.github.com"
           echo "main_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # Replace full CLAUDE.md/AGENTS.md with minimal agent reference
+          cp AGENTS.minimal.md CLAUDE.md
+          cp AGENTS.minimal.md AGENTS.md
           git rm -r --quiet \
-            CLAUDE.md AGENTS.md \
+            AGENTS.minimal.md \
             .claude/ .agents/ .devcontainer/ .github/ gem/ scripts/ \
             2>/dev/null || true
+          git add CLAUDE.md AGENTS.md
           git commit -m "tmp: clean workspace for agent"
         id: prep
 
