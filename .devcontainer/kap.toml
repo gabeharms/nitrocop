@@ -109,6 +109,13 @@ allow = [
 # name = "github"
 # allow = ["get_pull_request", "list_issues"]
 
+# --- Env var overrides (highest priority, resolved on host) ---
+# Create a fine-grained PAT scoped to 6/nitrocop with:
+#   Actions: read/write (workflow runs, dispatch), Contents: read/write, Pull requests: read/write
+# Then: export NITROCOP_GH_TOKEN=ghp_... in your shell profile
+[env]
+GH_TOKEN = "${NITROCOP_GH_TOKEN}"
+
 # --- CLI tool proxying (credentials stay on sidecar, never enter app container) ---
 [cli]
 [[cli.tools]]
