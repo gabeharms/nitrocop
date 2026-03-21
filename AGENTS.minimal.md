@@ -69,7 +69,17 @@ Each cop has `tests/fixtures/cops/<dept>/<cop_name>/offense.rb` and `no_offense.
 x = 1
      ^^ Layout/TrailingWhitespace: Trailing whitespace detected.
 ```
-The `^` characters align with the offending columns. Format: `Department/CopName: message`.
+The `^` characters must start at the exact column where the offense starts (0-indexed from
+the line start). The diagnostic's `column` field is 1-indexed, so subtract 1 for the `^` position.
+The number of `^` characters should span the offense width. Format: `Department/CopName: message`.
+
+**Quick way to get correct annotations:** Run the cop on a test file and use the JSON output:
+```bash
+echo 'bad_code_here' > /tmp/test.rb
+cargo run -- --only Department/CopName --format json /tmp/test.rb
+```
+The JSON gives exact `line`, `column` (1-indexed), and `message` for each offense. Use
+`column - 1` for the `^` start position.
 
 **no_offense.rb** — clean Ruby that should NOT trigger the cop (min 5 non-empty lines).
 
