@@ -560,7 +560,7 @@ jobs:
             -f "parents[]=$PARENT_SHA" \
             --jq '.sha')
           gh api "repos/${REPO}/git/refs/heads/${BRANCH}" \
-            -X PATCH -f sha="$SIGNED_SHA" -f force=true
+            -X PATCH -f sha="$SIGNED_SHA" -F force=true
 
           # Build final PR body with agent results
           TURNS=$(jq -r '.num_turns // "?"' /tmp/agent-result.json 2>/dev/null || echo "?")
