@@ -26,7 +26,17 @@ For each open PR, check:
 Categorize into:
 - **Ready**: validation passed, no `validation-failed` label, tests OK
 - **Failed**: has `validation-failed` label or failing checks
+- **Fixable**: CI passes but code has quality nits worth fixing before merge
 - **Pending**: no validation results yet
+
+### 2b. Review code quality and fix nits
+
+For each PR that passes CI, review the diff for quality issues common in agent-generated code:
+- Missing explicit parentheses for operator precedence clarity
+- Overly verbose or unclear comments
+- Unnecessary complexity that could be simplified
+
+If nits are found, check out the PR branch, fix them, commit, and push before merging.
 
 ### 3. Present summary table
 
