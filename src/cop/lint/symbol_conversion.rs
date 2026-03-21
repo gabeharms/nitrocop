@@ -165,12 +165,24 @@ use crate::parse::source::SourceFile;
 /// FN=1: `:"$$"` from pdf-reader — `$$` (process ID) is a valid special global
 /// variable. Fix: added `$` to `SPECIAL_GLOBAL_CHARS`.
 ///
-/// FN=1: `%s"..."` literal from rouge — `%s` percent-literal symbols were not
-/// handled. Fixed by accepting `%s` opening in `check_symbol_node`.
+/// FN=1: `%s"..."` literal from rouge — `%s` percent-literal symbols were
+/// previously not handled. Added `%s` opening support, but this was reverted
+/// because RuboCop's `properly_quoted_symbol?` only checks `:"` and `:'`
+/// starts, NOT `%s`. RuboCop never flags `%s()` symbols. Accepting `%s`
+/// caused 15 FPs in hexapdf/fontcustom/jruby/natalie.
 ///
 /// FN=1: `"\xff".to_sym` from jruby — `symbol_correction` returned None for
 /// non-UTF8 content because `from_utf8` failed. Fixed by generating hex-escaped
 /// symbol like `:\"\xFF\"` for non-UTF8 bytes.
+///
+/// ## Corpus investigation (2026-03-21)
+///
+/// Corpus oracle reported FP=15, FN=0.
+///
+/// FP=15: All from `%s()` percent-literal symbols (hexapdf 12, fontcustom 1,
+/// jruby 1, natalie 1). RuboCop's `properly_quoted_symbol?` only checks for
+/// `:"` and `:'` prefixes, never `%s`. Fix: removed `%s` opening support
+/// from `check_symbol_node`.
 pub struct SymbolConversion;
 
 const BARE_OPERATOR_SYMBOLS: &[&[u8]] = &[
@@ -600,11 +612,11 @@ impl SymbolConversion {
 
         // For standalone symbols or rocket-style hash keys/values:
         // Check if the symbol is unnecessarily quoted
-        // Opening must be :" or :' (quoted symbol syntax) or %s (percent literal)
-        let is_pct_s = opening.map(|o| o.starts_with(b"%s")).unwrap_or(false);
+        // Opening must be :" or :' (quoted symbol syntax).
+        // Note: %s() percent-literal symbols are NOT checked — RuboCop's
+        // `properly_quoted_symbol?` only checks `:"` and `:'` prefixes.
         match opening {
             Some(b":\"" | b":'") => {}
-            _ if is_pct_s => {}
             _ => return,
         }
 
