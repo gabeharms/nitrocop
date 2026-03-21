@@ -370,7 +370,7 @@ jobs:
           else
             mkdir -p ~/.codex
             echo "$CODEX_AUTH_JSON" > ~/.codex/auth.json
-            codex exec --full-auto -m gpt-5.4 - < /tmp/final-task.md \
+            codex exec --full-auto -m gpt-5.4 -c model_reasoning_effort=xhigh - < /tmp/final-task.md \
               > /tmp/agent-result.json \
               2> >(tee /tmp/agent.log >&2) || true
           fi
