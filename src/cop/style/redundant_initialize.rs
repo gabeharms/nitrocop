@@ -327,4 +327,20 @@ fn super_args_match_params(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantInitialize, "cops/style/redundant_initialize");
+
+    #[test]
+    fn debug_prism_range() {
+        let source = b"def initialize; end # rubocop:disable Lint/MissingSuper\n";
+        let diags = crate::testutil::run_cop_full_internal(
+            &RedundantInitialize,
+            source,
+            crate::cop::CopConfig::default(),
+            "test.rb",
+        );
+        eprintln!("DIAGS: {:?}", diags.len());
+        for d in &diags {
+            eprintln!("  L{}:C{} {:?}", d.location.line, d.location.column, d.message);
+        }
+        assert!(diags.is_empty(), "Should not flag single-line def with inline comment");
+    }
 }
