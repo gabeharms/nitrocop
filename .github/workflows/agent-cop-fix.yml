@@ -183,11 +183,7 @@ jobs:
 
           # Count tokens
           pip install -q tiktoken
-          TOKENS=$(python3 -c "
-          import tiktoken
-          enc = tiktoken.get_encoding('cl100k_base')
-          print(len(enc.encode(open('/tmp/task.md').read())))
-          " 2>/dev/null || echo "?")
+          TOKENS=$(python3 scripts/ci/count_tokens.py /tmp/task.md 2>/dev/null || echo "?")
           echo "tokens=$TOKENS" >> "$GITHUB_OUTPUT"
           echo "Tokens: $TOKENS"
         id: task
@@ -306,6 +302,8 @@ jobs:
           git config user.name "6[bot]"
           git config user.email "129682364+6[bot]@users.noreply.github.com"
           echo "main_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # Preserve CI scripts before cleanup
+          cp -r scripts/ci /tmp/ci-scripts
           # Replace full CLAUDE.md/AGENTS.md with minimal agent reference
           cp AGENTS.minimal.md CLAUDE.md
           cp AGENTS.minimal.md AGENTS.md
@@ -455,35 +453,7 @@ jobs:
             if [ -n "$LOGFILE" ]; then
               echo "## Agent Conversation"
               echo ""
-              python3 -c "
-          import json, sys
-          for line in open(sys.argv[1]):
-              try:
-                  ev = json.loads(line)
-              except json.JSONDecodeError:
-                  continue
-              if ev.get('type') != 'assistant':
-                  continue
-              for block in ev.get('message', {}).get('content', []):
-                  if block.get('type') == 'text' and block.get('text', '').strip():
-                      print(block['text'].strip())
-                      print()
-                  elif block.get('type') == 'tool_use':
-                      name = block.get('name', '?')
-                      inp = block.get('input', {})
-                      if name == 'Bash':
-                          cmd = inp.get('command', '')
-                          print(f'> \`{name}\`: \`{cmd[:200]}\`')
-                      elif name in ('Read', 'Glob', 'Grep'):
-                          arg = inp.get('file_path') or inp.get('pattern') or ''
-                          print(f'> \`{name}\`: \`{arg[:200]}\`')
-                      elif name == 'Edit':
-                          fp = inp.get('file_path', '')
-                          print(f'> \`{name}\`: \`{fp}\`')
-                      else:
-                          print(f'> \`{name}\`')
-                      print()
-          " "$LOGFILE" 2>/dev/null | head -500
+              python3 /tmp/ci-scripts/extract_agent_log.py "$LOGFILE" 2>/dev/null || true
               echo ""
             fi
 
