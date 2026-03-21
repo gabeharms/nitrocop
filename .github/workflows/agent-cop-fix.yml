@@ -61,6 +61,7 @@ jobs:
       - name: Build binary
         run: |
           cargo build 2>&1
+          CARGO_INCREMENTAL=1 cargo test --lib --no-run 2>&1
           cargo test --release --lib --no-run 2>&1
 
       - name: Generate task prompt
@@ -106,6 +107,7 @@ jobs:
           ANTHROPIC_MODEL: ${{ github.event.inputs.backend == 'minimax' && 'MiniMax-M2.7' || '' }}
           ANTHROPIC_SMALL_FAST_MODEL: ${{ github.event.inputs.backend == 'minimax' && 'MiniMax-M2.7' || '' }}
           API_TIMEOUT_MS: "300000"
+          CARGO_INCREMENTAL: "1"
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           CODEX_AUTH_JSON: ${{ github.event.inputs.backend == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
         run: |
