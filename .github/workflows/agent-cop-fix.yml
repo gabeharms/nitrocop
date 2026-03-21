@@ -40,6 +40,7 @@ jobs:
       - name: Compute identifiers
         id: cop
         run: |
+          echo "::notice::Fixing cop: ${{ github.event.inputs.cop }} (backend: ${{ github.event.inputs.backend }})"
           python3 -c "
           import re, sys
           cop = sys.argv[1]
