@@ -126,13 +126,18 @@ jobs:
             exit 1
           fi
 
-          # Create empty branch and draft PR as a claim marker
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git config user.name "6[bot]"
-          git config user.email "129682364+6[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH" origin/main
-          git commit --allow-empty -m "[bot] Fix ${COP}: in progress [skip ci]"
-          git push -u origin "$BRANCH"
+          # Create empty branch via API (signed commit)
+          REPO="${{ github.repository }}"
+          PARENT_SHA=$(gh api "repos/${REPO}/git/ref/heads/main" --jq '.object.sha')
+          TREE_SHA=$(gh api "repos/${REPO}/git/commits/${PARENT_SHA}" --jq '.tree.sha')
+          COMMIT_SHA=$(gh api "repos/${REPO}/git/commits" \
+            -f message="[bot] Fix ${COP}: in progress [skip ci]" \
+            -f tree="$TREE_SHA" \
+            -f "parents[]=$PARENT_SHA" \
+            --jq '.sha')
+          gh api "repos/${REPO}/git/refs" \
+            -f ref="refs/heads/${BRANCH}" \
+            -f sha="$COMMIT_SHA"
 
           MODEL_LABEL="model:${BACKEND}"
           gh label create agent-fix --color "0e8a16" 2>/dev/null || true
@@ -155,9 +160,6 @@ EOF
             --body "$DRAFT_BODY")
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "Created draft PR: $PR_URL"
-
-          # Switch back to main for the build/agent steps
-          git checkout main
 
       # --- Build (before task generation for pre-diagnostic) ---
 
@@ -496,11 +498,27 @@ EOF
           if [ "$MODE" = "retry" ]; then RETRY_NOTE=" (retry)"; fi
           git commit --allow-empty -m "Fix ${COP}: agent-generated fix${RETRY_NOTE} ($BACKEND)"
 
-          git push origin "$BRANCH"
+          # Push changes, then replace with signed commit via API
+          git push origin "$BRANCH" --force
+
+          REPO="${{ github.repository }}"
+          UNSIGNED_SHA=$(gh api "repos/${REPO}/git/ref/heads/${BRANCH}" --jq '.object.sha')
+          TREE_SHA=$(gh api "repos/${REPO}/git/commits/${UNSIGNED_SHA}" --jq '.tree.sha')
+          PARENT_SHA=$(gh api "repos/${REPO}/git/commits/${UNSIGNED_SHA}" --jq '.parents[0].sha')
+          SIGNED_SHA=$(gh api "repos/${REPO}/git/commits" \
+            -f message="Fix ${COP}: agent-generated fix${RETRY_NOTE} (${BACKEND})" \
+            -f tree="$TREE_SHA" \
+            -f "parents[]=$PARENT_SHA" \
+            --jq '.sha')
+          gh api "repos/${REPO}/git/refs/heads/${BRANCH}" \
+            -X PATCH -f sha="$SIGNED_SHA" -f force=true
 
           # Build final PR body with agent results
           TURNS=$(jq -r '.num_turns // "?"' /tmp/agent-result.json 2>/dev/null || echo "?")
-          DIFF_STAT=$(git diff --stat origin/main..."$BRANCH" 2>/dev/null | tail -1)
+          DIFF_STAT=$(git diff --stat "${PARENT_SHA}".."${SIGNED_SHA}" 2>/dev/null | tail -1 || echo "")
+          if [ -z "$DIFF_STAT" ]; then
+            DIFF_STAT=$(gh api "repos/${REPO}/compare/${PARENT_SHA}...${SIGNED_SHA}" --jq '"  \(.files | length) files changed"' 2>/dev/null || echo "")
+          fi
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           FINAL_BODY="$(cat <<EOF
