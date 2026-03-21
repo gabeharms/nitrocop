@@ -432,7 +432,9 @@ jobs:
           if [ "$MODE" = "retry" ]; then
             RETRY_NOTE=" (retry)"
           fi
-          git commit -m "Fix ${COP}: agent-generated fix${RETRY_NOTE} ($BACKEND)" --allow-empty
+          git commit --allow-empty -m "Fix ${COP}: agent-generated fix${RETRY_NOTE} ($BACKEND)
+
+Co-Authored-By: 6[bot] <129682364+6[bot]@users.noreply.github.com>"
 
           git push origin --delete "$BRANCH" 2>/dev/null || true
           git push -u origin "$BRANCH"
@@ -456,11 +458,5 @@ jobs:
           echo "has_pr=true" >> "$GITHUB_OUTPUT"
           echo "Created PR: $PR_URL"
 
-          # Enable auto-merge only if patch applied cleanly
-          if [ "$CLEAN_APPLY" = "true" ]; then
-            gh pr merge "$PR_URL" --auto --squash --delete-branch || \
-              echo "WARNING: could not enable auto-merge (check repo settings)"
-          else
-            echo "Skipping auto-merge — PR needs manual rebase"
-          fi
+          # PRs are landed via /land-agent-prs for review + correct authorship
 
