@@ -53,7 +53,7 @@ This is enough for all 319 Tier 1 cops. Upgrade to Max-Highspeed ($80/mo, 15K re
      source $HOME/.cargo/env
      cargo build
      rm -f CLAUDE.md AGENTS.md
-     rm -rf .claude/skills/
+     rm -rf .agents/ .claude/ .devcontainer/ .github/ bench/ docs/ gem/ scripts/
      ```
 4. Create a **webhook trigger** linked to the `minimax-highspeed` profile
 5. Note the webhook URL
