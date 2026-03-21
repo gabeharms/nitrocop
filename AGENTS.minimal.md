@@ -75,6 +75,35 @@ The `^` characters align with the offending columns. Format: `Department/CopName
 
 Run tests: `cargo test --lib -- cop::<dept>::<cop_name>`
 
+## Node Type Constants
+
+Node type constants are in `src/cop/node_type.rs` (e.g., `CALL_NODE`, `IF_NODE`, `CLASS_NODE`).
+To handle a new node type in a cop:
+1. Add the constant to `interested_node_types()` return array
+2. Add an `as_*_node()` match arm in `check_node()`
+
+## Inspecting Prism AST
+
+To see what Prism produces for a Ruby snippet:
+```bash
+echo 'BEGIN { include Foo }' | ruby -rprism -e 'puts Prism.parse(STDIN.read).value.inspect'
+```
+
+Or use nitrocop's debug output on a file:
+```bash
+cargo run -- --format json --only Style/FrozenStringLiteralComment test.rb
+```
+
+## Scope-Aware Cops
+
+Since Prism has no parent pointers, cops that need nesting/scope context use one of:
+- **`check_source` with a Prism visitor** — implement `ruby_prism::visit::Visitor` to walk the AST
+  manually, tracking a depth/scope stack. Used for cops like `Style/MixinUsage` that care about
+  whether code is at the top level vs inside a class/module.
+- **`interested_node_types` + state** — register for both the enclosing node (e.g., `CLASS_NODE`)
+  and the target node, and use `check_node` to track state. Simpler but limited to single-level
+  nesting.
+
 ## Key Constraints
 
 - `ruby_prism::ParseResult` is `!Send + !Sync` — parsing happens per-thread
