@@ -88,22 +88,27 @@ its cop's files? Ask the user if the results look good before scaling.
 
 Ask the user which tier to dispatch. Then dispatch:
 
-**Before dispatching any cop**, check for existing open PRs to avoid duplicates:
+**Before dispatching any cop**, check for existing open AND recently merged PRs to avoid duplicates and wasted runs:
 
 ```bash
 # Get list of cops that already have open PRs
-EXISTING=$(gh pr list --state open --label agent-fix --json title --jq '.[].title | capture("\\[bot\\] Fix (?<cop>[^ ]+)") | .cop')
+OPEN=$(gh pr list --state open --label agent-fix --json title --jq '.[].title | capture("\\[bot\\] Fix (?<cop>[^ ]+)") | .cop')
+# Get list of cops with merged PRs (already fixed)
+MERGED=$(gh pr list --state merged --label agent-fix --json title --jq '.[].title | capture("\\[bot\\] Fix (?<cop>[^ ]+)") | .cop')
+# Combine into single exclusion list
+EXISTING=$(printf '%s\n%s' "$OPEN" "$MERGED" | sort -u | grep .)
 ```
 
 Skip any cop that appears in `$EXISTING`. The workflow also has a dedup guard
-that exits early if a PR exists, but pre-filtering saves GHA minutes.
+that exits early if an open PR exists, but pre-filtering saves GHA minutes
+and avoids re-dispatching already-fixed cops.
 
 ```bash
 # Dispatch all cops with real code bugs (minimax, default)
 python3 scripts/agent/rank_dispatchable_cops.py --json 2>/dev/null | \
   jq -r '.[].cop' | while read cop; do
   if echo "$EXISTING" | grep -qxF "$cop"; then
-    echo "Skipping $cop — PR already open"
+    echo "Skipping $cop — PR already open or merged"
     continue
   fi
   gh workflow run agent-cop-fix.yml -f cop="$cop"
@@ -113,7 +118,7 @@ done
 # Or dispatch a specific tier with Codex for harder cops
 python3 scripts/agent/tier_cops.py --extended --tier 2 --names | while read cop; do
   if echo "$EXISTING" | grep -qxF "$cop"; then
-    echo "Skipping $cop — PR already open"
+    echo "Skipping $cop — PR already open or merged"
     continue
   fi
   gh workflow run agent-cop-fix.yml -f cop="$cop" -f backend="codex"
