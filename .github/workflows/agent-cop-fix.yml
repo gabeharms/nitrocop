@@ -450,9 +450,7 @@ jobs:
           if [ "$MODE" = "retry" ]; then
             RETRY_NOTE=" (retry)"
           fi
-          git commit --allow-empty -m "Fix ${COP}: agent-generated fix${RETRY_NOTE} ($BACKEND)
-
-Co-Authored-By: 6[bot] <129682364+6[bot]@users.noreply.github.com>"
+          git commit --allow-empty -m "Fix ${COP}: agent-generated fix${RETRY_NOTE} ($BACKEND)" -m "Co-Authored-By: 6[bot] <129682364+6[bot]@users.noreply.github.com>"
 
           git push origin --delete "$BRANCH" 2>/dev/null || true
           git push -u origin "$BRANCH"
