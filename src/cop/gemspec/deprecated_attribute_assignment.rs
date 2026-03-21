@@ -7,6 +7,13 @@ use crate::parse::source::SourceFile;
 /// ## Corpus investigation (2026-03-03)
 ///
 /// Corpus oracle (run 22651309591) reported FP=0, FN=0. 100% conformance.
+///
+/// ## Extended corpus investigation (2026-03-21)
+///
+/// Extended corpus reported FP=4, FN=0. All 4 FPs came from
+/// `Gem::Specification.new` with positional args (name, version).
+/// RuboCop's `gem_specification` NodePattern requires `.new` with no
+/// positional args — added `node.arguments().is_none()` check.
 pub struct DeprecatedAttributeAssignment;
 
 const ATTR_TEST_FILES: &[u8] = b"test_files";
@@ -71,6 +78,7 @@ impl<'pr> Visit<'pr> for GemspecVisitor<'_> {
             && node
                 .receiver()
                 .is_some_and(|recv| Self::is_gem_specification_receiver(&recv))
+            && node.arguments().is_none()
             && node.block().is_some()
         {
             if let Some(block) = node.block().and_then(|b| b.as_block_node()) {

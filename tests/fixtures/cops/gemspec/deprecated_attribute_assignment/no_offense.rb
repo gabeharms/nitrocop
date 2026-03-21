@@ -19,3 +19,12 @@ metadata.date = '2024-01-01'
 build_spec do |spec|
   spec.test_files = Dir.glob('test/**/*')
 end
+
+# Gem::Specification.new with positional args — RuboCop skips these blocks
+Gem::Specification.new 'my_gem', '1.0.0' do |s|
+  s.test_files = Dir['spec/**/*']
+end
+
+Gem::Specification.new("my_gem", "1.0.0") do |s|
+  s.date = '2024-01-01'
+end
