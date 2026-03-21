@@ -439,10 +439,7 @@ jobs:
           fi
 
           # Auto-format Rust files (agent often skips this)
-          RS_FILES=$(git diff --name-only | grep '\.rs$' || true)
-          if [ -n "$RS_FILES" ]; then
-            cargo fmt -- $RS_FILES 2>/dev/null || true
-          fi
+          cargo fmt
 
           git add src/cop/ tests/fixtures/cops/ bench/corpus/
 
