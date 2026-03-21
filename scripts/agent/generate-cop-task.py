@@ -4,6 +4,8 @@ from __future__ import annotations
 
 Produces a single markdown document containing everything the agent needs:
 - Focused instructions (TDD workflow, fixture format, validation)
+- Pre-diagnostic results (code bug vs config issue classification)
+- Ready-made test snippets
 - The cop's Rust source
 - The RuboCop Ruby implementation (ground truth)
 - RuboCop spec excerpts (expect_offense / expect_no_offenses blocks)
@@ -14,13 +16,16 @@ Usage:
     python3 scripts/agent/generate-cop-task.py Style/NegatedWhile
     python3 scripts/agent/generate-cop-task.py Style/NegatedWhile --output /tmp/task.md
     python3 scripts/agent/generate-cop-task.py Style/NegatedWhile --extended
-    python3 scripts/agent/generate-cop-task.py Style/NegatedWhile --input corpus-results.json
+    python3 scripts/agent/generate-cop-task.py Style/NegatedWhile --binary target/debug/nitrocop
 """
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Allow importing from scripts/
@@ -182,35 +187,282 @@ def find_fixtures(dept: str, snake: str) -> tuple[str | None, str | None]:
 
 
 def get_corpus_data(cop: str, input_path: Path | None, extended: bool) -> dict:
-    """Get FP/FN data from corpus-results.json."""
+    """Get FP/FN data from corpus-results.json.
+
+    Returns dict with counts and raw example lists."""
     if input_path is None:
         try:
             prefer = "extended" if extended else "standard"
             input_path, _, _ = _download_corpus(prefer=prefer)
         except Exception as e:
             print(f"Warning: could not download corpus data: {e}", file=sys.stderr)
-            return {"fp": 0, "fn": 0, "matches": 0, "examples": ""}
+            return {"fp": 0, "fn": 0, "matches": 0,
+                    "fp_examples": [], "fn_examples": []}
 
     data = json.loads(input_path.read_text())
     by_cop = data.get("by_cop", [])
     cop_entry = next((e for e in by_cop if e["cop"] == cop), None)
 
     if cop_entry is None:
-        return {"fp": 0, "fn": 0, "matches": 0, "examples": "(cop not found in corpus data)"}
+        return {"fp": 0, "fn": 0, "matches": 0,
+                "fp_examples": [], "fn_examples": []}
 
-    fp = cop_entry.get("fp", 0)
-    fn = cop_entry.get("fn", 0)
-    matches = cop_entry.get("matches", 0)
+    return {
+        "fp": cop_entry.get("fp", 0),
+        "fn": cop_entry.get("fn", 0),
+        "matches": cop_entry.get("matches", 0),
+        "fp_examples": cop_entry.get("fp_examples", []),
+        "fn_examples": cop_entry.get("fn_examples", []),
+    }
 
-    # Format examples
+
+def _normalize_example(ex) -> tuple[str, str, list[str] | None]:
+    """Normalize an example to (loc_string, message, embedded_context)."""
+    if isinstance(ex, dict):
+        return ex.get("loc", ""), ex.get("msg", ""), ex.get("src")
+    return ex, "", None
+
+
+def _extract_source_lines(src: list[str]) -> tuple[list[str], str | None, int | None]:
+    """Extract clean source lines from corpus src context.
+
+    Returns (all_source_lines, offense_line, offense_line_index)."""
+    source_lines = []
+    offense_line = None
+    offense_line_idx = None
+    for i, s in enumerate(src):
+        is_offense = s.strip().startswith(">>>")
+        cleaned = re.sub(r"^(>>>\s*)?\s*\d+:\s?", "", s)
+        source_lines.append(cleaned)
+        if is_offense:
+            offense_line = cleaned
+            offense_line_idx = i
+    return source_lines, offense_line, offense_line_idx
+
+
+def _run_nitrocop(binary_path: Path, cwd: str, cop: str = "") -> list[dict]:
+    """Run nitrocop on test.rb in the given directory, return offenses list."""
+    cmd = [str(binary_path), "--force-default-config", "--format", "json"]
+    if cop:
+        cmd.extend(["--only", cop])
+    cmd.append("test.rb")
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=15, cwd=cwd,
+    )
+    output_text = proc.stdout.strip()
+    if output_text:
+        try:
+            output = json.loads(output_text)
+            return output.get("offenses", [])
+        except json.JSONDecodeError:
+            pass
+    return []
+
+
+def run_diagnostic(
+    binary_path: Path, cop: str,
+    fp_examples: list, fn_examples: list,
+) -> list[dict]:
+    """Run nitrocop on extracted FP/FN source to classify each as code bug vs config issue.
+
+    For each example with source context, creates a temp .rb file from the
+    extracted source lines and runs nitrocop with --force-default-config to
+    test detection in isolation.
+
+    For FN: detected → config/context issue; not detected → code bug.
+    For FP: flagged → confirmed code bug; not flagged → context-dependent.
+    """
+    results = []
+    for kind, examples in [("fn", fn_examples), ("fp", fp_examples)]:
+        for ex in examples[:15]:
+            loc, msg, src = _normalize_example(ex)
+            if not src:
+                results.append({
+                    "kind": kind, "loc": loc, "msg": msg,
+                    "diagnosed": False, "reason": "no source context",
+                })
+                continue
+
+            source_lines, offense_line, offense_line_idx = _extract_source_lines(src)
+            if not source_lines:
+                results.append({
+                    "kind": kind, "loc": loc, "msg": msg,
+                    "diagnosed": False, "reason": "empty source",
+                })
+                continue
+
+            # Write temp file in its own directory (nitrocop needs a project root)
+            tmp_dir = tempfile.mkdtemp(prefix="nitrocop_diag_")
+            tmp_path = os.path.join(tmp_dir, "test.rb")
+            with open(tmp_path, "w") as f:
+                f.write("\n".join(source_lines) + "\n")
+
+            try:
+                offenses = _run_nitrocop(binary_path, tmp_dir, cop)
+
+                # If no offenses with full context (may have parse errors from
+                # truncated source), retry with just the offense line
+                if not offenses and offense_line is not None:
+                    with open(tmp_path, "w") as f:
+                        f.write(offense_line + "\n")
+                    offenses = _run_nitrocop(binary_path, tmp_dir, cop)
+
+                detected = len(offenses) > 0
+
+                # Generate test snippet from offense data
+                test_snippet = None
+                if offense_line is not None:
+                    expected_line_num = (offense_line_idx + 1) if offense_line_idx is not None else 1
+                    if detected and offenses:
+                        # Find offense on the expected line
+                        matching = [o for o in offenses if o.get("line") == expected_line_num]
+                        o = matching[0] if matching else offenses[0]
+                        col = o.get("column", 1) - 1  # 1-indexed → 0-indexed
+                        omsg = o.get("message", msg)
+                        test_snippet = f"{offense_line}\n{' ' * col}^ {cop}: {omsg}"
+                    else:
+                        test_snippet = f"{offense_line}\n^ {cop}: {msg}"
+
+                results.append({
+                    "kind": kind, "loc": loc, "msg": msg,
+                    "diagnosed": True, "detected": detected,
+                    "offense_line": offense_line,
+                    "test_snippet": test_snippet,
+                })
+            except Exception as e:
+                results.append({
+                    "kind": kind, "loc": loc, "msg": msg,
+                    "diagnosed": False, "reason": str(e),
+                })
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                    os.rmdir(tmp_dir)
+                except OSError:
+                    pass
+
+    return results
+
+
+def format_corpus_section(
+    cop: str, corpus: dict, diagnostics: list[dict] | None,
+) -> str:
+    """Format the corpus FP/FN section, optionally enriched with diagnostic results."""
+    fp_examples = corpus["fp_examples"]
+    fn_examples = corpus["fn_examples"]
+
+    if not fp_examples and not fn_examples:
+        return "(no FP/FN examples in corpus data)"
+
+    if diagnostics:
+        return _format_with_diagnostics(cop, diagnostics, fp_examples, fn_examples)
+    return _format_without_diagnostics(cop, fp_examples, fn_examples)
+
+
+def _format_with_diagnostics(
+    cop: str, diagnostics: list[dict],
+    fp_examples: list, fn_examples: list,
+) -> str:
     lines = []
-    fp_examples = cop_entry.get("fp_examples", [])
-    fn_examples = cop_entry.get("fn_examples", [])
+
+    fn_diags = [d for d in diagnostics if d["kind"] == "fn"]
+    fp_diags = [d for d in diagnostics if d["kind"] == "fp"]
+
+    # Summary counts
+    fn_code_bugs = sum(1 for d in fn_diags if d.get("diagnosed") and not d.get("detected"))
+    fn_config = sum(1 for d in fn_diags if d.get("diagnosed") and d.get("detected"))
+    fp_code_bugs = sum(1 for d in fp_diags if d.get("diagnosed") and d.get("detected"))
+    fp_config = sum(1 for d in fp_diags if d.get("diagnosed") and not d.get("detected"))
+
+    lines.append("### Diagnosis Summary")
+    lines.append("Each example was tested by running nitrocop on the extracted source in isolation")
+    lines.append("with `--force-default-config` to determine if the issue is a code bug or config issue.")
+    lines.append("Note: source context is truncated and may not parse perfectly. If a diagnosis")
+    lines.append("seems wrong (e.g., your test passes immediately for a 'CODE BUG'), treat it as")
+    lines.append("a config/context issue instead.\n")
+    if fn_diags:
+        lines.append(f"- **FN:** {fn_code_bugs} code bug(s), {fn_config} config/context issue(s)")
+    if fp_diags:
+        lines.append(f"- **FP:** {fp_code_bugs} confirmed code bug(s), {fp_config} context-dependent")
+    lines.append("")
+
+    # FN details
+    for i, d in enumerate(fn_diags, 1):
+        lines.append(f"### FN #{i}: `{d['loc']}`")
+        if d.get("diagnosed"):
+            if d.get("detected"):
+                lines.append("**DETECTED in isolation — CONFIG/CONTEXT issue**")
+                lines.append("The cop correctly detects this pattern with default config.")
+                lines.append("The corpus FN is caused by the target repo's configuration")
+                lines.append("(Include/Exclude patterns, cop disabled, file outside scope,")
+                lines.append("or `rubocop:disable` comment). Investigate config resolution.")
+            else:
+                lines.append("**NOT DETECTED — CODE BUG**")
+                lines.append("The cop fails to detect this pattern. Fix the detection logic.")
+            lines.append(f"\nMessage: `{d['msg']}`")
+            if d.get("test_snippet"):
+                lines.append("\nReady-made test snippet (add to offense.rb, adjust `^` count):")
+                lines.append(f"```ruby\n{d['test_snippet']}\n```")
+        else:
+            lines.append(f"(could not diagnose: {d.get('reason', 'unknown')})")
+            lines.append(f"Message: `{d['msg']}`")
+        lines.append("")
+
+    # FP details
+    for i, d in enumerate(fp_diags, 1):
+        lines.append(f"### FP #{i}: `{d['loc']}`")
+        if d.get("diagnosed"):
+            if d.get("detected"):
+                lines.append("**CONFIRMED false positive — CODE BUG**")
+                lines.append("nitrocop incorrectly flags this pattern in isolation.")
+                lines.append("Fix the detection logic to not flag this.")
+                if d.get("offense_line"):
+                    lines.append(f"\nAdd to no_offense.rb:")
+                    lines.append(f"```ruby\n{d['offense_line']}\n```")
+            else:
+                lines.append("**NOT REPRODUCED in isolation — CONTEXT-DEPENDENT**")
+                lines.append("nitrocop does not flag this in isolation. The FP is triggered")
+                lines.append("by surrounding code context or file-level state.")
+                lines.append("Investigate what full-file context causes the false detection.")
+            lines.append(f"\nMessage: `{d['msg']}`")
+        else:
+            lines.append(f"(could not diagnose: {d.get('reason', 'unknown')})")
+            lines.append(f"Message: `{d['msg']}`")
+        lines.append("")
+
+    # Additional un-diagnosed examples
+    undiag_fn = fn_examples[len(fn_diags):]
+    undiag_fp = fp_examples[len(fp_diags):]
+    if undiag_fn or undiag_fp:
+        lines.append("### Additional examples (not pre-diagnosed)\n")
+        for ex in undiag_fn[:15]:
+            loc, msg, src = _normalize_example(ex)
+            lines.append(f"- FN: `{loc}` — {msg}")
+            if src:
+                lines.append("  ```ruby")
+                for s in src:
+                    lines.append(f"  {s}")
+                lines.append("  ```")
+        for ex in undiag_fp[:15]:
+            loc, msg, src = _normalize_example(ex)
+            lines.append(f"- FP: `{loc}` — {msg}")
+            if src:
+                lines.append("  ```ruby")
+                for s in src:
+                    lines.append(f"  {s}")
+                lines.append("  ```")
+
+    return "\n".join(lines)
+
+
+def _format_without_diagnostics(cop: str, fp_examples: list, fn_examples: list) -> str:
+    """Format FP/FN examples without diagnostic enrichment (no --binary)."""
+    lines = []
 
     if fp_examples:
         lines.append(f"### False Positives ({len(fp_examples)} examples)")
         lines.append("nitrocop flags these but RuboCop does not:\n")
-        for ex in fp_examples[:30]:  # limit to 30
+        for ex in fp_examples[:30]:
             loc, msg, src = _normalize_example(ex)
             lines.append(f"- `{loc}`")
             if msg:
@@ -224,7 +476,7 @@ def get_corpus_data(cop: str, input_path: Path | None, extended: bool) -> dict:
     if fn_examples:
         lines.append(f"\n### False Negatives ({len(fn_examples)} examples)")
         lines.append("RuboCop flags these but nitrocop does not:\n")
-        for ex in fn_examples[:30]:  # limit to 30
+        for ex in fn_examples[:30]:
             loc, msg, src = _normalize_example(ex)
             lines.append(f"- `{loc}`")
             if msg:
@@ -235,19 +487,7 @@ def get_corpus_data(cop: str, input_path: Path | None, extended: bool) -> dict:
                     lines.append(f"  {s}")
                 lines.append("  ```")
 
-    return {
-        "fp": fp,
-        "fn": fn,
-        "matches": matches,
-        "examples": "\n".join(lines) if lines else "(no example locations in corpus data)",
-    }
-
-
-def _normalize_example(ex) -> tuple[str, str, list[str] | None]:
-    """Normalize an example to (loc_string, message, embedded_context)."""
-    if isinstance(ex, dict):
-        return ex.get("loc", ""), ex.get("msg", ""), ex.get("src")
-    return ex, "", None
+    return "\n".join(lines) if lines else "(no example locations in corpus data)"
 
 
 def detect_prism_pitfalls(rust_source: str) -> list[str]:
@@ -263,6 +503,7 @@ def generate_task(
     cop: str,
     input_path: Path | None = None,
     extended: bool = False,
+    binary_path: Path | None = None,
 ) -> str:
     """Generate the full task markdown for a cop."""
     dept, name, snake = parse_cop_name(cop)
@@ -285,6 +526,33 @@ def generate_task(
     offense_fixture, no_offense_fixture = find_fixtures(dept, snake)
     corpus = get_corpus_data(cop, input_path, extended)
 
+    # Run pre-diagnostic if binary is available
+    diagnostics = None
+    if binary_path and binary_path.exists():
+        print(f"Running pre-diagnostic with {binary_path}...", file=sys.stderr)
+        diagnostics = run_diagnostic(
+            binary_path, cop,
+            corpus["fp_examples"], corpus["fn_examples"],
+        )
+        n_diag = sum(1 for d in diagnostics if d.get("diagnosed"))
+        print(f"  Diagnosed {n_diag}/{len(diagnostics)} examples", file=sys.stderr)
+
+    # Classify diagnosed examples
+    has_code_bugs = False
+    has_config_issues = False
+    if diagnostics:
+        for d in diagnostics:
+            if not d.get("diagnosed"):
+                continue
+            if d["kind"] == "fn" and not d.get("detected"):
+                has_code_bugs = True
+            elif d["kind"] == "fn" and d.get("detected"):
+                has_config_issues = True
+            elif d["kind"] == "fp" and d.get("detected"):
+                has_code_bugs = True
+            elif d["kind"] == "fp" and not d.get("detected"):
+                has_config_issues = True
+
     # Detect Prism pitfalls
     pitfalls = detect_prism_pitfalls(rust_source)
 
@@ -304,7 +572,7 @@ You are fixing ONE cop in **nitrocop**, a Rust Ruby linter that uses Prism for p
 **Focus on:** {focus} ({"nitrocop flags code RuboCop does not" if corpus["fp"] > corpus["fn"] else "RuboCop flags code nitrocop misses" if corpus["fn"] > corpus["fp"] else "both directions"}).
 
 ### Workflow
-1. Read the FP/FN examples below to understand what pattern is wrong
+1. Read the **Pre-diagnostic Results** and **Corpus FP/FN Examples** sections below first
 2. Add a test case FIRST:
    - FN fix: add the missed pattern to `tests/fixtures/cops/{dept_snake}/{snake}/offense.rb` with `^` annotation
    - FP fix: add the false-positive pattern to `tests/fixtures/cops/{dept_snake}/{snake}/no_offense.rb`
@@ -320,7 +588,46 @@ Mark offenses with `^` markers on the line AFTER the offending source line:
 x = 1
      ^^ {cop}: Trailing whitespace detected.
 ```
-The `^` characters must align with the offending columns. The message format is `{cop}: <message text>`.
+The `^` characters must align with the offending columns. The message format is `{cop}: <message text>`.""")
+
+    # Add diagnostic-aware guidance
+    if diagnostics and has_config_issues and not has_code_bugs:
+        parts.append(f"""
+### IMPORTANT: This is a config/context issue, NOT a detection bug
+Pre-diagnostic shows nitrocop already detects all FP/FN patterns correctly in isolation.
+The corpus mismatches are caused by configuration differences in target repos.
+
+**Do NOT loop trying to fix detection logic — the detection code is correct.**
+
+Instead:
+1. Investigate why the cop doesn't fire (FN) or fires incorrectly (FP) in the target
+   repo's config context. Common causes:
+   - Include/Exclude patterns in the cop's config not matching the file path
+   - The cop being disabled by the target repo's `.rubocop.yml`
+   - `# rubocop:disable` comments in the source file
+   - File path patterns (e.g., spec files excluded by default)
+2. Look at `src/config/` for how config affects this cop
+3. If you can fix the config resolution, do so. Otherwise document your findings as a
+   `///` comment on the cop struct and commit what you have.""")
+
+    elif diagnostics and has_config_issues and has_code_bugs:
+        parts.append(f"""
+### Mixed issues: some code bugs, some config issues
+Pre-diagnostic shows SOME patterns are correctly detected in isolation (config issues)
+and SOME are genuinely missed (code bugs). See the per-example diagnosis below.
+
+- For examples marked **CODE BUG**: follow the standard TDD workflow
+- For examples marked **CONFIG/CONTEXT**: investigate config resolution, not detection logic""")
+
+    parts.append(f"""
+### If your test passes immediately
+If you add a test case and it passes without code changes, the corpus mismatch is
+caused by config/context differences, not a detection bug.
+**Do NOT loop** trying to make the test fail. Instead:
+1. Investigate config resolution (Include/Exclude, cop enablement, disable comments)
+2. The fix is likely in `src/config/` or the cop's config handling, not detection logic
+3. If you cannot determine the root cause within 5 minutes, document your findings as
+   a `///` comment on the cop struct and commit
 
 ### Rules
 - Only modify `src/cop/{dept_snake}/{snake}.rs` and `tests/fixtures/cops/{dept_snake}/{snake}/`
@@ -335,6 +642,15 @@ The `^` characters must align with the offending columns. The message format is 
         for note in pitfalls:
             parts.append(f"- {note}")
         parts.append("")
+
+    # Pre-diagnostic results (high-value: before source code)
+    if diagnostics:
+        parts.append("## Pre-diagnostic Results\n")
+        parts.append(format_corpus_section(cop, corpus, diagnostics))
+        parts.append("")
+    else:
+        # No diagnostics — put corpus examples in the usual place (at the end)
+        pass
 
     # Rust source
     rust_rel = rust_path.relative_to(PROJECT_ROOT)
@@ -362,10 +678,11 @@ The `^` characters must align with the offending columns. The message format is 
         parts.append(f"## Current Fixture: no_offense.rb\n`tests/fixtures/cops/{dept_snake}/{snake}/no_offense.rb`\n")
         parts.append(f"```ruby\n{no_offense_fixture}```\n")
 
-    # Corpus data
-    parts.append("## Corpus FP/FN Examples\n")
-    parts.append(corpus["examples"])
-    parts.append("")
+    # Corpus data (without diagnostics, for fallback)
+    if not diagnostics:
+        parts.append("## Corpus FP/FN Examples\n")
+        parts.append(format_corpus_section(cop, corpus, None))
+        parts.append("")
 
     return "\n".join(parts)
 
@@ -380,9 +697,15 @@ def main():
                         help="Path to corpus-results.json (default: download from CI)")
     parser.add_argument("--extended", action="store_true",
                         help="Use extended corpus (5k+ repos)")
+    parser.add_argument("--binary", type=Path,
+                        help="Path to nitrocop binary for pre-diagnostic "
+                             "(runs cop on extracted source to classify FP/FN)")
     args = parser.parse_args()
 
-    task = generate_task(args.cop, args.input, args.extended)
+    # Resolve binary to absolute path so it works from any cwd
+    binary = args.binary.resolve() if args.binary else None
+
+    task = generate_task(args.cop, args.input, args.extended, binary)
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -390,7 +713,6 @@ def main():
         print(f"Task written to {args.output}", file=sys.stderr)
     else:
         print(task)
-
 
 
 if __name__ == "__main__":

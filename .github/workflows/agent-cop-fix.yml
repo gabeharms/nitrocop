@@ -55,6 +55,13 @@ jobs:
           print(f'filter=cop::{dept_dir}::{cop_snake}')
           " "${{ github.event.inputs.cop }}" >> "$GITHUB_OUTPUT"
 
+      # --- Build (before task generation for pre-diagnostic) ---
+
+      - name: Build binary
+        run: |
+          cargo build 2>&1
+          cargo test --lib --no-run 2>&1
+
       - name: Generate task prompt
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,8 +69,11 @@ jobs:
           python3 scripts/agent/generate-cop-task.py \
             "${{ github.event.inputs.cop }}" \
             --extended \
+            --binary target/debug/nitrocop \
             --output /tmp/task.md
+          echo "=== Task prompt stats ==="
           wc -l /tmp/task.md
+          grep -c "CODE BUG\|CONFIG/CONTEXT\|CONFIRMED\|NOT REPRODUCED" /tmp/task.md || echo "no diagnostics"
 
       - name: Prepare clean workspace for agent
         run: |
@@ -76,11 +86,6 @@ jobs:
             2>/dev/null || true
           git commit -m "tmp: clean workspace for agent"
         id: prep
-
-      # --- Build (cached, ~30s warm / ~3 min cold) ---
-
-      - name: Build test binary
-        run: cargo test --lib --no-run 2>&1
 
       # --- Install + run agent ---
 
@@ -126,11 +131,15 @@ jobs:
           if [ "${{ github.event.inputs.backend }}" = "minimax" ]; then
             claude -p --dangerously-skip-permissions \
               --output-format json \
-              "$(cat /tmp/task.md)" > /tmp/agent-result.json 2>/tmp/agent.log || true
+              "$(cat /tmp/task.md)" \
+              > /tmp/agent-result.json \
+              2> >(tee /tmp/agent.log >&2) || true
           else
             mkdir -p ~/.codex
             echo "$CODEX_AUTH_JSON" > ~/.codex/auth.json
-            codex exec --full-auto -m gpt-5.4 - < /tmp/task.md > /tmp/agent-result.json 2>/tmp/agent.log || true
+            codex exec --full-auto -m gpt-5.4 - < /tmp/task.md \
+              > /tmp/agent-result.json \
+              2> >(tee /tmp/agent.log >&2) || true
           fi
 
           kill $WATCHER_PID 2>/dev/null || true
@@ -141,6 +150,84 @@ jobs:
           echo "Turns: $(jq -r '.num_turns // "?"' /tmp/agent-result.json 2>/dev/null)"
           echo "Result: $(jq -r '.result // "no result"' /tmp/agent-result.json 2>/dev/null | head -20)"
 
+      - name: Generate summary
+        if: always()
+        run: |
+          COP="${{ github.event.inputs.cop }}"
+          BACKEND="${{ github.event.inputs.backend }}"
+
+          {
+            echo "# Agent Cop Fix: ${COP}"
+            echo ""
+            echo "**Backend:** ${BACKEND}"
+            echo "**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo ""
+
+            # Agent result summary
+            if [ -s /tmp/agent-result.json ]; then
+              COST=$(jq -r '.total_cost_usd // "?"' /tmp/agent-result.json 2>/dev/null)
+              TURNS=$(jq -r '.num_turns // "?"' /tmp/agent-result.json 2>/dev/null)
+              RESULT=$(jq -r '.result // "no result"' /tmp/agent-result.json 2>/dev/null)
+              echo "## Result"
+              echo ""
+              echo "| Metric | Value |"
+              echo "|--------|-------|"
+              echo "| Cost | \$${COST} |"
+              echo "| Turns | ${TURNS} |"
+              echo ""
+              echo "### Agent Output"
+              echo ""
+              echo '```'
+              echo "${RESULT}" | head -50
+              echo '```'
+            else
+              echo "## Result"
+              echo ""
+              echo "No agent result (agent-result.json is empty or missing)."
+            fi
+            echo ""
+
+            # Changes summary
+            echo "## Changes"
+            echo ""
+            if git diff --stat HEAD~1 2>/dev/null | grep -q '.'; then
+              echo '```'
+              git diff --stat HEAD~1 2>/dev/null || echo "(no git diff available)"
+              echo '```'
+            else
+              echo "No file changes detected."
+            fi
+            echo ""
+
+            # Task prompt excerpt
+            echo "## Task Prompt (first 30 lines)"
+            echo ""
+            echo '```markdown'
+            head -30 /tmp/task.md 2>/dev/null || echo "(task.md not found)"
+            echo '```'
+            echo ""
+
+            # Pre-diagnostic results
+            DIAG=$(grep -A 50 "## Pre-diagnostic Results" /tmp/task.md 2>/dev/null | head -50)
+            if [ -n "$DIAG" ]; then
+              echo "## Pre-diagnostic Results"
+              echo ""
+              echo "$DIAG" | tail -n +2
+              echo ""
+            fi
+
+            # Agent log tail
+            if [ -s /tmp/agent.log ]; then
+              echo "## Agent Log (last 30 lines)"
+              echo ""
+              echo '```'
+              tail -30 /tmp/agent.log
+              echo '```'
+            fi
+          } > /tmp/summary.md
+
+          cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload agent log
         if: always()
         uses: actions/upload-artifact@v4
@@ -150,6 +237,7 @@ jobs:
             /tmp/agent.log
             /tmp/agent-result.json
             /tmp/task.md
+            /tmp/summary.md
             ~/.claude/projects/**/*.jsonl
           retention-days: 7
 
