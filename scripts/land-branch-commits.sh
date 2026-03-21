@@ -83,9 +83,11 @@ total_landed=0
 total_skipped=0
 
 clean_message() {
-  # Strip claude.ai URLs and Co-Authored-By lines, trim trailing blank lines
+  # Strip claude.ai URLs and Claude/Anthropic Co-Authored-By lines, trim trailing blank lines
+  # Preserves non-Claude Co-Authored-By trailers (e.g., 6[bot])
   grep -v 'https://claude\.ai' \
-    | grep -v '^Co-Authored-By:' \
+    | grep -v '^Co-Authored-By:.*anthropic\.com' \
+    | grep -v '^Co-Authored-By:.*Claude' \
     | awk '{lines[NR]=$0} END{while(NR>0 && lines[NR]=="") NR--; for(i=1;i<=NR;i++) print lines[i]}'
 }
 
