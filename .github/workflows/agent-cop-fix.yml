@@ -98,6 +98,58 @@ jobs:
           print(f'filter=cop::{dept_dir}::{cop_snake}')
           " "${{ github.event.inputs.cop }}" >> "$GITHUB_OUTPUT"
 
+      # --- App token (needed for push + PR creation as 6[bot]) ---
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # --- Dedup guard + claim PR upfront ---
+      - name: Create draft PR (claim)
+        id: claim
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          COP="${{ github.event.inputs.cop }}"
+          MODE="${{ github.event.inputs.mode }}"
+          BACKEND="${{ github.event.inputs.backend }}"
+          BRANCH="${{ steps.cop.outputs.branch }}"
+          RETRY_NOTE=""
+          if [ "$MODE" = "retry" ]; then RETRY_NOTE=" (retry)"; fi
+
+          # Check for existing open PR
+          EXISTING=$(gh pr list --state open --search "[bot] Fix ${COP} in:title" --json number,title --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "::error::Skipping ${COP} — PR #${EXISTING} already open"
+            exit 1
+          fi
+
+          # Create empty branch and draft PR as a claim marker
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git checkout -B "$BRANCH" origin/main
+          git commit --allow-empty -m "[bot] Fix ${COP}: in progress"
+          git push -u origin "$BRANCH"
+
+          MODEL_LABEL="model:${BACKEND}"
+          gh label create agent-fix --color "0e8a16" 2>/dev/null || true
+          gh label create "$MODEL_LABEL" --color "c2e0c6" 2>/dev/null || true
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          PR_URL=$(gh pr create \
+            --draft \
+            --base main \
+            --head "$BRANCH" \
+            --label "agent-fix,${MODEL_LABEL}" \
+            --title "[bot] Fix ${COP}${RETRY_NOTE}" \
+            --body "Automated ${MODE} fix for ${COP} (backend: ${BACKEND}). Agent running: ${RUN_URL}")
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "Created draft PR: $PR_URL"
+
+          # Switch back to main for the build/agent steps
+          git checkout main
+
       # --- Build (before task generation for pre-diagnostic) ---
 
       - name: Build binary
@@ -383,27 +435,19 @@ jobs:
             echo "No changes made"
           fi
 
-      - name: Generate app token
-        if: steps.changes.outputs.has_changes == 'true'
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
-      - name: Create PR
+      - name: Push to PR and mark ready
         if: steps.changes.outputs.has_changes == 'true'
         id: pr
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Use app token for push + PR so pull_request workflows trigger
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
           BRANCH="${{ steps.cop.outputs.branch }}"
           COP="${{ github.event.inputs.cop }}"
           BACKEND="${{ github.event.inputs.backend }}"
           MODE="${{ github.event.inputs.mode }}"
+          PR_URL="${{ steps.claim.outputs.pr_url }}"
 
           # Commit any uncommitted changes
           git add -A
@@ -413,29 +457,25 @@ jobs:
           git diff "${{ steps.prep.outputs.main_sha }}" HEAD -- \
             src/cop/ tests/fixtures/cops/ bench/corpus/ > /tmp/agent.patch
 
-          # Branch from origin/main (not main_sha which may differ from remote
-          # and cause workflow file diffs that GITHUB_TOKEN can't push)
-          git fetch origin main
-          git checkout -B "$BRANCH" origin/main
+          # Branch from the draft PR branch
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
 
           if [ ! -s /tmp/agent.patch ]; then
             echo "No cop file changes found in agent output"
             echo "has_pr=false" >> "$GITHUB_OUTPUT"
+            # Close the draft PR — agent produced nothing
+            gh pr close "$PR_URL" --comment "Agent produced no changes." --delete-branch
             exit 0
           fi
 
-          CLEAN_APPLY=true
-          MODEL_LABEL="model:${BACKEND}"
-          LABELS="agent-fix,${MODEL_LABEL}"
           if git apply --3way /tmp/agent.patch; then
             echo "Patch applied cleanly"
           else
-            echo "WARNING: patch had conflicts — creating PR anyway for review"
-            # Stage whatever applied, resolve conflicts by taking ours
+            echo "WARNING: patch had conflicts"
             git checkout --theirs -- . 2>/dev/null || true
             git add -A
-            CLEAN_APPLY=false
-            LABELS="agent-fix,needs-rebase"
+            gh pr edit "$PR_URL" --add-label "needs-rebase"
           fi
 
           # Auto-format Rust files (agent often skips this)
@@ -444,31 +484,27 @@ jobs:
           git add src/cop/ tests/fixtures/cops/ bench/corpus/
 
           RETRY_NOTE=""
-          if [ "$MODE" = "retry" ]; then
-            RETRY_NOTE=" (retry)"
-          fi
+          if [ "$MODE" = "retry" ]; then RETRY_NOTE=" (retry)"; fi
           git commit --allow-empty -m "Fix ${COP}: agent-generated fix${RETRY_NOTE} ($BACKEND)"
 
-          git push origin --delete "$BRANCH" 2>/dev/null || true
-          git push -u origin "$BRANCH"
+          git push origin "$BRANCH"
 
-          # Ensure labels exist
-          gh label create "$MODEL_LABEL" --color "c2e0c6" 2>/dev/null || true
-          gh label create "needs-rebase" --color "e4e669" 2>/dev/null || true
-
-          PR_BODY="Automated ${MODE} fix for ${COP} (backend: ${BACKEND})."
-
-          PR_URL=$(gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --label "$LABELS" \
-            --title "Fix ${COP}: agent-generated conformance fix${RETRY_NOTE}" \
-            --body "$PR_BODY")
+          # Mark PR as ready for review (no longer draft)
+          gh pr ready "$PR_URL"
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "has_pr=true" >> "$GITHUB_OUTPUT"
-          echo "Created PR: $PR_URL"
+          echo "PR ready: $PR_URL"
 
           # Enable auto-merge (rebase to preserve individual commits).
           # PR will merge automatically once CI passes + review approval.
           gh pr merge "$PR_URL" --auto --rebase --delete-branch
 
+      # --- Cleanup: close draft PR if agent failed ---
+      - name: Close draft PR on failure
+        if: failure() && steps.claim.outputs.pr_url
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh pr close "${{ steps.claim.outputs.pr_url }}" \
+            --comment "Agent failed. See run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --delete-branch
