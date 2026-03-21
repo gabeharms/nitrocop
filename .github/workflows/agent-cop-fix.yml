@@ -437,6 +437,10 @@ jobs:
           git push origin --delete "$BRANCH" 2>/dev/null || true
           git push -u origin "$BRANCH"
 
+          # Ensure labels exist
+          gh label create "$MODEL_LABEL" --color "c2e0c6" 2>/dev/null || true
+          gh label create "needs-rebase" --color "e4e669" 2>/dev/null || true
+
           PR_URL=$(gh pr create \
             --base main \
             --head "$BRANCH" \
