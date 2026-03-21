@@ -61,7 +61,7 @@ jobs:
       - name: Build binary
         run: |
           cargo build 2>&1
-          cargo test --lib --no-run 2>&1
+          cargo test --release --lib --no-run 2>&1
 
       - name: Generate task prompt
         env:
@@ -292,8 +292,8 @@ jobs:
             git apply /tmp/agent.patch
 
             # Validate
-            cargo test --lib --no-run 2>&1
-            cargo test --lib -- "${{ steps.cop.outputs.filter }}" 2>&1
+            cargo test --release --lib --no-run 2>&1
+            cargo test --release --lib -- "${{ steps.cop.outputs.filter }}" 2>&1
             echo "Tests pass for ${COP}"
 
             # Create clean branch + PR

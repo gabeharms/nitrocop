@@ -576,9 +576,9 @@ You are fixing ONE cop in **nitrocop**, a Rust Ruby linter that uses Prism for p
 2. Add a test case FIRST:
    - FN fix: add the missed pattern to `tests/fixtures/cops/{dept_snake}/{snake}/offense.rb` with `^` annotation
    - FP fix: add the false-positive pattern to `tests/fixtures/cops/{dept_snake}/{snake}/no_offense.rb`
-3. Verify test fails: `cargo test --lib -- cop::{dept_snake}::{snake}`
+3. Verify test fails: `cargo test --release --lib -- cop::{dept_snake}::{snake}`
 4. Fix `src/cop/{dept_snake}/{snake}.rs`
-5. Verify test passes: `cargo test --lib -- cop::{dept_snake}::{snake}`
+5. Verify test passes: `cargo test --release --lib -- cop::{dept_snake}::{snake}`
 6. Add a `///` doc comment on the cop struct documenting what you found and fixed
 7. Commit only your cop's files
 
@@ -631,7 +631,7 @@ caused by config/context differences, not a detection bug.
 
 ### Rules
 - Only modify `src/cop/{dept_snake}/{snake}.rs` and `tests/fixtures/cops/{dept_snake}/{snake}/`
-- Run `cargo test --lib -- cop::{dept_snake}::{snake}` to verify your fix (do NOT run the full test suite)
+- Run `cargo test --release --lib -- cop::{dept_snake}::{snake}` to verify your fix (do NOT run the full test suite)
 - Do NOT touch unrelated files
 - Do NOT use `git stash`
 """)
