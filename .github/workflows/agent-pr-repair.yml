@@ -225,8 +225,26 @@ jobs:
         run: |
           python3 scripts/ci/prepare_agent_workspace.py \
             --mode agent-pr-repair \
+            --backend "${{ steps.repair.outputs.backend }}" \
             --preserve-ci-scripts /tmp/ci-scripts
           echo "workspace_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Append available helper scripts to prompt
+        if: steps.pr.outputs.should_run == 'true' && steps.repair.outputs.route != 'skip'
+        run: |
+          {
+            echo ""
+            echo "## Available Local Helper Scripts"
+            echo ""
+            if [ -d scripts ]; then
+              echo "Only these helper scripts are present in this CI workspace:"
+              echo ""
+              find scripts -type f | sort | sed 's#^#- `#; s#$#`#'
+            else
+              echo "No extra helper scripts are present in this CI workspace."
+            fi
+            echo ""
+          } >> /tmp/final-task.md
 
       - name: Skip non-repairable failures
         if: steps.pr.outputs.should_run == 'true' && steps.repair.outputs.route == 'skip'

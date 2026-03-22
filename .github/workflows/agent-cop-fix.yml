@@ -330,8 +330,26 @@ jobs:
           echo "main_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           python3 scripts/ci/prepare_agent_workspace.py \
             --mode agent-cop-fix \
+            --backend "${{ github.event.inputs.backend }}" \
             --preserve-ci-scripts /tmp/ci-scripts
         id: prep
+
+      - name: Append available helper scripts to prompt
+        if: steps.task.outputs.code_bugs != '0'
+        run: |
+          {
+            echo ""
+            echo "## Available Local Helper Scripts"
+            echo ""
+            if [ -d scripts ]; then
+              echo "Only these helper scripts are present in this CI workspace:"
+              echo ""
+              find scripts -type f | sort | sed 's#^#- `#; s#$#`#'
+            else
+              echo "No extra helper scripts are present in this CI workspace."
+            fi
+            echo ""
+          } >> /tmp/final-task.md
 
       # --- Install + run agent ---
 

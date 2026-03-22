@@ -31,6 +31,14 @@ def make_repo() -> Path:
 
     (tmp / "scripts" / "ci").mkdir(parents=True)
     (tmp / "scripts" / "ci" / "helper.py").write_text("print('ok')\n")
+    (tmp / "scripts" / "agent").mkdir(parents=True)
+    (tmp / "scripts" / "check-cop.py").write_text("print('check')\n")
+    (tmp / "scripts" / "corpus_download.py").write_text("print('download')\n")
+    (tmp / "scripts" / "corpus_smoke_test.py").write_text("print('smoke')\n")
+    (tmp / "scripts" / "investigate-cop.py").write_text("print('investigate')\n")
+    (tmp / "scripts" / "verify-cop-locations.py").write_text("print('verify')\n")
+    (tmp / "scripts" / "agent" / "detect_changed_cops.py").write_text("print('changed')\n")
+    (tmp / "scripts" / "noise.py").write_text("print('noise')\n")
     (tmp / ".github" / "workflows").mkdir(parents=True)
     (tmp / ".github" / "workflows" / "test.yml").write_text("name: test\n")
     (tmp / ".claude").mkdir()
@@ -54,7 +62,7 @@ def make_repo() -> Path:
     return tmp
 
 
-def run_script(repo: Path, mode: str) -> tuple[subprocess.CompletedProcess[str], Path]:
+def run_script(repo: Path, mode: str, backend: str) -> tuple[subprocess.CompletedProcess[str], Path]:
     preserved = repo / "tmp-preserved-ci"
     result = subprocess.run(
         [
@@ -62,6 +70,8 @@ def run_script(repo: Path, mode: str) -> tuple[subprocess.CompletedProcess[str],
             str(SCRIPT),
             "--mode",
             mode,
+            "--backend",
+            backend,
             "--repo-root",
             str(repo),
             "--preserve-ci-scripts",
@@ -75,11 +85,12 @@ def run_script(repo: Path, mode: str) -> tuple[subprocess.CompletedProcess[str],
     return result, preserved
 
 
-def test_agent_cop_fix_prunes_scripts_and_rewrites_docs():
+def test_agent_cop_fix_minimax_prunes_all_scripts():
     repo = make_repo()
-    result, preserved = run_script(repo, "agent-cop-fix")
+    result, preserved = run_script(repo, "agent-cop-fix", "minimax")
 
     assert "cleanup_sha=" in result.stdout
+    assert "available_scripts=" in result.stdout
     assert (repo / "AGENTS.md").read_text() == "minimal instructions\n"
     assert (repo / "CLAUDE.md").read_text() == "minimal instructions\n"
     assert not (repo / "scripts").exists()
@@ -91,14 +102,37 @@ def test_agent_cop_fix_prunes_scripts_and_rewrites_docs():
     assert git(repo, "log", "--format=%s", "-1") == "tmp: clean workspace for agent"
 
 
-def test_agent_pr_repair_keeps_scripts_and_bench():
+def test_agent_cop_fix_codex_keeps_allowlisted_scripts_only():
     repo = make_repo()
-    result, preserved = run_script(repo, "agent-pr-repair")
+    result, preserved = run_script(repo, "agent-cop-fix", "codex")
+
+    assert "scripts/check-cop.py" in result.stdout
+    assert (repo / "scripts" / "check-cop.py").exists()
+    assert (repo / "scripts" / "corpus_download.py").exists()
+    assert (repo / "scripts" / "investigate-cop.py").exists()
+    assert (repo / "scripts" / "verify-cop-locations.py").exists()
+    assert (repo / "scripts" / "agent" / "detect_changed_cops.py").exists()
+    assert not (repo / "scripts" / "corpus_smoke_test.py").exists()
+    assert not (repo / "scripts" / "noise.py").exists()
+    assert not (repo / "scripts" / "ci").exists()
+    assert (preserved / "helper.py").exists()
+
+
+def test_agent_pr_repair_codex_keeps_subset_scripts_and_bench():
+    repo = make_repo()
+    result, preserved = run_script(repo, "agent-pr-repair", "codex")
 
     assert "cleanup_sha=" in result.stdout
     assert (repo / "AGENTS.md").read_text() == "minimal instructions\n"
     assert (repo / "CLAUDE.md").read_text() == "minimal instructions\n"
-    assert (repo / "scripts" / "ci" / "helper.py").exists()
+    assert (repo / "scripts" / "check-cop.py").exists()
+    assert (repo / "scripts" / "corpus_download.py").exists()
+    assert (repo / "scripts" / "corpus_smoke_test.py").exists()
+    assert (repo / "scripts" / "investigate-cop.py").exists()
+    assert (repo / "scripts" / "verify-cop-locations.py").exists()
+    assert (repo / "scripts" / "agent" / "detect_changed_cops.py").exists()
+    assert not (repo / "scripts" / "noise.py").exists()
+    assert not (repo / "scripts" / "ci").exists()
     assert (repo / "bench" / "corpus" / "manifest.jsonl").exists()
     assert not (repo / ".github").exists()
     assert not (repo / "docs").exists()
@@ -108,6 +142,7 @@ def test_agent_pr_repair_keeps_scripts_and_bench():
 
 
 if __name__ == "__main__":
-    test_agent_cop_fix_prunes_scripts_and_rewrites_docs()
-    test_agent_pr_repair_keeps_scripts_and_bench()
+    test_agent_cop_fix_minimax_prunes_all_scripts()
+    test_agent_cop_fix_codex_keeps_allowlisted_scripts_only()
+    test_agent_pr_repair_codex_keeps_subset_scripts_and_bench()
     print("All tests passed.")
