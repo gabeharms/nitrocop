@@ -28,10 +28,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Allow importing from scripts/
+# Allow importing shared helpers from scripts/
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS_DIR))
-from corpus_download import download_corpus_results as _download_corpus
+from shared.corpus_download import download_corpus_results as _download_corpus
 
 PROJECT_ROOT = SCRIPTS_DIR.parent
 

@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from corpus_download import download_corpus_results as _download_corpus
+from shared.corpus_download import download_corpus_results as _download_corpus
 
 TIER_THRESHOLDS = {
     1: (1, 50),       # 1-50 FP+FN: easy, best for automated agents

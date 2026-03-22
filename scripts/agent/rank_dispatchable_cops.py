@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from corpus_download import download_corpus_results
+from shared.corpus_download import download_corpus_results
 
 
 def run_nitrocop(binary: Path, cwd: str, cop: str) -> list[dict]:

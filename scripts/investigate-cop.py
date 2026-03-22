@@ -25,9 +25,7 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-# Allow importing corpus_download from the same directory
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from corpus_download import download_corpus_results as _download_corpus
+from shared.corpus_download import download_corpus_results as _download_corpus
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_DIR = PROJECT_ROOT / "vendor" / "corpus"

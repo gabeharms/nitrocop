@@ -21,8 +21,7 @@ import json
 import sys
 from pathlib import Path
 
-# Add scripts/ to path for corpus_download
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shared.corpus_download import download_corpus_results
 
 
 def load_json(path: str | None) -> dict | None:
@@ -39,7 +38,6 @@ def load_corpus_results(input_path: str | None) -> dict:
     if input_path:
         return json.loads(Path(input_path).read_text())
 
-    from corpus_download import download_corpus_results
     path, run_id, _ = download_corpus_results(prefer="extended")
     print(f"Using corpus results from CI run {run_id}", file=sys.stderr)
     return json.loads(path.read_text())

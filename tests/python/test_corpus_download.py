@@ -20,34 +20,34 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
-import corpus_download as cd
+import shared.corpus_download as cd
 
 
 class TestDetectGithubRepo(unittest.TestCase):
     """Tests for _detect_github_repo()."""
 
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download.subprocess.run")
     def test_https_url(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="https://github.com/owner/repo.git\n"
         )
         self.assertEqual(cd._detect_github_repo(), "owner/repo")
 
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download.subprocess.run")
     def test_https_url_no_git_suffix(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="https://github.com/owner/repo\n"
         )
         self.assertEqual(cd._detect_github_repo(), "owner/repo")
 
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download.subprocess.run")
     def test_ssh_url(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="git@github.com:owner/repo.git\n"
         )
         self.assertEqual(cd._detect_github_repo(), "owner/repo")
 
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download.subprocess.run")
     def test_proxy_url(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -55,12 +55,12 @@ class TestDetectGithubRepo(unittest.TestCase):
         )
         self.assertEqual(cd._detect_github_repo(), "myorg/myrepo")
 
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download.subprocess.run")
     def test_no_remote(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stdout="")
         self.assertIsNone(cd._detect_github_repo())
 
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download.subprocess.run")
     def test_unrecognized_url(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="https://gitlab.com/owner/repo.git\n"
@@ -96,19 +96,19 @@ class TestCleanStaleLocal(unittest.TestCase):
 class TestTryGh(unittest.TestCase):
     """Tests for _try_gh()."""
 
-    @patch("corpus_download.shutil.which", return_value=None)
+    @patch("shared.corpus_download.shutil.which", return_value=None)
     def test_gh_not_installed(self, _mock_which):
         self.assertIsNone(cd._try_gh("owner/repo"))
 
-    @patch("corpus_download.subprocess.run")
-    @patch("corpus_download.shutil.which", return_value="/usr/bin/gh")
+    @patch("shared.corpus_download.subprocess.run")
+    @patch("shared.corpus_download.shutil.which", return_value="/usr/bin/gh")
     def test_gh_not_authenticated(self, _mock_which, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stderr="not logged in")
         self.assertIsNone(cd._try_gh("owner/repo"))
 
-    @patch("corpus_download.shutil.copy2")
-    @patch("corpus_download.subprocess.run")
-    @patch("corpus_download.shutil.which", return_value="/usr/bin/gh")
+    @patch("shared.corpus_download.shutil.copy2")
+    @patch("shared.corpus_download.subprocess.run")
+    @patch("shared.corpus_download.shutil.which", return_value="/usr/bin/gh")
     def test_gh_success_with_cache(self, _mock_which, mock_run, _mock_copy):
         auth_result = MagicMock(returncode=0)
         list_result = MagicMock(
@@ -130,8 +130,8 @@ class TestTryGh(unittest.TestCase):
         finally:
             cache_file.unlink(missing_ok=True)
 
-    @patch("corpus_download.subprocess.run")
-    @patch("corpus_download.shutil.which", return_value="/usr/bin/gh")
+    @patch("shared.corpus_download.subprocess.run")
+    @patch("shared.corpus_download.shutil.which", return_value="/usr/bin/gh")
     def test_gh_no_runs(self, _mock_which, mock_run):
         auth_result = MagicMock(returncode=0)
         list_result = MagicMock(returncode=0, stdout="[]")
@@ -145,20 +145,20 @@ class TestTryCurlApi(unittest.TestCase):
     def test_no_repo(self):
         self.assertIsNone(cd._try_curl_api(None))
 
-    @patch("corpus_download._github_api_get")
+    @patch("shared.corpus_download._github_api_get")
     def test_api_error(self, mock_get):
         from urllib.error import URLError
 
         mock_get.side_effect = URLError("connection failed")
         self.assertIsNone(cd._try_curl_api("owner/repo"))
 
-    @patch("corpus_download._github_api_get")
+    @patch("shared.corpus_download._github_api_get")
     def test_no_runs(self, mock_get):
         mock_get.return_value = {"workflow_runs": []}
         self.assertIsNone(cd._try_curl_api("owner/repo"))
 
     @patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": ""}, clear=False)
-    @patch("corpus_download._github_api_get")
+    @patch("shared.corpus_download._github_api_get")
     def test_no_token_prompts(self, mock_get):
         mock_get.return_value = {
             "workflow_runs": [{"id": 99, "head_sha": "def456"}]
@@ -168,8 +168,8 @@ class TestTryCurlApi(unittest.TestCase):
         result = cd._try_curl_api("owner/repo")
         self.assertIsNone(result)
 
-    @patch("corpus_download._github_api_download")
-    @patch("corpus_download._github_api_get")
+    @patch("shared.corpus_download._github_api_download")
+    @patch("shared.corpus_download._github_api_get")
     @patch.dict(os.environ, {"GH_TOKEN": "fake-token"}, clear=False)
     def test_full_download_success(self, mock_get, mock_download):
         run_id = 77777
@@ -199,8 +199,8 @@ class TestTryCurlApi(unittest.TestCase):
         finally:
             cache_file.unlink(missing_ok=True)
 
-    @patch("corpus_download._github_api_download")
-    @patch("corpus_download._github_api_get")
+    @patch("shared.corpus_download._github_api_download")
+    @patch("shared.corpus_download._github_api_get")
     @patch.dict(os.environ, {"GH_TOKEN": "fake-token"}, clear=False)
     def test_bad_zip(self, mock_get, mock_download):
         run_id = 88888
@@ -216,7 +216,7 @@ class TestTryCurlApi(unittest.TestCase):
         result = cd._try_curl_api("owner/repo", prefer="standard")
         self.assertIsNone(result)
 
-    @patch("corpus_download._github_api_get")
+    @patch("shared.corpus_download._github_api_get")
     @patch.dict(os.environ, {"GH_TOKEN": "fake-token"}, clear=False)
     def test_no_corpus_report_artifact(self, mock_get):
         run_id = 99999
@@ -272,8 +272,8 @@ class TestTryCorpusMd(unittest.TestCase):
         docs.mkdir()
         (docs / "corpus.md").write_text(content)
 
-    @patch("corpus_download._find_project_root")
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download._find_project_root")
+    @patch("shared.corpus_download.subprocess.run")
     def test_parses_diverging_cops(self, mock_run, mock_root):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_corpus_md(tmpdir, self.SAMPLE_MD)
@@ -294,8 +294,8 @@ class TestTryCorpusMd(unittest.TestCase):
             self.assertEqual(cops["Style/Foo"]["fp"], 10)
             self.assertEqual(cops["Style/Foo"]["fn"], 5)
 
-    @patch("corpus_download._find_project_root")
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download._find_project_root")
+    @patch("shared.corpus_download.subprocess.run")
     def test_parses_perfect_cops(self, mock_run, mock_root):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_corpus_md(tmpdir, self.SAMPLE_MD)
@@ -312,8 +312,8 @@ class TestTryCorpusMd(unittest.TestCase):
             self.assertEqual(cops["Lint/Baz"]["matches"], 500)
             self.assertEqual(cops["Lint/Baz"]["match_rate"], 1.0)
 
-    @patch("corpus_download._find_project_root")
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download._find_project_root")
+    @patch("shared.corpus_download.subprocess.run")
     def test_total_cop_count(self, mock_run, mock_root):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_corpus_md(tmpdir, self.SAMPLE_MD)
@@ -324,14 +324,14 @@ class TestTryCorpusMd(unittest.TestCase):
             data = json.loads(result[0].read_text())
             self.assertEqual(len(data["by_cop"]), 4)
 
-    @patch("corpus_download._find_project_root")
+    @patch("shared.corpus_download._find_project_root")
     def test_no_corpus_md_returns_none(self, mock_root):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_root.return_value = Path(tmpdir)
             self.assertIsNone(cd._try_corpus_md())
 
-    @patch("corpus_download._find_project_root")
-    @patch("corpus_download.subprocess.run")
+    @patch("shared.corpus_download._find_project_root")
+    @patch("shared.corpus_download.subprocess.run")
     def test_source_marker(self, mock_run, mock_root):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_corpus_md(tmpdir, self.SAMPLE_MD)
@@ -346,18 +346,18 @@ class TestTryCorpusMd(unittest.TestCase):
 class TestDownloadCorpusResults(unittest.TestCase):
     """Tests for the main download_corpus_results() entry point."""
 
-    @patch("corpus_download._try_corpus_md", return_value=None)
-    @patch("corpus_download._try_curl_api", return_value=None)
-    @patch("corpus_download._try_gh", return_value=None)
-    @patch("corpus_download._detect_github_repo", return_value="owner/repo")
+    @patch("shared.corpus_download._try_corpus_md", return_value=None)
+    @patch("shared.corpus_download._try_curl_api", return_value=None)
+    @patch("shared.corpus_download._try_gh", return_value=None)
+    @patch("shared.corpus_download._detect_github_repo", return_value="owner/repo")
     def test_all_methods_fail_exits(self, _repo, _gh, _curl, _md):
         with self.assertRaises(SystemExit) as ctx:
             cd.download_corpus_results()
         self.assertEqual(ctx.exception.code, 1)
 
-    @patch("corpus_download._clean_stale_local")
-    @patch("corpus_download._try_gh")
-    @patch("corpus_download._detect_github_repo", return_value="owner/repo")
+    @patch("shared.corpus_download._clean_stale_local")
+    @patch("shared.corpus_download._try_gh")
+    @patch("shared.corpus_download._detect_github_repo", return_value="owner/repo")
     def test_gh_success(self, _repo, mock_gh, mock_clean):
         fake_path = Path("/tmp/fake.json")
         mock_gh.return_value = (fake_path, 123, "abc")
@@ -367,10 +367,10 @@ class TestDownloadCorpusResults(unittest.TestCase):
         self.assertEqual(sha, "abc")
         mock_clean.assert_called_once()
 
-    @patch("corpus_download._clean_stale_local")
-    @patch("corpus_download._try_curl_api")
-    @patch("corpus_download._try_gh", return_value=None)
-    @patch("corpus_download._detect_github_repo", return_value="owner/repo")
+    @patch("shared.corpus_download._clean_stale_local")
+    @patch("shared.corpus_download._try_curl_api")
+    @patch("shared.corpus_download._try_gh", return_value=None)
+    @patch("shared.corpus_download._detect_github_repo", return_value="owner/repo")
     def test_falls_back_to_curl(self, _repo, _gh, mock_curl, mock_clean):
         fake_path = Path("/tmp/fake2.json")
         mock_curl.return_value = (fake_path, 456, "def")
@@ -379,11 +379,11 @@ class TestDownloadCorpusResults(unittest.TestCase):
         self.assertEqual(run_id, 456)
         mock_clean.assert_called_once()
 
-    @patch("corpus_download._clean_stale_local")
-    @patch("corpus_download._try_corpus_md")
-    @patch("corpus_download._try_curl_api", return_value=None)
-    @patch("corpus_download._try_gh", return_value=None)
-    @patch("corpus_download._detect_github_repo", return_value="owner/repo")
+    @patch("shared.corpus_download._clean_stale_local")
+    @patch("shared.corpus_download._try_corpus_md")
+    @patch("shared.corpus_download._try_curl_api", return_value=None)
+    @patch("shared.corpus_download._try_gh", return_value=None)
+    @patch("shared.corpus_download._detect_github_repo", return_value="owner/repo")
     def test_falls_back_to_corpus_md(self, _repo, _gh, _curl, mock_md, mock_clean):
         fake_path = Path("/tmp/fake3.json")
         mock_md.return_value = (fake_path, 0, "")
@@ -396,7 +396,7 @@ class TestDownloadCorpusResults(unittest.TestCase):
 class TestGithubApiGet(unittest.TestCase):
     """Tests for _github_api_get()."""
 
-    @patch("corpus_download.urlopen")
+    @patch("shared.corpus_download.urlopen")
     def test_without_token(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.read.return_value = b'{"key": "value"}'
@@ -410,7 +410,7 @@ class TestGithubApiGet(unittest.TestCase):
         req = mock_urlopen.call_args[0][0]
         self.assertNotIn("Authorization", req.headers)
 
-    @patch("corpus_download.urlopen")
+    @patch("shared.corpus_download.urlopen")
     def test_with_token(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.read.return_value = b'{"authed": true}'
@@ -430,27 +430,27 @@ class TestCallerScriptImports(unittest.TestCase):
 
     def test_check_cop_import(self):
         source = (SCRIPTS_DIR / "check-cop.py").read_text()
-        self.assertIn("from corpus_download import", source)
+        self.assertIn("from shared.corpus_download import", source)
 
     def test_investigate_cop_import(self):
         source = (SCRIPTS_DIR / "investigate-cop.py").read_text()
-        self.assertIn("from corpus_download import", source)
+        self.assertIn("from shared.corpus_download import", source)
 
     def test_investigate_repo_import(self):
         source = (SCRIPTS_DIR / "investigate-repo.py").read_text()
-        self.assertIn("from corpus_download import", source)
+        self.assertIn("from shared.corpus_download import", source)
 
     def test_triage_import(self):
         source = (
             ROOT / ".claude" / "skills" / "triage" / "scripts" / "triage.py"
         ).read_text()
-        self.assertIn("from corpus_download import", source)
+        self.assertIn("from shared.corpus_download import", source)
 
     def test_gem_progress_import(self):
         source = (
             ROOT / ".claude" / "skills" / "fix-department" / "scripts" / "gem_progress.py"
         ).read_text()
-        self.assertIn("from corpus_download import", source)
+        self.assertIn("from shared.corpus_download import", source)
 
 
 if __name__ == "__main__":
