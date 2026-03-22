@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
 """Dispatch-related corpus tooling.
 
 Public subcommands:
@@ -536,7 +537,7 @@ def _format_with_diagnostics(
                 lines.append("\nReady-made test snippet (add to offense.rb, adjust `^` count):")
                 lines.append(f"```ruby\n{d['test_snippet']}\n```")
             if d.get("source_context"):
-                lines.append(f"\nFull source context:")
+                lines.append("\nFull source context:")
                 lines.append(f"```ruby\n{d['source_context']}\n```")
         else:
             lines.append(f"(could not diagnose: {d.get('reason', 'unknown')})")
@@ -570,10 +571,10 @@ def _format_with_diagnostics(
                     lines.append(f"\n**Prism AST at offense line:** `{d['node_type']}`")
                     lines.append("This shows the Prism node types at the flagged location.")
                 if d.get("source_context"):
-                    lines.append(f"\nFull source context (add relevant parts to no_offense.rb):")
+                    lines.append("\nFull source context (add relevant parts to no_offense.rb):")
                     lines.append(f"```ruby\n{d['source_context']}\n```")
                 elif d.get("offense_line"):
-                    lines.append(f"\nAdd to no_offense.rb:")
+                    lines.append("\nAdd to no_offense.rb:")
                     lines.append(f"```ruby\n{d['offense_line']}\n```")
             else:
                 lines.append("**NOT REPRODUCED in isolation — CONTEXT-DEPENDENT**")
@@ -581,7 +582,7 @@ def _format_with_diagnostics(
                 lines.append("by surrounding code context or file-level state.")
                 lines.append("Investigate what full-file context causes the false detection.")
                 if d.get("source_context"):
-                    lines.append(f"\nSource context:")
+                    lines.append("\nSource context:")
                     lines.append(f"```ruby\n{d['source_context']}\n```")
             lines.append(f"\nMessage: `{d['msg']}`")
         else:
@@ -766,7 +767,7 @@ The `^` characters must align with the offending columns. The message format is 
 
     # Add diagnostic-aware guidance
     if diagnostics and has_config_issues and not has_code_bugs:
-        parts.append(f"""
+        parts.append("""
 ### IMPORTANT: This is a config/context issue, NOT a detection bug
 Pre-diagnostic shows nitrocop already detects all FP/FN patterns correctly in isolation.
 The corpus mismatches are caused by configuration differences in target repos.
@@ -785,7 +786,7 @@ Instead:
    `///` comment on the cop struct and commit what you have.""")
 
     elif diagnostics and has_config_issues and has_code_bugs:
-        parts.append(f"""
+        parts.append("""
 ### Mixed issues: some code bugs, some config issues
 Pre-diagnostic shows SOME patterns are correctly detected in isolation (config issues)
 and SOME are genuinely missed (code bugs). See the per-example diagnosis below.

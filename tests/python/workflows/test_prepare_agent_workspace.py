@@ -8,7 +8,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[3] / "scripts" / "workflows" / "prepare_agent_workspace.py"
 
 

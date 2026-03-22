@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
 """Investigate a cop's false positives/negatives from the corpus oracle data.
 
 Reads corpus-results.json (downloaded from CI or local) and shows all FP/FN
@@ -19,9 +20,7 @@ Usage:
 import argparse
 import json
 import math
-import subprocess
 import sys
-import tempfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -131,7 +130,7 @@ def main():
         query = args.cop.split("/")[-1].lower()
         matches = [e["cop"] for e in by_cop if query in e["cop"].lower()]
         if matches:
-            print(f"Similar cops:", file=sys.stderr)
+            print("Similar cops:", file=sys.stderr)
             for m in matches[:10]:
                 print(f"  {m}", file=sys.stderr)
         sys.exit(1)
@@ -139,7 +138,7 @@ def main():
     fp_count = cop_entry["fp"]
     fn_count = cop_entry["fn"]
     match_count = cop_entry["matches"]
-    total_oracle = match_count + fn_count
+    match_count + fn_count
 
     print(f"{args.cop}")
     print(f"  Matches: {match_count:,}  FP: {fp_count:,}  FN: {fn_count:,}  "

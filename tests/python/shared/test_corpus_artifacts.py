@@ -16,10 +16,10 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
+
 import shared.corpus_artifacts as cd
 
 

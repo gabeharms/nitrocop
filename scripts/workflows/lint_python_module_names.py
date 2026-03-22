@@ -7,7 +7,6 @@ import re
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]*\.py$")
 KEBAB_CASE_RE = re.compile(r"^[a-z][a-z0-9-]*\.py$")

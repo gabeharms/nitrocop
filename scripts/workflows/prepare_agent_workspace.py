@@ -14,10 +14,8 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
-
 
 SCRIPT_ALLOWLISTS = {
     "agent-cop-fix": {

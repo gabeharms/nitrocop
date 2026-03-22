@@ -3,7 +3,6 @@
 import importlib.util
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[2] / "scripts" / "dispatch-cops.py"
 SPEC = importlib.util.spec_from_file_location("dispatch_cops", SCRIPT)
 assert SPEC and SPEC.loader

@@ -76,7 +76,7 @@ def test_cli_output_format():
     lines = result.stdout.strip().split("\n")
     for line in lines:
         assert "=" in line, f"Line missing '=': {line}"
-    keys = [l.split("=", 1)[0] for l in lines]
+    keys = [line_value.split("=", 1)[0] for line_value in lines]
     assert "cli" in keys
     assert "setup_cmd" in keys
     assert "log_format" in keys

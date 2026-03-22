@@ -13,8 +13,6 @@ Usage:
 Reads pre-diagnostic results from task.md, extracts confirmed code bug
 examples, and appends them to the fixture files.
 """
-import json
-import os
 import re
 import sys
 from pathlib import Path

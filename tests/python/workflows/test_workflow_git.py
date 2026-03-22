@@ -10,9 +10,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-
 SCRIPT = Path(__file__).parents[3] / "scripts" / "workflows" / "workflow_git.py"
 sys.path.insert(0, str(SCRIPT.parent))
+
 import workflow_git
 
 

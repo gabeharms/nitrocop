@@ -291,7 +291,7 @@ def run_with_overlay_config(binary: str, repo_dir: str, repo_id: str) -> dict:
             f.write(f"inherit_from: {abs_baseline}\n\n")
             f.write("AllCops:\n")
             f.write("  Exclude:\n")
-            f.write(f'    - "nonexistent_smoke_exclude.rb"\n')
+            f.write('    - "nonexistent_smoke_exclude.rb"\n')
         overlay_config = overlay_path
 
     result = subprocess.run(
@@ -317,12 +317,12 @@ def run_all(binary: str) -> dict:
 
             dest = os.path.join(tmpdir, repo_id)
             if not clone_repo(repo, dest):
-                print(f"  SKIP (clone failed)")
+                print("  SKIP (clone failed)")
                 continue
 
-            print(f"  Running rubocop...")
+            print("  Running rubocop...")
             rc_data = run_rubocop(dest)
-            print(f"  Running nitrocop...")
+            print("  Running nitrocop...")
             nc_data = run_nitrocop(binary, dest)
 
             rc_files, nc_files, matches, fp, fn = diff_results(rc_data, nc_data)
@@ -346,17 +346,17 @@ def run_all(binary: str) -> dict:
             # direct baseline run. This catches config inheritance bugs that only
             # manifest when the corpus oracle uses per-repo config overlays.
             if os.path.isfile(GEN_REPO_CONFIG):
-                print(f"  Running overlay config check...")
+                print("  Running overlay config check...")
                 overlay_data = run_with_overlay_config(binary, dest, repo_id)
                 _, _, overlay_matches, overlay_fp, overlay_fn = diff_results(rc_data, overlay_data)
                 overlay_total = overlay_matches + overlay_fp + overlay_fn
-                overlay_rate = overlay_matches / overlay_total * 100 if overlay_total > 0 else 100.0
+                overlay_matches / overlay_total * 100 if overlay_total > 0 else 100.0
                 # The overlay path should produce the same results as the direct path.
                 # Allow a small tolerance for timing-dependent cops.
                 match_delta = abs(matches - overlay_matches)
                 fp_delta = overlay_fp - fp
                 if match_delta > REGRESSION_TOLERANCE or fp_delta > REGRESSION_TOLERANCE:
-                    print(f"  WARNING: overlay config diverges from direct baseline!")
+                    print("  WARNING: overlay config diverges from direct baseline!")
                     print(f"    direct:  matches={matches}, FP={fp}, FN={fn}")
                     print(f"    overlay: matches={overlay_matches}, FP={overlay_fp}, FN={overlay_fn}")
                     results[repo_id]["overlay_divergence"] = {
@@ -516,8 +516,8 @@ def main():
         print(f"\nFAIL: {len(failures)} regression(s) vs baseline (tolerance={REGRESSION_TOLERANCE}):")
         for msg in failures:
             print(f"  {msg}")
-        print(f"\nIf this is intentional, update the baseline:")
-        print(f"  python3 scripts/corpus-smoke-test.py --update-baseline")
+        print("\nIf this is intentional, update the baseline:")
+        print("  python3 scripts/corpus-smoke-test.py --update-baseline")
         sys.exit(1)
 
     # Ratchet: auto-tighten baseline when results improve.

@@ -16,7 +16,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-
 LOG_PATTERNS = {
     "minimax": "~/.claude/projects/**/*.jsonl",
     "codex": "~/.codex/sessions/**/*.jsonl",

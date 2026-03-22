@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[3] / "scripts" / "workflows" / "lint_python_module_names.py"
 
 

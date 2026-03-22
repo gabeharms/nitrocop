@@ -9,7 +9,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 BOT_NAME = "6[bot]"
 BOT_EMAIL = "129682364+6[bot]@users.noreply.github.com"
 EXTRAHEADER_KEY = "http.https://github.com/.extraheader"

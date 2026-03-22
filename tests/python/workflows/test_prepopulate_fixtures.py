@@ -5,8 +5,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[3] / "scripts" / "workflows"))
-import prepopulate_fixtures
 
+import prepopulate_fixtures
 
 TASK_WITH_FP = """
 # Fix Lint/AmbiguousRange — 4 FP, 0 FN

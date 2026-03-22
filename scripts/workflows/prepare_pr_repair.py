@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """Prepare an automatic PR repair attempt from a failed Checks run.
 
 Fetches the failed workflow run, classifies the failure as easy/hard/skip,
 builds a concise repair prompt, and writes a deterministic verification script
 that the workflow can rerun before pushing any changes.
 """
+
+from __future__ import annotations
 
 import argparse
 import json

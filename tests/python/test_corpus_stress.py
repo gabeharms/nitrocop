@@ -4,7 +4,6 @@
 import importlib.util
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[2] / "scripts" / "corpus-stress.py"
 SPEC = importlib.util.spec_from_file_location("corpus_stress", SCRIPT)
 assert SPEC and SPEC.loader

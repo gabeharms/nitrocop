@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Tests for agent_logs.py watch helpers."""
 import json
-import os
 import sys
 import tempfile
 from pathlib import Path

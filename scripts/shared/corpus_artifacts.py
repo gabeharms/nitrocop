@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """Shared helper to download corpus-results.json from CI.
 
 Tries multiple strategies in order:
@@ -18,6 +17,8 @@ Usage:
     path, run_id, head_sha = download_corpus_results()
 """
 
+from __future__ import annotations
+
 import io
 import json
 import os
@@ -28,8 +29,8 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 def _find_project_root() -> Path:
@@ -470,7 +471,7 @@ def _cache_synthetic_from_dir(tmpdir: Path, run_id: int) -> None:
         if candidate.exists():
             dest = _cache_dir() / f"synthetic-results-{run_id}.json"
             shutil.copy2(candidate, dest)
-            print(f"Cached synthetic-results.json from artifact", file=sys.stderr)
+            print("Cached synthetic-results.json from artifact", file=sys.stderr)
             return
 
 
@@ -481,7 +482,7 @@ def _cache_synthetic_from_zip(zf: zipfile.ZipFile, run_id: int) -> None:
             dest = _cache_dir() / f"synthetic-results-{run_id}.json"
             with zf.open(name) as f:
                 dest.write_bytes(f.read())
-            print(f"Cached synthetic-results.json from artifact", file=sys.stderr)
+            print("Cached synthetic-results.json from artifact", file=sys.stderr)
             return
 
 
