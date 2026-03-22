@@ -118,25 +118,6 @@ rubocop --only Style/MixinUsage --format json /tmp/test.rb  # structured output
 
 This is the ground truth — if RuboCop doesn't flag it, nitrocop shouldn't either (and vice versa).
 
-## Optional CI Helper Scripts
-
-Some CI runs expose a small subset of helper scripts under `scripts/`. Only use helpers that are
-actually present in the current workspace. Prefer them over ad hoc commands when available.
-
-- `scripts/check-cop.py` — aggregate corpus regression check for one cop
-- `scripts/investigate-cop.py` — inspect FP/FN examples from corpus oracle data
-- `scripts/verify-cop-locations.py` — verify exact known oracle FP/FN locations
-- `scripts/corpus_download.py` — shared corpus artifact downloader used by the other helpers
-- `scripts/agent/detect_changed_cops.py` — list cops touched by the current branch
-- `scripts/corpus_smoke_test.py` — smoke-test a few pinned repos (usually repair flows only)
-
-Typical usage when these helpers are present:
-```bash
-python3 scripts/check-cop.py Department/CopName --verbose --rerun --quick --clone
-python3 scripts/investigate-cop.py Department/CopName --context
-python3 scripts/verify-cop-locations.py Department/CopName
-```
-
 ## Scope-Aware Cops
 
 Since Prism has no parent pointers, cops that need nesting/scope context use one of:

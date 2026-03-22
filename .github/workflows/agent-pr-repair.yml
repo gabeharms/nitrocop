@@ -232,19 +232,7 @@ jobs:
       - name: Append available helper scripts to prompt
         if: steps.pr.outputs.should_run == 'true' && steps.repair.outputs.route != 'skip'
         run: |
-          {
-            echo ""
-            echo "## Available Local Helper Scripts"
-            echo ""
-            if [ -d scripts ]; then
-              echo "Only these helper scripts are present in this CI workspace:"
-              echo ""
-              find scripts -type f | sort | sed 's#^#- `#; s#$#`#'
-            else
-              echo "No extra helper scripts are present in this CI workspace."
-            fi
-            echo ""
-          } >> /tmp/final-task.md
+          python3 /tmp/ci-scripts/render_helper_scripts_section.py >> /tmp/final-task.md
 
       - name: Skip non-repairable failures
         if: steps.pr.outputs.should_run == 'true' && steps.repair.outputs.route == 'skip'
