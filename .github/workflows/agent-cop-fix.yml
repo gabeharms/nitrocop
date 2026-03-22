@@ -341,7 +341,28 @@ jobs:
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
         run: |
-          python3 /tmp/ci-scripts/validate_codex_auth.py --from-env CODEX_AUTH_JSON
+          python3 /tmp/ci-scripts/validate_codex_auth.py \
+            --from-env CODEX_AUTH_JSON \
+            --max-age-days 7
+
+      - name: Register Codex secret masks
+        if: steps.task.outputs.code_bugs != '0' && github.event.inputs.backend == 'codex'
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          python3 /tmp/ci-scripts/guard_codex_secret.py \
+            --from-env CODEX_AUTH_JSON \
+            emit-masks
+
+      - name: Set up Codex auth
+        if: steps.task.outputs.code_bugs != '0' && github.event.inputs.backend == 'codex'
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          chmod 700 ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
 
       - name: Run agent
         if: steps.task.outputs.code_bugs != '0'
@@ -355,7 +376,6 @@ jobs:
           ANTHROPIC_SMALL_FAST_MODEL: ${{ steps.backend.outputs.env_ANTHROPIC_SMALL_FAST_MODEL }}
           API_TIMEOUT_MS: ${{ steps.backend.outputs.env_API_TIMEOUT_MS }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: ${{ steps.backend.outputs.env_CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC }}
-          CODEX_AUTH_JSON: ${{ github.event.inputs.backend == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
           CARGO_INCREMENTAL: "1"
         run: |
           # Background progress watcher
@@ -469,10 +489,31 @@ jobs:
             fi
           } > /tmp/summary.md
 
+      - name: Scan generated files for Codex secret leakage
+        if: always() && steps.task.outputs.code_bugs != '0' && github.event.inputs.backend == 'codex'
+        id: leak_scan
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          python3 /tmp/ci-scripts/guard_codex_secret.py \
+            --from-env CODEX_AUTH_JSON \
+            scan-files \
+            /tmp/agent.log \
+            /tmp/agent-events.jsonl \
+            /tmp/agent-last-message.txt \
+            /tmp/agent-result.json \
+            /tmp/task.md \
+            /tmp/final-task.md \
+            /tmp/summary.md \
+            '~/.codex/sessions/**/*.jsonl'
+
+      - name: Publish summary
+        if: always() && steps.task.outputs.code_bugs != '0' && (github.event.inputs.backend != 'codex' || steps.leak_scan.outcome == 'success')
+        run: |
           cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload agent log
-        if: always() && steps.task.outputs.code_bugs != '0'
+        if: always() && steps.task.outputs.code_bugs != '0' && (github.event.inputs.backend != 'codex' || steps.leak_scan.outcome == 'success')
         uses: actions/upload-artifact@v4
         with:
           name: agent-log-${{ github.run_id }}-${{ github.run_attempt }}

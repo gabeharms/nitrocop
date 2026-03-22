@@ -63,8 +63,6 @@ BACKENDS = {
         "log_format": "codex",
         "log_pattern": "~/.codex/sessions/**/*.jsonl",
         "run_cmd": (
-            'mkdir -p ~/.codex && '
-            'printf \'%s\' "$CODEX_AUTH_JSON" > ~/.codex/auth.json && '
             '( codex exec --full-auto -m gpt-5.4 '
             '-c model_reasoning_effort=xhigh '
             '--json '
