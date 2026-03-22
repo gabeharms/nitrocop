@@ -89,17 +89,12 @@ const MULTIPLE_ARGUMENTS_METHODS: &[&[u8]] = &[
     b"module_function",
 ];
 
-/// Check if the unescaped string content can be a valid Ruby symbol.
-/// Rejects strings containing non-UTF-8 bytes (e.g., `\xF8`, `\xFF`)
-/// or null bytes, which cannot be meaningfully converted to symbols.
-/// Strings with hyphens, dots, etc. are valid — they become quoted symbols
-/// like `:'payment-sources'`.
+/// Check if the unescaped string content can be converted to a Ruby symbol.
+/// Rejects only strings containing non-UTF-8 bytes (e.g., `\xF8`, `\xFF`).
+/// Empty strings, null bytes, hyphens, etc. are all valid — RuboCop flags them
+/// with quoted symbol suggestions like ``:""`` or ``:"payment-sources"``.
 fn is_valid_identifier_string(content: &[u8]) -> bool {
-    // Must be valid UTF-8 and contain no null bytes
-    if std::str::from_utf8(content).is_err() || content.contains(&0) {
-        return false;
-    }
-    !content.is_empty()
+    std::str::from_utf8(content).is_ok()
 }
 
 impl Cop for StringIdentifierArgument {
@@ -200,17 +195,27 @@ impl Cop for StringIdentifierArgument {
                 continue;
             }
 
-            // Build the symbol replacement for the message.
-            // Quote the symbol if it contains non-identifier characters (e.g. hyphens),
-            // matching RuboCop's `.to_sym.inspect` behavior.
+            // Build the symbol replacement for the message, matching
+            // RuboCop's `.to_sym.inspect` behavior: quote when needed,
+            // escape non-printable chars as \xHH.
             let content_str = std::str::from_utf8(content).unwrap_or("?");
-            let needs_quoting = !content_str
-                .chars()
-                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '@' | '$' | '!' | '?' | '='));
-            let symbol_str = if needs_quoting {
-                format!(":\"{}\"", content_str)
-            } else {
+            let is_simple_identifier = !content_str.is_empty()
+                && content_str
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '@' | '$' | '!' | '?' | '='));
+            let symbol_str = if is_simple_identifier {
                 format!(":{}", content_str)
+            } else {
+                // Escape non-printable characters as \xHH
+                let mut escaped = String::new();
+                for &b in content {
+                    if (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\' {
+                        escaped.push(b as char);
+                    } else {
+                        escaped.push_str(&format!("\\x{:02X}", b));
+                    }
+                }
+                format!(":\"{}\"", escaped)
             };
 
             // Get the source text of the string argument for the message

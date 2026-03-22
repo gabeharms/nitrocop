@@ -296,6 +296,85 @@ def _run_one_repo(args: tuple[str, str]) -> tuple[str, int]:
         return (repo_id, -1)
 
 
+def load_manifest() -> dict[str, dict]:
+    """Load repo info from all manifests, keyed by repo ID."""
+    repos = {}
+    for path in [MANIFEST_PATH, PROJECT_ROOT / "bench" / "corpus" / "manifest_extended.jsonl"]:
+        if not path.exists():
+            continue
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    entry = json.loads(line)
+                    repos[entry["id"]] = entry
+    return repos
+
+
+def clone_repos_for_cop(cop_name: str, data: dict):
+    """Clone only the corpus repos needed for a specific cop from the manifest.
+
+    Uses by_repo_cop data to identify repos with activity, then shallow-clones
+    them to vendor/corpus/. Skips repos that are already cloned.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    manifest = load_manifest()
+    if not manifest:
+        print("ERROR: manifest.jsonl not found", file=sys.stderr)
+        sys.exit(1)
+
+    # Find repos with activity for this cop
+    by_repo_cop = data.get("by_repo_cop", {})
+    needed = set()
+    for repo_id, cops in by_repo_cop.items():
+        if cop_name in cops:
+            needed.add(repo_id)
+
+    if not needed:
+        print(f"  No repos with activity for {cop_name} in corpus data", file=sys.stderr)
+        return
+
+    # Filter to repos in manifest and not already cloned
+    CORPUS_DIR.mkdir(parents=True, exist_ok=True)
+    to_clone = []
+    for repo_id in sorted(needed):
+        if repo_id in manifest and not (CORPUS_DIR / repo_id).exists():
+            to_clone.append(manifest[repo_id])
+
+    if not to_clone:
+        print(f"  All {len(needed)} needed repos already cloned", file=sys.stderr)
+        return
+
+    print(f"  Cloning {len(to_clone)} repos for {cop_name}...", file=sys.stderr)
+
+    def _clone_one(repo_info):
+        dest = CORPUS_DIR / repo_info["id"]
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init", str(dest)],
+                           capture_output=True, check=True, timeout=10)
+            subprocess.run(["git", "-C", str(dest), "fetch", "--depth", "1",
+                            repo_info["repo_url"], repo_info["sha"]],
+                           capture_output=True, check=True, timeout=120)
+            subprocess.run(["git", "-C", str(dest), "checkout", "FETCH_HEAD"],
+                           capture_output=True, check=True, timeout=30)
+            return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            import shutil
+            shutil.rmtree(dest, ignore_errors=True)
+            return False
+
+    workers = min(os.cpu_count() or 4, 8)
+    ok = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_clone_one, r): r["id"] for r in to_clone}
+        for f in as_completed(futures):
+            if f.result():
+                ok += 1
+    print(f"  Cloned {ok}/{len(to_clone)} repos", file=sys.stderr)
+
+
 def validate_corpus():
     """Check that local corpus matches manifest.jsonl.
 
@@ -393,6 +472,8 @@ def main():
                         help="Force re-execution of nitrocop (ignore local cache)")
     parser.add_argument("--quick", action="store_true",
                         help="Only run repos with baseline activity (faster, may miss new FPs on zero-baseline repos)")
+    parser.add_argument("--clone", action="store_true",
+                        help="Auto-clone needed corpus repos from manifest (for CI use with --rerun --quick)")
     parser.add_argument("--extended", action="store_true",
                         help="Use extended corpus (5k+ repos) instead of standard (1k repos)")
     args = parser.parse_args()
@@ -426,7 +507,11 @@ def main():
 
     # Validate local corpus matches manifest (warns about stale/missing repos)
     if args.rerun:
-        validate_corpus()
+        if args.clone:
+            # Auto-clone needed repos instead of requiring full corpus checkout
+            clone_repos_for_cop(args.cop, data)
+        else:
+            validate_corpus()
         check_corpus_bundle()
 
     print(f"Checking {args.cop} against corpus")
@@ -594,6 +679,14 @@ def main():
     print("  Gate type: count-only / cop-level regression")
     print()
 
+    # Also gate on FN increases: if the new binary detects fewer offenses than
+    # the CI baseline, that's a regression (lost detections). Only check when
+    # --rerun is used (without --rerun, counts are from cached data = always equal).
+    ci_fn_increase = max(0, ci_nitrocop_total - nitrocop_total)
+    # Adjust for file-drop noise (same as FP gate)
+    adjusted_fn_increase = max(0, ci_fn_increase - file_drop_offenses)
+
+    failed = False
     if adjusted_excess > args.threshold:
         print(f"FAIL: {adjusted_excess:,} NEW excess over CI nitrocop baseline "
               f"(threshold: {args.threshold})")
@@ -602,6 +695,17 @@ def main():
                   f"(adjusted by {file_drop_offenses:,} file-drop noise)")
         if not args.verbose:
             print("Run with --verbose to see which repos have excess offenses")
+        failed = True
+
+    if args.rerun and adjusted_fn_increase > args.threshold:
+        print(f"FAIL: {adjusted_fn_increase:,} FEWER detections than CI nitrocop baseline "
+              f"(threshold: {args.threshold})")
+        if ci_fn_increase != adjusted_fn_increase:
+            print(f"  Raw drop: {ci_fn_increase:,} "
+                  f"(adjusted by {file_drop_offenses:,} file-drop noise)")
+        failed = True
+
+    if failed:
         sys.exit(1)
     else:
         if excess == 0 and missing == 0:

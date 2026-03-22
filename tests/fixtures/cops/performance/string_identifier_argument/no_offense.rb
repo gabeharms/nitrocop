@@ -24,7 +24,6 @@ attr_accessor :name, :role
 # Safe navigation calls (RuboCop only defines on_send, not on_csend)
 obj&.respond_to?('method_name')
 obj&.send('method_name')
-# Strings with non-identifier bytes (hex escapes, non-UTF-8)
+# Strings with non-UTF-8 bytes (hex escapes)
 channel.send("\xF8")
 obj.send("\xFF")
-obj.send("\x00")

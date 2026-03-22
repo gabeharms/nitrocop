@@ -22,3 +22,9 @@ private 'helper'
 # Hyphenated strings are valid symbols (:'payment-sources')
 doc.send('payment-sources') { }
          ^^^^^^^^^^^^^^^^^^ Performance/StringIdentifierArgument: Use `:"payment-sources"` instead of `'payment-sources'`.
+# Empty strings are valid symbols (:""")
+obj.send('')
+         ^^ Performance/StringIdentifierArgument: Use `:""` instead of `''`.
+# Null byte strings are valid symbols (:"\x00")
+obj.send("\0")
+         ^^^^ Performance/StringIdentifierArgument: Use `:"\x00"` instead of `"\0"`.
