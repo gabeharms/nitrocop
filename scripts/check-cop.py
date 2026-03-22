@@ -591,6 +591,27 @@ def main():
                 per_repo = run_nitrocop_per_repo(args.cop, relevant_repos=relevant_repos)
             save_cached_results(args.cop, per_repo)
 
+        # When --clone is used, we only have fresh data for diverging repos.
+        # Fill in CI baseline counts for repos we didn't run (they matched in CI,
+        # so nitrocop count = matches for this cop on those repos).
+        if args.clone and has_enriched:
+            cloned_repos = set(per_repo.keys())
+            # For each repo NOT in per_repo, add its CI nitrocop count.
+            # Repos in by_repo_cop have matches + FP - FN. Repos NOT in
+            # by_repo_cop matched exactly, but we don't have per-repo counts
+            # for those. We know the total: ci_nitrocop_total - sum(diverging).
+            ci_diverging_total = 0
+            for repo_id, cops in by_repo_cop.items():
+                if args.cop in cops:
+                    entry = cops[args.cop]
+                    ci_diverging_total += entry.get("matches", 0) + entry.get("fp", 0)
+            ci_matching_total = baseline_matches + baseline_fp - ci_diverging_total
+            # Add the matching repos as a single synthetic entry
+            per_repo["__ci_baseline_matching_repos__"] = ci_matching_total
+            print(f"  Using CI baseline for non-diverging repos "
+                  f"({ci_matching_total:,} offenses from matching repos)",
+                  file=sys.stderr)
+
         # Filter to only repos that were "ok" in the CI corpus oracle run.
         # Local corpus may have stale/extra repos (denylisted, removed) and
         # CI may have repos that crashed. Including these inflates the excess
@@ -598,6 +619,8 @@ def main():
         by_repo = data.get("by_repo", [])
         ci_ok_repos = {r["repo"] for r in by_repo if r.get("status") == "ok"}
         if ci_ok_repos:
+            # Don't exclude synthetic baseline entry added by --clone
+            ci_ok_repos.add("__ci_baseline_matching_repos__")
             excluded = {k for k in per_repo if k not in ci_ok_repos}
             if excluded:
                 excluded_total = sum(per_repo.get(k, 0) for k in excluded if per_repo.get(k, 0) > 0)
@@ -649,60 +672,31 @@ def main():
               f"({len(file_drop_repos)} repos with RuboCop parser crashes)")
     print()
 
-    # For PASS/FAIL, compare against the CI nitrocop baseline (matches + fp).
-    # If our local count exceeds CI's nitrocop count, it's either regressions
-    # or file-drop noise. Subtract file_drop_offenses as a rough adjustment
-    # (conservative: assumes ALL offenses in file-drop repos are noise from
-    # files RuboCop didn't inspect; reality is somewhere between 0 and this).
-    adjusted_excess = max(0, ci_delta - file_drop_offenses)
-
-    # Show conformance vs RuboCop (the ground truth).
-    # "excess" = nitrocop fires more than RuboCop = false positives.
-    # "missing" = RuboCop fires more than nitrocop = false negatives.
-    # With file-drop noise, excess may be inflated (nitrocop processes files
-    # RuboCop can't parse). Adjust for display purposes.
-    display_excess = max(0, excess - file_drop_offenses) if file_drop_offenses > 0 else excess
-    if display_excess > 0 or missing > 0:
-        parts = []
-        if display_excess > 0:
-            parts.append(f"FP~={display_excess:,}")
-        if missing > 0:
-            parts.append(f"FN={missing:,}")
-        conformance_note = f"  vs RuboCop counts: {' '.join(parts)}"
-        if display_excess > 0 and display_excess <= baseline_fp:
-            conformance_note += f" (CI had FP={baseline_fp:,})"
-        if file_drop_offenses > 0 and excess > 0:
-            conformance_note += f" (FP approximate due to file-drop noise)"
-        print(conformance_note)
-    else:
-        print("  vs RuboCop counts: aggregate offense total matches (0 count delta)")
     print("  Gate type: count-only / cop-level regression")
     print()
 
-    # Also gate on FN increases: if the new binary detects fewer offenses than
-    # the CI baseline, that's a regression (lost detections). Only check when
-    # --rerun is used (without --rerun, counts are from cached data = always equal).
-    ci_fn_increase = max(0, ci_nitrocop_total - nitrocop_total)
-    # Adjust for file-drop noise (same as FP gate)
-    adjusted_fn_increase = max(0, ci_fn_increase - file_drop_offenses)
+    # Gate: compare actual FP/FN (vs rubocop) against CI baseline FP/FN.
+    # FAIL if either metric got WORSE than CI had. This correctly handles:
+    #   - Fixed FNs: count goes up → FN decreases → PASS
+    #   - New FPs:   count goes up → FP increases → FAIL
+    #   - New FNs:   count goes down → FN increases → FAIL
+    #   - Fixed FPs: count goes down → FP decreases → PASS
+    # Adjust for file-drop noise (repos where rubocop crashed on some files).
+    adjusted_excess = max(0, excess - file_drop_offenses)
+    fp_regression = max(0, adjusted_excess - baseline_fp)
+    fn_regression = max(0, missing - baseline_fn) if args.rerun else 0
 
     failed = False
-    if adjusted_excess > args.threshold:
-        print(f"FAIL: {adjusted_excess:,} NEW excess over CI nitrocop baseline "
-              f"(threshold: {args.threshold})")
-        if ci_delta != adjusted_excess:
-            print(f"  Raw delta: {ci_delta:+,} "
-                  f"(adjusted by {file_drop_offenses:,} file-drop noise)")
+    if fp_regression > args.threshold:
+        print(f"FAIL: FP increased from {baseline_fp:,} to {adjusted_excess:,} "
+              f"(+{fp_regression:,}, threshold: {args.threshold})")
         if not args.verbose:
             print("Run with --verbose to see which repos have excess offenses")
         failed = True
 
-    if args.rerun and adjusted_fn_increase > args.threshold:
-        print(f"FAIL: {adjusted_fn_increase:,} FEWER detections than CI nitrocop baseline "
-              f"(threshold: {args.threshold})")
-        if ci_fn_increase != adjusted_fn_increase:
-            print(f"  Raw drop: {ci_fn_increase:,} "
-                  f"(adjusted by {file_drop_offenses:,} file-drop noise)")
+    if fn_regression > args.threshold:
+        print(f"FAIL: FN increased from {baseline_fn:,} to {missing:,} "
+              f"(+{fn_regression:,}, threshold: {args.threshold})")
         failed = True
 
     if failed:
@@ -710,17 +704,15 @@ def main():
     else:
         if excess == 0 and missing == 0:
             print("PASS: aggregate offense count matches RuboCop for this cop")
-        elif adjusted_excess == 0 and excess > 0:
-            print("PASS: no new excess vs CI nitrocop baseline")
-            print(f"  Aggregate count still differs from RuboCop by {excess:,} excess offenses")
-            if ci_delta > 0 and file_drop_offenses > 0:
-                print(f"  Raw delta: {ci_delta:+,} "
-                      f"(within file-drop noise of {file_drop_offenses:,})")
         else:
-            print("PASS: no new excess vs CI nitrocop baseline")
-            if ci_delta > 0 and file_drop_offenses > 0:
-                print(f"  Raw delta: {ci_delta:+,} "
-                      f"(within file-drop noise of {file_drop_offenses:,})")
+            parts = []
+            if adjusted_excess > 0:
+                parts.append(f"FP={adjusted_excess:,} (CI had {baseline_fp:,})")
+            if missing > 0:
+                parts.append(f"FN={missing:,} (CI had {baseline_fn:,})")
+            print(f"PASS: no regression vs CI baseline")
+            if parts:
+                print(f"  Current: {', '.join(parts)}")
         if missing > 0:
             print(f"Note: aggregate count still misses {missing:,} RuboCop offenses")
         print("Next: use scripts/verify-cop-locations.py for exact known FP/FN locations")
