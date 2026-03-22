@@ -13,3 +13,5 @@ arr.filter { _1.present? }.map { _1.id }
 # Ruby 3.4 `it` parameter also creates numblock in Parser gem
 items.select { it.visible }.map { it.display_name }
 items.filter { it.present? }.map { it.name }
+# select with real block inside outer block body, chained .map is on outer result
+items.map { |h| h.select { |k, _| [:a, :b].include?(k) } }.map { |h| h.to_s }

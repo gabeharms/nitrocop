@@ -19,3 +19,6 @@ alias_method 'new_name', 'old_name'
                          ^^^^^^^^^^ Performance/StringIdentifierArgument: Use `:old_name` instead of `'old_name'`.
 private 'helper'
         ^^^^^^^^ Performance/StringIdentifierArgument: Use `:helper` instead of `'helper'`.
+# Hyphenated strings are valid symbols (:'payment-sources')
+doc.send('payment-sources') { }
+         ^^^^^^^^^^^^^^^^^^ Performance/StringIdentifierArgument: Use `:"payment-sources"` instead of `'payment-sources'`.

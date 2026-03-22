@@ -16,6 +16,20 @@ fn find_select_in_block_body<'a>(
     let body_stmts: Vec<_> = stmts.body().iter().collect();
     let last = body_stmts.last()?;
     let last_call = last.as_call_node()?;
+    // Only match when select/filter does NOT have a real block (do/end or { }).
+    // RuboCop's parent chain: select_node → parent(block) → parent.parent(call).
+    // When select has a real block { }, the parent is the block node wrapping
+    // select+block, so parent.parent is the outer block body — not a call node.
+    // Only block_pass (select(&:foo)) works because the send node's parent is
+    // the outer block directly.
+    // In Prism, .block() returns Some for both BlockNode ({ }) and BlockArgumentNode (&foo),
+    // so check specifically for BlockNode.
+    if last_call
+        .block()
+        .is_some_and(|b| b.as_block_node().is_some())
+    {
+        return None;
+    }
     let name = last_call.name().as_slice();
     if name == b"select" {
         Some((last_call, "select"))

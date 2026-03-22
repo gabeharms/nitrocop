@@ -91,13 +91,22 @@ fn is_dynamic_rhs(rhs: &str) -> bool {
     if trimmed.contains('[') && !trimmed.starts_with('[') {
         return true;
     }
-    // Method calls like Foo.bar or obj.method
+    // Method calls with parens like Foo.bar() or obj.method()
     if trimmed.contains('(') {
         return true;
     }
-    // Constant path like Some::Constant — but not Gem::Requirement.new which
-    // is handled separately as a known pattern
-    // Skip this check; constants/method calls are handled by the non-literal fallback
+    // Method call on a local variable: e.g. `common_gemspec.required_ruby_version`.
+    // RuboCop's dynamic_version? checks descendants for :send and variable types.
+    // `(send (lvar :common_gemspec) :method)` has an lvar descendant → dynamic.
+    // But `(send (const ...) :method)` has only const descendants → NOT dynamic.
+    // So only treat as dynamic when the part before the first dot is a local variable
+    // (starts with lowercase/underscore, all alphanumeric).
+    if let Some(dot_pos) = trimmed.find('.') {
+        let before_dot = &trimmed[..dot_pos];
+        if is_local_variable(before_dot) {
+            return true;
+        }
+    }
     false
 }
 
@@ -376,6 +385,18 @@ mod tests {
             &RequiredRubyVersion,
             include_bytes!(
                 "../../../tests/fixtures/cops/gemspec/required_ruby_version/no_offense_hash_access.rb"
+            ),
+            config_with_target_ruby(3.4),
+        );
+    }
+
+    #[test]
+    fn method_call_no_offense() {
+        // Method call like common_gemspec.required_ruby_version is dynamic — no offense
+        crate::testutil::assert_cop_no_offenses_full_with_config(
+            &RequiredRubyVersion,
+            include_bytes!(
+                "../../../tests/fixtures/cops/gemspec/required_ruby_version/no_offense_method_call.rb"
             ),
             config_with_target_ruby(3.4),
         );

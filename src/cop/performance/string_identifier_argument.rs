@@ -89,20 +89,17 @@ const MULTIPLE_ARGUMENTS_METHODS: &[&[u8]] = &[
     b"module_function",
 ];
 
-/// Check if the unescaped string content consists of valid Ruby identifier bytes.
-/// Rejects strings containing non-UTF-8 bytes (e.g., `\xF8`, `\xFF`) or null bytes,
-/// which cannot be valid method/variable names.
+/// Check if the unescaped string content can be a valid Ruby symbol.
+/// Rejects strings containing non-UTF-8 bytes (e.g., `\xF8`, `\xFF`)
+/// or null bytes, which cannot be meaningfully converted to symbols.
+/// Strings with hyphens, dots, etc. are valid — they become quoted symbols
+/// like `:'payment-sources'`.
 fn is_valid_identifier_string(content: &[u8]) -> bool {
-    // Must be valid UTF-8
-    let s = match std::str::from_utf8(content) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    // Must not be empty and must only contain identifier-valid characters:
-    // alphanumeric, underscore, @, $, !, ?, =
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '@' | '$' | '!' | '?' | '='))
+    // Must be valid UTF-8 and contain no null bytes
+    if std::str::from_utf8(content).is_err() || content.contains(&0) {
+        return false;
+    }
+    !content.is_empty()
 }
 
 impl Cop for StringIdentifierArgument {
@@ -203,9 +200,18 @@ impl Cop for StringIdentifierArgument {
                 continue;
             }
 
-            // Build the symbol replacement for the message
+            // Build the symbol replacement for the message.
+            // Quote the symbol if it contains non-identifier characters (e.g. hyphens),
+            // matching RuboCop's `.to_sym.inspect` behavior.
             let content_str = std::str::from_utf8(content).unwrap_or("?");
-            let symbol_str = format!(":{}", content_str);
+            let needs_quoting = !content_str
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '@' | '$' | '!' | '?' | '='));
+            let symbol_str = if needs_quoting {
+                format!(":\"{}\"", content_str)
+            } else {
+                format!(":{}", content_str)
+            };
 
             // Get the source text of the string argument for the message
             let arg_loc = arg.location();
