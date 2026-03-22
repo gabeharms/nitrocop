@@ -75,3 +75,5 @@ def check_type(type, name)
     false
   end
 end
+# Pattern matching with `in` — MatchData IS used by the pattern match
+line.match(/\A\s+# Mark:(\d+):([[:alnum:]_]+)/) in [line_no, text]

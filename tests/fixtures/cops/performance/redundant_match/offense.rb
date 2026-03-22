@@ -35,3 +35,6 @@ def process(p)
   end
   tag
 end
+# match used only for truthiness inside string interpolation (modifier if)
+"text #{value if str.match(/pattern/)}"
+                 ^^^^^^^^^^^^^^^^^^^^ Performance/RedundantMatch: Use `match?` instead of `match` when `MatchData` is not used.

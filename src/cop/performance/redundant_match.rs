@@ -2,6 +2,16 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// Detects `str.match(pattern)` where `match?` could be used instead.
+///
+/// ## Corpus findings
+/// - `MatchPredicateNode` (`expr in pattern`) uses the match result for
+///   pattern matching — must set `value_used = true` for the LHS.
+/// - Removed blanket `in_interpolation` guard. The existing `value_used`
+///   tracking via `visit_embedded_statements_node` already prevents FPs on
+///   `"#{str.match(re)}"` (value used by interpolation). Modifier `if` inside
+///   interpolation correctly sets `parent_is_condition` via `visit_if_node`,
+///   so `"#{x if str.match(re)}"` is properly flagged.
 pub struct RedundantMatch;
 
 impl Cop for RedundantMatch {
@@ -29,7 +39,6 @@ impl Cop for RedundantMatch {
             diagnostics: Vec::new(),
             parent_is_condition: false,
             value_used: false,
-            in_interpolation: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -44,8 +53,6 @@ struct RedundantMatchVisitor<'a> {
     parent_is_condition: bool,
     /// Whether the result value is used (assignment, argument, return, etc.)
     value_used: bool,
-    /// Whether the current node is inside string interpolation (`"#{...}"`).
-    in_interpolation: bool,
 }
 
 impl<'pr> ruby_prism::Visit<'pr> for RedundantMatchVisitor<'_> {
@@ -404,12 +411,9 @@ impl<'pr> ruby_prism::Visit<'pr> for RedundantMatchVisitor<'_> {
     fn visit_interpolated_string_node(&mut self, node: &ruby_prism::InterpolatedStringNode<'pr>) {
         let old_used = self.value_used;
         let old_condition = self.parent_is_condition;
-        let old_interp = self.in_interpolation;
         self.value_used = true;
         self.parent_is_condition = false;
-        self.in_interpolation = true;
         ruby_prism::visit_interpolated_string_node(self, node);
-        self.in_interpolation = old_interp;
         self.value_used = old_used;
         self.parent_is_condition = old_condition;
     }
@@ -436,15 +440,23 @@ impl<'pr> ruby_prism::Visit<'pr> for RedundantMatchVisitor<'_> {
         self.value_used = old;
         self.parent_is_condition = old_condition;
     }
+
+    fn visit_match_predicate_node(&mut self, node: &ruby_prism::MatchPredicateNode<'pr>) {
+        // `expr in pattern` — the LHS value IS used by the pattern matching
+        let old = self.value_used;
+        let old_condition = self.parent_is_condition;
+        self.value_used = true;
+        self.parent_is_condition = false;
+        self.visit(&node.value());
+        self.value_used = old;
+        self.parent_is_condition = old_condition;
+        // Visit pattern with defaults
+        self.visit(&node.pattern());
+    }
 }
 
 impl<'a> RedundantMatchVisitor<'a> {
     fn check_match_call(&mut self, call: &ruby_prism::CallNode<'_>) {
-        // Match result is consumed by interpolation string construction.
-        if self.in_interpolation {
-            return;
-        }
-
         // RuboCop uses RESTRICT_ON_SEND = %i[match], which only matches regular
         // method calls (send), NOT safe-navigation calls (csend / &.match).
         if let Some(op) = call.call_operator_loc() {
