@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register masks and scan files for Codex auth secret leakage."""
+"""Register masks and scan files for backend secret leakage."""
 
 import argparse
 import glob
@@ -25,20 +25,20 @@ def _load_secret(var_name: str):
     return raw, parsed
 
 
-def _collect_values(raw_secret: str, parsed) -> list[tuple[str, str]]:
-    values = [("raw_auth_json", raw_secret)]
+def _collect_values(var_name: str, raw_secret: str, parsed) -> list[tuple[str, str]]:
+    values = [(f"{var_name}:raw", raw_secret)]
 
     if isinstance(parsed, dict):
         api_key = parsed.get("OPENAI_API_KEY")
         if _nonempty_string(api_key):
-            values.append(("openai_api_key", api_key))
+            values.append((f"{var_name}:openai_api_key", api_key))
 
         tokens = parsed.get("tokens")
         if isinstance(tokens, dict):
             for key in ("access_token", "refresh_token", "id_token", "account_id"):
                 value = tokens.get(key)
                 if _nonempty_string(value):
-                    values.append((key, value))
+                    values.append((f"{var_name}:{key}", value))
 
     deduped = []
     seen = set()
@@ -67,18 +67,36 @@ def _expand_patterns(patterns: list[str]) -> list[str]:
     return expanded
 
 
-def emit_masks(var_name: str) -> int:
-    raw_secret, parsed = _load_secret(var_name)
-    for _, value in _collect_values(raw_secret, parsed):
+def _load_all_secrets(var_names: list[str], ignore_missing: bool) -> list[tuple[str, str]]:
+    values = []
+    for var_name in var_names:
+        try:
+            raw, parsed = _load_secret(var_name)
+        except ValueError:
+            if ignore_missing:
+                continue
+            raise
+        values.extend(_collect_values(var_name, raw, parsed))
+    return values
+
+
+def emit_masks(var_names: list[str], ignore_missing: bool) -> int:
+    secret_values = _load_all_secrets(var_names, ignore_missing)
+    if not secret_values:
+        print("No backend secrets found to mask.")
+        return 0
+    for _, value in secret_values:
         print(f"::add-mask::{value}")
     return 0
 
 
-def scan_files(var_name: str, patterns: list[str]) -> int:
-    raw_secret, parsed = _load_secret(var_name)
-    secret_values = _collect_values(raw_secret, parsed)
-    leaked = []
+def scan_files(var_names: list[str], ignore_missing: bool, patterns: list[str]) -> int:
+    secret_values = _load_all_secrets(var_names, ignore_missing)
+    if not secret_values:
+        print("No backend secrets found to scan for.")
+        return 0
 
+    leaked = []
     for path in _expand_patterns(patterns):
         if not os.path.isfile(path):
             continue
@@ -94,12 +112,12 @@ def scan_files(var_name: str, patterns: list[str]) -> int:
                 break
 
     if leaked:
-        print("ERROR: potential Codex auth secret leakage detected in generated files:", file=sys.stderr)
+        print("ERROR: potential backend secret leakage detected in generated files:", file=sys.stderr)
         for path, label in leaked:
             print(f"  - {path} ({label})", file=sys.stderr)
         return 1
 
-    print("No Codex auth secret leakage detected in generated files.")
+    print("No backend secret leakage detected in generated files.")
     return 0
 
 
@@ -107,8 +125,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--from-env",
-        default="CODEX_AUTH_JSON",
-        help="Environment variable holding the auth JSON (default: CODEX_AUTH_JSON)",
+        action="append",
+        required=True,
+        dest="env_vars",
+        help="Environment variable holding a secret value; repeat for multiple secrets",
+    )
+    parser.add_argument(
+        "--ignore-missing",
+        action="store_true",
+        help="Skip missing or empty env vars instead of failing",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -121,9 +146,9 @@ def main() -> int:
 
     try:
         if args.command == "emit-masks":
-            return emit_masks(args.from_env)
+            return emit_masks(args.env_vars, args.ignore_missing)
         if args.command == "scan-files":
-            return scan_files(args.from_env, args.patterns)
+            return scan_files(args.env_vars, args.ignore_missing, args.patterns)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

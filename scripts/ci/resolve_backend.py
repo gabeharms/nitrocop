@@ -15,7 +15,12 @@ import sys
 BACKENDS = {
     "minimax": {
         "cli": "claude",
-        "setup_cmd": "curl -fsSL https://claude.ai/install.sh | bash",
+        "setup_cmd": (
+            'python3 /tmp/ci-scripts/guard_backend_secrets.py '
+            '--from-env MINIMAX_API_KEY '
+            'emit-masks && '
+            'curl -fsSL https://claude.ai/install.sh | bash'
+        ),
         "log_format": "claude",
         "log_pattern": "~/.claude/projects/**/*.jsonl",
         "run_cmd": (
@@ -39,7 +44,12 @@ BACKENDS = {
     },
     "claude": {
         "cli": "claude",
-        "setup_cmd": "curl -fsSL https://claude.ai/install.sh | bash",
+        "setup_cmd": (
+            'python3 /tmp/ci-scripts/guard_backend_secrets.py '
+            '--from-env ANTHROPIC_API_KEY '
+            'emit-masks && '
+            'curl -fsSL https://claude.ai/install.sh | bash'
+        ),
         "log_format": "claude",
         "log_pattern": "~/.claude/projects/**/*.jsonl",
         "run_cmd": (
@@ -60,12 +70,12 @@ BACKENDS = {
     "codex": {
         "cli": "codex",
         "setup_cmd": (
+            'python3 /tmp/ci-scripts/guard_backend_secrets.py '
+            '--from-env CODEX_AUTH_JSON '
+            'emit-masks && '
             'python3 /tmp/ci-scripts/validate_codex_auth.py '
             '--from-env CODEX_AUTH_JSON '
             '--max-age-days 7 && '
-            'python3 /tmp/ci-scripts/guard_codex_secret.py '
-            '--from-env CODEX_AUTH_JSON '
-            'emit-masks && '
             'npm install -g @openai/codex@latest && '
             'mkdir -p ~/.codex && '
             'chmod 700 ~/.codex && '

@@ -26,6 +26,8 @@ def test_minimax_uses_claude():
     assert config["cli"] == "claude"
     assert config["log_format"] == "claude"
     assert "ANTHROPIC_BASE_URL" in config["env"]
+    assert "guard_backend_secrets.py" in config["setup_cmd"]
+    assert "MINIMAX_API_KEY" in config["setup_cmd"]
     assert "claude.ai/install.sh" in config["setup_cmd"]
 
 
@@ -34,6 +36,8 @@ def test_claude_uses_claude():
     assert config["cli"] == "claude"
     assert config["log_format"] == "claude"
     assert "ANTHROPIC_BASE_URL" not in config["env"]
+    assert "guard_backend_secrets.py" in config["setup_cmd"]
+    assert "ANTHROPIC_API_KEY" in config["setup_cmd"]
     assert "claude.ai/install.sh" in config["setup_cmd"]
 
 
@@ -42,8 +46,8 @@ def test_codex_uses_codex():
     assert config["cli"] == "codex"
     assert config["log_format"] == "codex"
     assert "CODEX_AUTH_JSON" in config["secrets"]
+    assert "guard_backend_secrets.py" in config["setup_cmd"]
     assert "validate_codex_auth.py" in config["setup_cmd"]
-    assert "guard_codex_secret.py" in config["setup_cmd"]
     assert "@openai/codex@latest" in config["setup_cmd"]
     assert "chmod 700 ~/.codex" in config["setup_cmd"]
     assert "chmod 600 ~/.codex/auth.json" in config["setup_cmd"]

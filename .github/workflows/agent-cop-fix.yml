@@ -335,6 +335,8 @@ jobs:
       - name: Run backend setup
         if: steps.task.outputs.code_bugs != '0'
         env:
+          MINIMAX_API_KEY: ${{ github.event.inputs.backend == 'minimax' && secrets.MINIMAX_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ github.event.inputs.backend == 'claude' && secrets.ANTHROPIC_API_KEY || '' }}
           CODEX_AUTH_JSON: ${{ github.event.inputs.backend == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
         run: ${{ steps.backend.outputs.setup_cmd }}
 
@@ -463,13 +465,18 @@ jobs:
             fi
           } > /tmp/summary.md
 
-      - name: Scan generated files for Codex secret leakage
-        if: always() && steps.task.outputs.code_bugs != '0' && github.event.inputs.backend == 'codex'
+      - name: Scan generated files for backend secret leakage
+        if: always() && steps.task.outputs.code_bugs != '0'
         id: leak_scan
         env:
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          MINIMAX_API_KEY: ${{ github.event.inputs.backend == 'minimax' && secrets.MINIMAX_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ github.event.inputs.backend == 'claude' && secrets.ANTHROPIC_API_KEY || '' }}
+          CODEX_AUTH_JSON: ${{ github.event.inputs.backend == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
         run: |
-          python3 /tmp/ci-scripts/guard_codex_secret.py \
+          python3 /tmp/ci-scripts/guard_backend_secrets.py \
+            --ignore-missing \
+            --from-env MINIMAX_API_KEY \
+            --from-env ANTHROPIC_API_KEY \
             --from-env CODEX_AUTH_JSON \
             scan-files \
             /tmp/agent.log \
@@ -479,15 +486,16 @@ jobs:
             /tmp/task.md \
             /tmp/final-task.md \
             /tmp/summary.md \
+            '~/.claude/projects/**/*.jsonl' \
             '~/.codex/sessions/**/*.jsonl'
 
       - name: Publish summary
-        if: always() && steps.task.outputs.code_bugs != '0' && (github.event.inputs.backend != 'codex' || steps.leak_scan.outcome == 'success')
+        if: always() && steps.task.outputs.code_bugs != '0' && steps.leak_scan.outcome == 'success'
         run: |
           cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload agent log
-        if: always() && steps.task.outputs.code_bugs != '0' && (github.event.inputs.backend != 'codex' || steps.leak_scan.outcome == 'success')
+        if: always() && steps.task.outputs.code_bugs != '0' && steps.leak_scan.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: agent-log-${{ github.run_id }}-${{ github.run_attempt }}
