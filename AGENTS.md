@@ -45,6 +45,17 @@ cargo test --release
 
 If the change is non-Rust only (for example `docs/`, fixtures under `tests/fixtures/`, or skill markdown/scripts), these Rust checks are optional and should not be run by default.
 
+## Python Checks
+
+When your change touches Python files under `scripts/`, `tests/python/`, or `bench/corpus/`, run Ruff on the smallest relevant set of files or directories before committing:
+
+```bash
+python3 -m ruff check --fix path/to/changed.py
+python3 -m ruff check path/to/changed.py
+```
+
+If you changed multiple related Python files, run Ruff on the narrowest relevant directory set. Do not run `ruff --fix` across the whole repo unless you are doing a dedicated lint cleanup.
+
 **Important:** Run `cargo fmt` on the specific Rust files you edited (not `cargo fmt` with no args, which formats everything). Run `cargo clippy` which leverages incremental compilation and is fast when few files changed. Do NOT use `git diff` to discover changed files — multiple agents may be working on main concurrently.
 
 ### Fast Iteration (during development)
