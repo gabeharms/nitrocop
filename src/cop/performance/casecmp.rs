@@ -2,6 +2,17 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-22)
+///
+/// Extended corpus reported FP=0, FN=7.
+///
+/// FN=7: All caused by `.downcase()` and `.upcase()` with explicit empty
+/// parentheses not being detected. `is_case_method` and
+/// `is_valid_casecmp_operand` checked `call.opening_loc().is_none()` which
+/// rejected calls with explicit parens like `.downcase()`. In Ruby,
+/// `.downcase()` and `.downcase` are identical — parens are optional for
+/// 0-arg methods. Fixed by removing the `opening_loc().is_none()` check.
+/// The `call.arguments().is_none()` guard already ensures no arguments.
 pub struct Casecmp;
 
 /// Check if a node is a valid RHS for casecmp: string literal, downcase/upcase call,
@@ -11,12 +22,12 @@ fn is_valid_casecmp_operand(node: &ruby_prism::Node<'_>) -> bool {
     if node.as_string_node().is_some() {
         return true;
     }
-    // downcase/upcase call (no safe navigation)
+    // downcase/upcase call with receiver (no safe navigation)
     if let Some(call) = node.as_call_node() {
         let name = call.name().as_slice();
         if (name == b"downcase" || name == b"upcase")
+            && call.receiver().is_some()
             && call.arguments().is_none()
-            && call.opening_loc().is_none()
             && !has_safe_navigation(&call)
         {
             return true;
@@ -51,8 +62,8 @@ fn has_safe_navigation(call: &ruby_prism::CallNode<'_>) -> bool {
 fn is_case_method(call: &ruby_prism::CallNode<'_>) -> bool {
     let name = call.name().as_slice();
     (name == b"downcase" || name == b"upcase")
+        && call.receiver().is_some()
         && call.arguments().is_none()
-        && call.opening_loc().is_none()
         && !has_safe_navigation(call)
 }
 

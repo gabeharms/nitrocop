@@ -34,3 +34,13 @@ str.upcase == other.upcase
 # Parenthesized string
 str.downcase == ("foo")
 ^^^^^^^^^^^^^^^^^^^^^^^ Performance/Casecmp: Use `casecmp` instead of `downcase ==`.
+
+# Explicit empty parentheses on downcase/upcase (same as without parens)
+str.downcase() == "other"
+^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/Casecmp: Use `casecmp` instead of `downcase ==`.
+str.upcase() == "OTHER"
+^^^^^^^^^^^^^^^^^^^^^^^ Performance/Casecmp: Use `casecmp` instead of `upcase ==`.
+str.downcase() != "other"
+^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/Casecmp: Use `casecmp` instead of `downcase !=`.
+("header" || "").downcase() != origin.downcase()
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Performance/Casecmp: Use `casecmp` instead of `downcase !=`.
