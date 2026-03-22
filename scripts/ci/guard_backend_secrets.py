@@ -25,8 +25,12 @@ def _load_secret(var_name: str):
     return raw, parsed
 
 
-def _collect_values(var_name: str, raw_secret: str, parsed) -> list[tuple[str, str]]:
-    values = [(f"{var_name}:raw", raw_secret)]
+def _collect_values(
+    var_name: str, raw_secret: str, parsed, *, include_raw: bool
+) -> list[tuple[str, str]]:
+    values = []
+    if include_raw or not isinstance(parsed, dict):
+        values.append((f"{var_name}:raw", raw_secret))
 
     if isinstance(parsed, dict):
         api_key = parsed.get("OPENAI_API_KEY")
@@ -67,7 +71,9 @@ def _expand_patterns(patterns: list[str]) -> list[str]:
     return expanded
 
 
-def _load_all_secrets(var_names: list[str], ignore_missing: bool) -> list[tuple[str, str]]:
+def _load_all_secrets(
+    var_names: list[str], ignore_missing: bool, *, include_raw: bool
+) -> list[tuple[str, str]]:
     values = []
     for var_name in var_names:
         try:
@@ -76,12 +82,14 @@ def _load_all_secrets(var_names: list[str], ignore_missing: bool) -> list[tuple[
             if ignore_missing:
                 continue
             raise
-        values.extend(_collect_values(var_name, raw, parsed))
+        values.extend(
+            _collect_values(var_name, raw, parsed, include_raw=include_raw)
+        )
     return values
 
 
 def emit_masks(var_names: list[str], ignore_missing: bool) -> int:
-    secret_values = _load_all_secrets(var_names, ignore_missing)
+    secret_values = _load_all_secrets(var_names, ignore_missing, include_raw=False)
     if not secret_values:
         print("No backend secrets found to mask.")
         return 0
@@ -91,7 +99,7 @@ def emit_masks(var_names: list[str], ignore_missing: bool) -> int:
 
 
 def scan_files(var_names: list[str], ignore_missing: bool, patterns: list[str]) -> int:
-    secret_values = _load_all_secrets(var_names, ignore_missing)
+    secret_values = _load_all_secrets(var_names, ignore_missing, include_raw=True)
     if not secret_values:
         print("No backend secrets found to scan for.")
         return 0

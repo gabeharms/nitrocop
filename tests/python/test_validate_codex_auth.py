@@ -43,7 +43,7 @@ def test_accepts_managed_auth():
     })
     assert result.returncode == 0
     assert "managed auth payload" in result.stdout
-    assert "e7-acc" in result.stdout
+    assert "account_id present" in result.stdout
 
 
 def test_accepts_api_key_auth():

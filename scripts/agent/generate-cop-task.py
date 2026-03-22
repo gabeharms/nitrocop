@@ -84,6 +84,9 @@ PRISM_PITFALLS = {
     ),
 }
 
+MAX_DIAGNOSTIC_DETAILS_PER_KIND = 8
+MAX_ADDITIONAL_EXAMPLES_PER_KIND = 5
+
 
 def pascal_to_snake(name: str) -> str:
     """Convert PascalCase to snake_case. E.g. NegatedWhile -> negated_while."""
@@ -465,12 +468,16 @@ def _format_with_diagnostics(
 
     fn_diags = [d for d in diagnostics if d["kind"] == "fn"]
     fp_diags = [d for d in diagnostics if d["kind"] == "fp"]
+    fn_diagnosed = [d for d in fn_diags if d.get("diagnosed")]
+    fp_diagnosed = [d for d in fp_diags if d.get("diagnosed")]
+    fn_undiagnosed = [d for d in fn_diags if not d.get("diagnosed")]
+    fp_undiagnosed = [d for d in fp_diags if not d.get("diagnosed")]
 
     # Summary counts
-    fn_code_bugs = sum(1 for d in fn_diags if d.get("diagnosed") and not d.get("detected"))
-    fn_config = sum(1 for d in fn_diags if d.get("diagnosed") and d.get("detected"))
-    fp_code_bugs = sum(1 for d in fp_diags if d.get("diagnosed") and d.get("detected"))
-    fp_config = sum(1 for d in fp_diags if d.get("diagnosed") and not d.get("detected"))
+    fn_code_bugs = sum(1 for d in fn_diagnosed if not d.get("detected"))
+    fn_config = sum(1 for d in fn_diagnosed if d.get("detected"))
+    fp_code_bugs = sum(1 for d in fp_diagnosed if d.get("detected"))
+    fp_config = sum(1 for d in fp_diagnosed if not d.get("detected"))
 
     lines.append("### Diagnosis Summary")
     lines.append("Each example was tested by running nitrocop on the extracted source in isolation")
@@ -482,10 +489,33 @@ def _format_with_diagnostics(
         lines.append(f"- **FN:** {fn_code_bugs} code bug(s), {fn_config} config/context issue(s)")
     if fp_diags:
         lines.append(f"- **FP:** {fp_code_bugs} confirmed code bug(s), {fp_config} context-dependent")
+    if fn_diagnosed and fn_undiagnosed:
+        no_context = sum(1 for d in fn_undiagnosed if d.get("reason") == "no source context")
+        extra = len(fn_undiagnosed) - no_context
+        if no_context:
+            lines.append(
+                f"- Omitted {no_context} pre-diagnostic FN example(s) with no source context "
+                "because diagnosed FN examples were available"
+            )
+        if extra:
+            lines.append(f"- Omitted {extra} additional undiagnosed FN example(s) for brevity")
+    if fp_diagnosed and fp_undiagnosed:
+        no_context = sum(1 for d in fp_undiagnosed if d.get("reason") == "no source context")
+        extra = len(fp_undiagnosed) - no_context
+        if no_context:
+            lines.append(
+                f"- Omitted {no_context} pre-diagnostic FP example(s) with no source context "
+                "because diagnosed FP examples were available"
+            )
+        if extra:
+            lines.append(f"- Omitted {extra} additional undiagnosed FP example(s) for brevity")
     lines.append("")
 
     # FN details
-    for i, d in enumerate(fn_diags, 1):
+    fn_display = fn_diagnosed[:MAX_DIAGNOSTIC_DETAILS_PER_KIND]
+    if not fn_display:
+        fn_display = fn_undiagnosed[:MAX_ADDITIONAL_EXAMPLES_PER_KIND]
+    for i, d in enumerate(fn_display, 1):
         lines.append(f"### FN #{i}: `{d['loc']}`")
         if d.get("diagnosed"):
             if d.get("detected"):
@@ -514,9 +544,20 @@ def _format_with_diagnostics(
             lines.append(f"(could not diagnose: {d.get('reason', 'unknown')})")
             lines.append(f"Message: `{d['msg']}`")
         lines.append("")
+    if len(fn_diagnosed) > len(fn_display):
+        omitted = len(fn_diagnosed) - len(fn_display)
+        lines.append(f"_Omitted {omitted} additional diagnosed FN example(s) for brevity._")
+        lines.append("")
+    elif not fn_diagnosed and len(fn_undiagnosed) > len(fn_display):
+        omitted = len(fn_undiagnosed) - len(fn_display)
+        lines.append(f"_Omitted {omitted} additional undiagnosed FN example(s) for brevity._")
+        lines.append("")
 
     # FP details
-    for i, d in enumerate(fp_diags, 1):
+    fp_display = fp_diagnosed[:MAX_DIAGNOSTIC_DETAILS_PER_KIND]
+    if not fp_display:
+        fp_display = fp_undiagnosed[:MAX_ADDITIONAL_EXAMPLES_PER_KIND]
+    for i, d in enumerate(fp_display, 1):
         lines.append(f"### FP #{i}: `{d['loc']}`")
         if d.get("diagnosed"):
             if d.get("detected"):
@@ -549,13 +590,21 @@ def _format_with_diagnostics(
             lines.append(f"(could not diagnose: {d.get('reason', 'unknown')})")
             lines.append(f"Message: `{d['msg']}`")
         lines.append("")
+    if len(fp_diagnosed) > len(fp_display):
+        omitted = len(fp_diagnosed) - len(fp_display)
+        lines.append(f"_Omitted {omitted} additional diagnosed FP example(s) for brevity._")
+        lines.append("")
+    elif not fp_diagnosed and len(fp_undiagnosed) > len(fp_display):
+        omitted = len(fp_undiagnosed) - len(fp_display)
+        lines.append(f"_Omitted {omitted} additional undiagnosed FP example(s) for brevity._")
+        lines.append("")
 
     # Additional un-diagnosed examples
-    undiag_fn = fn_examples[len(fn_diags):]
-    undiag_fp = fp_examples[len(fp_diags):]
+    undiag_fn = [] if fn_diagnosed else fn_examples[len(fn_diags):]
+    undiag_fp = [] if fp_diagnosed else fp_examples[len(fp_diags):]
     if undiag_fn or undiag_fp:
         lines.append("### Additional examples (not pre-diagnosed)\n")
-        for ex in undiag_fn[:15]:
+        for ex in undiag_fn[:MAX_ADDITIONAL_EXAMPLES_PER_KIND]:
             loc, msg, src = _normalize_example(ex)
             lines.append(f"- FN: `{loc}` — {msg}")
             if src:
@@ -563,7 +612,7 @@ def _format_with_diagnostics(
                 for s in src:
                     lines.append(f"  {s}")
                 lines.append("  ```")
-        for ex in undiag_fp[:15]:
+        for ex in undiag_fp[:MAX_ADDITIONAL_EXAMPLES_PER_KIND]:
             loc, msg, src = _normalize_example(ex)
             lines.append(f"- FP: `{loc}` — {msg}")
             if src:

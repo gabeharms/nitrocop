@@ -119,11 +119,11 @@ def main() -> int:
         print("Codex auth secret validated: API key auth payload")
     else:
         account_id = data.get("tokens", {}).get("account_id", "")
-        account_display = account_id[:6] + "..." if _nonempty_string(account_id) else "(missing)"
         last_refresh = data.get("last_refresh", "(missing)")
+        account_status = "account_id present" if _nonempty_string(account_id) else "account_id missing"
         print(
             "Codex auth secret validated: managed auth payload "
-            f"(account_id={account_display}, last_refresh={last_refresh})"
+            f"({account_status}, last_refresh={last_refresh})"
         )
     return 0
 

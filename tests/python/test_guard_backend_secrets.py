@@ -39,13 +39,16 @@ def run(args, env_vars=None):
 
 
 def test_emit_masks_outputs_commands_for_codex_auth():
+    payload = managed_auth_payload()
     result = run(
         ["--from-env", "CODEX_AUTH_JSON", "emit-masks"],
-        {"CODEX_AUTH_JSON": json.dumps(managed_auth_payload())},
+        {"CODEX_AUTH_JSON": json.dumps(payload)},
     )
     assert result.returncode == 0
     assert "::add-mask::eyJ-access" in result.stdout
     assert "::add-mask::rt-refresh" in result.stdout
+    assert '"access_token": "eyJ-access"' not in result.stdout
+    assert json.dumps(payload) not in result.stdout
 
 
 def test_emit_masks_outputs_commands_for_api_key():

@@ -130,6 +130,61 @@ def test_detect_prism_pitfalls_none():
     assert len(pitfalls) == 0
 
 
+def test_format_with_diagnostics_omits_no_source_examples_when_diagnosed_exists():
+    diagnostics = [
+        {
+            "kind": "fp",
+            "loc": "repo: file.rb:1",
+            "msg": "Bad spacing",
+            "diagnosed": True,
+            "detected": True,
+            "offense_line": "%w[ a ]",
+            "test_snippet": "%w[ a ]\n^ Layout/Foo: Bad spacing",
+            "enclosing": None,
+            "node_type": None,
+            "source_context": "%w[ a ]",
+        },
+        {
+            "kind": "fp",
+            "loc": "repo: file.rb:2",
+            "msg": "Bad spacing",
+            "diagnosed": False,
+            "reason": "no source context",
+        },
+    ]
+    output = gct._format_with_diagnostics(
+        "Layout/Foo",
+        diagnostics,
+        fp_examples=[
+            {"loc": "repo: file.rb:1", "msg": "Bad spacing", "src": [">>> 1: %w[ a ]"]},
+            {"loc": "repo: file.rb:2", "msg": "Bad spacing"},
+        ],
+        fn_examples=[],
+    )
+    assert "Omitted 1 pre-diagnostic FP example(s) with no source context" in output
+    assert "(could not diagnose: no source context)" not in output
+    assert "### Additional examples (not pre-diagnosed)" not in output
+
+
+def test_format_with_diagnostics_keeps_no_source_examples_when_they_are_all_we_have():
+    diagnostics = [
+        {
+            "kind": "fp",
+            "loc": "repo: file.rb:2",
+            "msg": "Bad spacing",
+            "diagnosed": False,
+            "reason": "no source context",
+        },
+    ]
+    output = gct._format_with_diagnostics(
+        "Layout/Foo",
+        diagnostics,
+        fp_examples=[{"loc": "repo: file.rb:2", "msg": "Bad spacing"}],
+        fn_examples=[],
+    )
+    assert "(could not diagnose: no source context)" in output
+
+
 if __name__ == "__main__":
     test_pascal_to_snake()
     test_parse_cop_name()
@@ -144,4 +199,6 @@ if __name__ == "__main__":
     test_extract_spec_excerpts_empty()
     test_detect_prism_pitfalls()
     test_detect_prism_pitfalls_none()
+    test_format_with_diagnostics_omits_no_source_examples_when_diagnosed_exists()
+    test_format_with_diagnostics_keeps_no_source_examples_when_they_are_all_we_have()
     print("All tests passed.")
