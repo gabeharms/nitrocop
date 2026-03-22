@@ -34,3 +34,6 @@ items.map(items, &method(:transform)).compact
                                       ^^^^^^^ Performance/ChainArrayAllocation: Use unchained `map` and `compact!` (followed by `return array` if required) instead of chaining `map...compact`.
 arr.flatten(1).compact
                ^^^^^^^ Performance/ChainArrayAllocation: Use unchained `flatten` and `compact!` (followed by `return array` if required) instead of chaining `flatten...compact`.
+# RETURN_NEW_ARRAY_WHEN_ARGS inner call with block on outer call
+@history.last(100).map { |s| f.puts s }
+                   ^^^ Performance/ChainArrayAllocation: Use unchained `last` and `map!` (followed by `return array` if required) instead of chaining `last...map`.
