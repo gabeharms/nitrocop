@@ -52,13 +52,9 @@ use crate::parse::source::SourceFile;
 ///
 /// ## FP fix (2026-03-21)
 ///
-/// FP=4 across 2 repos. Two root causes:
-/// 1. `@string[start..@pos-1]`: arithmetic operators on variables (`+`, `-`, `*`, `/`)
-///    were rejected as ambiguous. RuboCop accepts these; only comparison operators
-///    (`>=`, `<=`, `>>`, `<<`) create genuine ambiguity.
-/// 2. `1.. ..1` and `1... ...1`: range nodes used as boundaries (endless to beginless).
-///    RuboCop accepts `RangeNode` as an unambiguous boundary. Added `as_range_node()`
-///    check to `is_acceptable_boundary`.
+/// FP: `1.. ..1` and `1... ...1`: range nodes used as boundaries (endless to beginless).
+/// RuboCop accepts `RangeNode` as an unambiguous boundary. Added `as_range_node()`
+/// check to `is_acceptable_boundary`.
 pub struct AmbiguousRange;
 
 impl Cop for AmbiguousRange {
@@ -244,23 +240,7 @@ fn is_acceptable_boundary(node: &ruby_prism::Node<'_>, require_parens_for_chains
 
         // Operator methods (except []) are NOT acceptable — they create
         // ambiguity like `x + 1..y - 1` where the range boundaries are unclear.
-        // EXCEPTION: arithmetic operators on variables (+, -, *, /) are acceptable
-        // because RuboCop accepts them. But comparison operators (>=, <=, >>, <<)
-        // are still rejected.
         if is_operator(name) && name != b"[]" {
-            // Allow arithmetic operators on variables
-            if name == b"+" || name == b"-" || name == b"*" || name == b"/" {
-                // Only allow if receiver is a variable (not a basic literal)
-                if let Some(recv) = call.receiver() {
-                    if recv.as_local_variable_read_node().is_some()
-                        || recv.as_instance_variable_read_node().is_some()
-                        || recv.as_class_variable_read_node().is_some()
-                        || recv.as_global_variable_read_node().is_some()
-                    {
-                        return true;
-                    }
-                }
-            }
             return false;
         }
 

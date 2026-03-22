@@ -58,6 +58,3 @@ begin
 rescue StandardError => @good_ivar
   nil
 end
-
-# All-caps instance variable (like a constant) - RuboCop does not flag
-@OP = IRB::SLex.new

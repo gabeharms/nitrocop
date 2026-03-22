@@ -22,11 +22,6 @@ begin; compute_min; end..begin; compute_max; end
 # CallNode.block(), but it's a BlockArgumentNode, not an actual block body.
 records.select(&:active?)..records.reject(&:archived?)
 
-# FP: Arithmetic operators on variables as range boundaries
-def get_text(start)
-  @string[start..@pos-1]
-end
-
-# FP: Range boundaries that are themselves ranges (endless/beginless)
+# Range boundaries that are themselves ranges (endless/beginless)
 1.. ..1
 1... ...1
