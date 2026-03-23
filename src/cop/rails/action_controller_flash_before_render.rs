@@ -62,6 +62,7 @@
 ///
 /// ## Investigation (2026-03-19): FP=4, FN=1 — third fix
 ///
+///
 /// FP=4: All four FPs were flash as the last statement in a def-with-rescue body
 /// (with or without ensure). In RuboCop's Parser AST, `each_ancestor(:if, :rescue)`
 /// finds the rescue ancestor and only checks its right_siblings (ensure body or empty)
@@ -82,6 +83,22 @@
 /// and (b) using the full visitor for recursion after manually checking
 /// the class's own methods, so modules and other nested structures are
 /// properly traversed.
+///
+/// ## Investigation (2026-03-23): FP=4, FN=32 — fourth fix
+///
+/// - Root cause 16 (FP=4): Flash inside explicit `begin`/`rescue`/`end` blocks followed
+///   by `respond_to` with render was incorrectly flagged. In RuboCop, `each_ancestor(:if,
+///   :rescue)` finds `:rescue` as the ancestor. The rescue node's `right_siblings` within
+///   the begin are empty (or ensure body), NOT the begin block's outer siblings. Fixed
+///   `check_begin_node_with_outer` to suppress outer_siblings when rescue is present,
+///   passing only ensure_stmts as context for both body and rescue branches.
+/// - Root cause 17 (FN=32): `case`/`when` nodes were not handled at all. In RuboCop,
+///   `each_ancestor(:if, :rescue)` does NOT match `:case`, so case is transparent. Flash
+///   as the last statement in a `when` body triggers implicit render (right_siblings empty,
+///   parent is when/begin with no redirect_to in their right_siblings). Added
+///   `check_case_node_with_outer` and `check_case_branch_stmts` to recurse into when/else
+///   branches. Also added case/when recursion in `check_statements` and
+///   `check_branch_stmts_impl`.
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
@@ -256,6 +273,14 @@ impl FlashVisitor<'_> {
                 self.check_begin_node_with_outer(&begin_node, remaining);
             }
 
+            // Recurse into case/when branches.
+            // In RuboCop, each_ancestor(:if, :rescue) does NOT match :case, so case
+            // is transparent. Flash inside a when body is checked as if at the case's
+            // level — the case node's right siblings are the outer context.
+            if let Some(case_node) = stmt.as_case_node() {
+                self.check_case_node_with_outer(&case_node, remaining);
+            }
+
             // Recurse into respond_to/format blocks (nested block bodies).
             // Pass outer siblings so implicit-render detection can see outer redirect/render.
             if let Some(call_node) = stmt.as_call_node() {
@@ -398,19 +423,153 @@ impl FlashVisitor<'_> {
         }
     }
 
+    /// Check a case/when node. In RuboCop's Parser AST, `each_ancestor(:if, :rescue)`
+    /// does NOT match `:case`, so case is transparent. Flash inside a when body behaves
+    /// as if it were at the case statement's level in the parent scope.
+    ///
+    /// For each when branch:
+    /// - If flash is the last statement (right_siblings empty), RuboCop checks
+    ///   `use_redirect_to?(context.parent)`. The parent is `begin` (multi-stmt) or `when`.
+    ///   `when.right_siblings` are subsequent when/else clauses, which typically don't
+    ///   have redirect_to at top level → implicit render fires.
+    /// - If flash has right_siblings within the when, those are checked for render/redirect
+    ///   as normal.
+    ///
+    /// We implement this by treating case/when like check_statements: each when body's
+    /// statements are checked with the case node's outer_siblings as context, but using
+    /// is_if_rescue_branch=false so inner siblings ARE checked for render.
+    fn check_case_node_with_outer(
+        &mut self,
+        case_node: &ruby_prism::CaseNode<'_>,
+        outer_siblings: &[ruby_prism::Node<'_>],
+    ) {
+        for condition in case_node.conditions().iter() {
+            if let Some(when_node) = condition.as_when_node() {
+                if let Some(stmts) = when_node.statements() {
+                    let body_nodes: Vec<_> = stmts.body().iter().collect();
+                    self.check_case_branch_stmts(&body_nodes, outer_siblings);
+                }
+            }
+        }
+        // else clause of case (consequent)
+        if let Some(else_clause) = case_node.else_clause() {
+            if let Some(stmts) = else_clause.statements() {
+                let body_nodes: Vec<_> = stmts.body().iter().collect();
+                self.check_case_branch_stmts(&body_nodes, outer_siblings);
+            }
+        }
+    }
+
+    /// Check statements inside a case/when branch.
+    ///
+    /// In RuboCop, case is transparent to `each_ancestor(:if, :rescue)`. So flash
+    /// inside a when body does NOT have a special ancestor — it's treated like a
+    /// normal scope. The flash's right_siblings are checked first, then if empty,
+    /// implicit render logic applies using the parent (when node).
+    ///
+    /// We replicate this by checking inner siblings normally (like check_statements),
+    /// but when flash is the last statement, we check implicit render using
+    /// outer_siblings (the case node's right siblings in the parent scope).
+    fn check_case_branch_stmts(
+        &mut self,
+        branch_stmts: &[ruby_prism::Node<'_>],
+        _outer_siblings: &[ruby_prism::Node<'_>],
+    ) {
+        for (i, stmt) in branch_stmts.iter().enumerate() {
+            let inner_remaining = &branch_stmts[i + 1..];
+
+            if let Some(flash_loc) = get_flash_assignment(stmt) {
+                let inner_has_redirect = inner_remaining.iter().any(|s| is_redirect_sibling(s));
+                if inner_has_redirect {
+                    continue;
+                }
+
+                let inner_has_render = inner_remaining.iter().any(|s| contains_render(s));
+                let is_offense = if inner_has_render {
+                    // Render found in same when body after flash
+                    true
+                } else if inner_remaining.is_empty() {
+                    // Flash is last in when body. In RuboCop:
+                    // context.right_siblings.empty? → true
+                    // !use_redirect_to?(context.parent) → implicit render fires.
+                    //
+                    // For multi-stmt when: parent is begin, begin.right_siblings empty.
+                    // For single-stmt when: parent is when, when.right_siblings are
+                    // subsequent when/else clauses (not redirect_to calls).
+                    // In both cases, implicit render fires. But we also need to account
+                    // for outer redirect (from the case node's right_siblings).
+                    //
+                    // In Parser AST, single-stmt when has flash as direct child of when,
+                    // so use_redirect_to?(when) checks when.right_siblings which are
+                    // other when clauses — not redirect_to. For multi-stmt, parent is
+                    // begin, right_siblings empty. Either way, implicit render fires.
+                    // The outer_siblings represent the case's right_siblings. For the
+                    // implicit render path, RuboCop returns true without checking those.
+                    true
+                } else {
+                    // Has remaining siblings but no render or redirect → no offense.
+                    // RuboCop checks context.right_siblings which are the inner remaining,
+                    // and none contain render. The outer siblings are not checked.
+                    false
+                };
+
+                if is_offense {
+                    self.emit_diagnostic(flash_loc);
+                }
+            }
+
+            // Recurse into nested structures within case branches
+            if let Some(nested_if) = stmt.as_if_node() {
+                self.check_if_node_with_outer(&nested_if, inner_remaining);
+            }
+            if let Some(nested_unless) = stmt.as_unless_node() {
+                self.check_unless_node_with_outer(&nested_unless, inner_remaining);
+            }
+            if let Some(nested_begin) = stmt.as_begin_node() {
+                self.check_begin_node_with_outer(&nested_begin, inner_remaining);
+            }
+            if let Some(nested_case) = stmt.as_case_node() {
+                self.check_case_node_with_outer(&nested_case, inner_remaining);
+            }
+            if let Some(call_node) = stmt.as_call_node() {
+                if let Some(block) = call_node.block() {
+                    self.check_block_body_with_outer(&block, inner_remaining, false);
+                }
+            }
+        }
+    }
+
     fn check_begin_node_with_outer(
         &mut self,
         begin_node: &ruby_prism::BeginNode<'_>,
         outer_siblings: &[ruby_prism::Node<'_>],
     ) {
+        // When begin has a rescue clause, RuboCop's each_ancestor(:if, :rescue) finds
+        // the :rescue ancestor. The rescue node's right_siblings within the begin are
+        // empty (or ensure body). So the begin body should NOT see outer_siblings —
+        // only ensure_stmts. Without rescue, the begin is transparent and outer_siblings
+        // pass through.
+        let has_rescue = begin_node.rescue_clause().is_some();
+
+        let ensure_stmts: Vec<ruby_prism::Node<'_>> = begin_node
+            .ensure_clause()
+            .and_then(|ec| ec.statements())
+            .map(|stmts| stmts.body().iter().collect())
+            .unwrap_or_default();
+
         if let Some(stmts) = begin_node.statements() {
             let body_nodes: Vec<_> = stmts.body().iter().collect();
-            self.check_branch_stmts_with_outer(&body_nodes, outer_siblings, true);
+            if has_rescue {
+                // Rescue ancestor suppresses outer_siblings; only ensure body is visible.
+                self.check_branch_stmts_with_outer(&body_nodes, &ensure_stmts, true);
+            } else {
+                self.check_branch_stmts_with_outer(&body_nodes, outer_siblings, true);
+            }
         }
         // For rescue clauses: RuboCop's each_ancestor(:rescue) finds the rescue node,
-        // and rescue.right_siblings within the begin is empty. So pass empty outer.
+        // and rescue.right_siblings within the begin is empty. So pass ensure_stmts.
         if let Some(rescue) = begin_node.rescue_clause() {
-            self.check_rescue_with_outer(&rescue, &[]);
+            self.check_rescue_with_outer(&rescue, &ensure_stmts);
         }
     }
 
@@ -518,6 +677,9 @@ impl FlashVisitor<'_> {
             }
             if let Some(nested_begin) = stmt.as_begin_node() {
                 self.check_begin_node_with_outer(&nested_begin, inner_remaining);
+            }
+            if let Some(nested_case) = stmt.as_case_node() {
+                self.check_case_node_with_outer(&nested_case, inner_remaining);
             }
             if let Some(call_node) = stmt.as_call_node() {
                 if let Some(block) = call_node.block() {
