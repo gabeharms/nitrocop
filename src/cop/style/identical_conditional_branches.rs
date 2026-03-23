@@ -177,6 +177,21 @@ impl IdenticalConditionalBranches {
         Some(branches)
     }
 
+    /// Remove duplicate diagnostics added from `start_idx` onwards (same line+col).
+    fn dedup_diagnostics(diagnostics: &mut Vec<Diagnostic>, start_idx: usize) {
+        let mut seen = std::collections::HashSet::new();
+        let mut i = start_idx;
+        while i < diagnostics.len() {
+            let key = (diagnostics[i].location.line, diagnostics[i].location.column);
+            if seen.contains(&key) {
+                diagnostics.remove(i);
+            } else {
+                seen.insert(key);
+                i += 1;
+            }
+        }
+    }
+
     /// Check identical tail (last statement) across all branches.
     fn check_tails(
         &self,
@@ -424,6 +439,8 @@ impl Cop for IdenticalConditionalBranches {
                 None => return, // no else clause
             };
 
+            let pre_len = diagnostics.len();
+
             // Check tails (last statement in each branch)
             self.check_tails(source, &branches, diagnostics);
 
@@ -431,11 +448,16 @@ impl Cop for IdenticalConditionalBranches {
             let condition = if_node.predicate();
             let last_child = is_last_child_of_parent(node, parse_result);
             self.check_heads(source, &branches, Some(&condition), last_child, diagnostics);
+
+            // Deduplicate: when both head and tail fire on single-stmt branches
+            Self::dedup_diagnostics(diagnostics, pre_len);
         } else if let Some(case_node) = node.as_case_node() {
             let branches = match Self::collect_case_branches(&case_node) {
                 Some(b) => b,
                 None => return,
             };
+
+            let pre_len = diagnostics.len();
 
             self.check_tails(source, &branches, diagnostics);
 
@@ -448,11 +470,15 @@ impl Cop for IdenticalConditionalBranches {
                 last_child,
                 diagnostics,
             );
+
+            Self::dedup_diagnostics(diagnostics, pre_len);
         } else if let Some(case_match_node) = node.as_case_match_node() {
             let branches = match Self::collect_case_match_branches(&case_match_node) {
                 Some(b) => b,
                 None => return,
             };
+
+            let pre_len = diagnostics.len();
 
             self.check_tails(source, &branches, diagnostics);
 
@@ -465,6 +491,8 @@ impl Cop for IdenticalConditionalBranches {
                 last_child,
                 diagnostics,
             );
+
+            Self::dedup_diagnostics(diagnostics, pre_len);
         }
     }
 }
