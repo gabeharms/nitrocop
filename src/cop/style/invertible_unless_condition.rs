@@ -97,7 +97,7 @@ impl InvertibleUnlessCondition {
             if inverse_map.contains_key(call.name().as_slice()) {
                 // For `<` operator: check if the receiver is a constant (class inheritance check)
                 if call.name().as_slice() == b"<" {
-                    if Self::is_inheritance_check(call) {
+                    if Self::is_inheritance_check(&call) {
                         return false;
                     }
                 }
