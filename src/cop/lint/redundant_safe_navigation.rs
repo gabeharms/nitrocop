@@ -65,6 +65,17 @@ use ruby_prism::Visit;
 /// Also fixed: backtick literals (`` `cmd` ``) as receivers. Backtick always returns
 /// a String (non-nil), so `&.` after backtick is redundant. Added `XStringNode` to
 /// `is_non_nil_literal` check.
+///
+/// ## Corpus investigation (2026-03-23) — StatementsNode in parenthesized conditions
+///
+/// FN=30 remaining: `visit_conditional_subtree` did not handle `StatementsNode`, which
+/// is the body of `ParenthesesNode` in Prism. Parenthesized `&&`/`||` expressions like
+/// `(user&.is_a?(Admin) && ...)` have the structure Parens → StatementsNode → AndNode.
+/// Without handling StatementsNode, the recursion stopped at the StatementsNode and
+/// never reached the inner `&&`/`||` or `CallNode`. Fixed by adding StatementsNode
+/// handling to `visit_conditional_subtree`. Remaining FNs likely from project-specific
+/// config (custom AllowedMethods, InferNonNilReceiver: true) or niche patterns like
+/// `rescue => self&.foo`.
 pub struct RedundantSafeNavigation;
 
 /// Methods guaranteed to exist on every instance (their receivers can't be nil)
