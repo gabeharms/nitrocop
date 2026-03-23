@@ -322,41 +322,60 @@ impl FetchEnvVar {
     }
 
     /// Collect start offsets of ENV['X'] nodes that should be suppressed within a
-    /// condition. Only suppresses nodes that are the DIRECT condition or direct
-    /// children of recognized patterns (bare flag, `!`, comparison, ternary).
-    /// Does NOT suppress ENV[] in `&&` chains or assignment expressions.
+    /// condition. Matches RuboCop's logic:
+    /// - `used_if_condition_in_body?` checks `condition.child_nodes.any?(node)` for
+    ///   DIRECT children of the top-level condition.
+    /// - `used_as_flag?` checks `node.parent.send_type? && (prefix_bang? || comparison_method?)`
+    ///   for the immediate parent.
+    ///
+    /// The parent-based checks (`!`, comparison, predicate) are handled in `visit_call_node`.
+    /// This function handles the `condition.child_nodes.any?` equivalent: suppressing
+    /// ENV[] calls that are DIRECT children of the top-level condition node.
     fn collect_suppressed_in_condition(
         condition: &ruby_prism::Node<'_>,
         offsets: &mut HashSet<usize>,
     ) {
-        // Case 1: Condition IS `ENV['X']` — bare flag
+        // Case 1: Condition IS `ENV['X']` directly — bare flag like `if ENV['X']`
+        if Self::is_env_bracket_call(condition) {
+            if let Some(call) = condition.as_call_node() {
+                offsets.insert(call.location().start_offset());
+            }
+            return;
+        }
+
+        // Case 2: Condition is a send node (comparison, predicate, `!`, etc.)
+        // The parent-based suppression (!, comparison, predicate) is handled by
+        // visit_call_node, so we don't need to duplicate it here.
+        // But we need to handle the case where ENV[] is inside a predicate/comparison
+        // that IS the condition itself — those ENV[] calls are suppressed because
+        // `used_if_condition_in_body?` returns true (child_nodes match).
         if let Some(call) = condition.as_call_node() {
             let method = call.name();
             let method_bytes = method.as_slice();
 
-            if method_bytes == b"[]" {
-                if let Some(receiver) = call.receiver() {
-                    if Self::is_env_receiver(&receiver) {
-                        offsets.insert(call.location().start_offset());
-                        return;
-                    }
-                }
-            }
+            // `!ENV['X']` — the ENV call is handled by visit_call_node's `!` check.
+            // Comparison, predicate — also handled by visit_call_node checks.
+            // We don't need to add to suppressed_offsets here because visit_call_node
+            // already handles these cases before checking suppressed_offsets.
+            // However, we still need to suppress for the case where the ENV[] is
+            // inside a condition like `if ENV['X'].present?` — the ENV[] gets
+            // suppressed by the dot-method check, not by this function.
 
-            // Case 2: `!ENV['X']` — prefix_bang. Suppress the ENV call.
+            // For safety, we still handle a few common cases:
             if method_bytes == b"!" {
+                // `!ENV['X']` — suppress the inner ENV[]
                 if let Some(receiver) = call.receiver() {
                     if Self::is_env_bracket_call(&receiver) {
                         if let Some(recv_call) = receiver.as_call_node() {
                             offsets.insert(recv_call.location().start_offset());
                         }
-                        return;
                     }
                 }
+                return;
             }
 
-            // Case 3: Comparison — suppress ENV[] on both sides
             if Self::is_comparison_method(method_bytes) {
+                // Comparison — suppress ENV[] on both sides
                 if let Some(receiver) = call.receiver() {
                     if Self::is_env_bracket_call(&receiver) {
                         if let Some(recv_call) = receiver.as_call_node() {
@@ -376,8 +395,7 @@ impl FetchEnvVar {
                 return;
             }
 
-            // Case 4: Predicate on ENV — `ENV['X'].present?`, `ENV['X'].nil?`, etc.
-            // Suppress the ENV call that is the receiver of the predicate.
+            // Predicate — suppress ENV[] receiver and args
             if method_bytes.ends_with(b"?") {
                 if let Some(receiver) = call.receiver() {
                     if Self::is_env_bracket_call(&receiver) {
@@ -385,10 +403,7 @@ impl FetchEnvVar {
                             offsets.insert(recv_call.location().start_offset());
                         }
                     }
-                    // Also handle ENV.key?('X') etc. — suppress ENV[] args within
-                    // These are not ENV[] calls themselves, no suppression needed.
                 }
-                // Also check args: %w[A B C].include?(ENV['X'])
                 if let Some(args) = call.arguments() {
                     for arg in args.arguments().iter() {
                         if Self::is_env_bracket_call(&arg) {
@@ -402,18 +417,31 @@ impl FetchEnvVar {
             }
         }
 
-        // For `&&` / `||` in condition, recurse into direct children
-        // This handles cases like `if ENV['X'] && other` or `if foo || ENV['X']`
+        // Case 3: `&&` or `||` — check only DIRECT children, one level deep.
+        // RuboCop's `condition.child_nodes.any?(node)` only checks direct children
+        // of the condition, NOT grandchildren. So for `if A && B && C` parsed as
+        // `(and (and A B) C)`, only `(and A B)` and `C` are children — not A or B.
+        // We check each direct child: if it's an ENV[] call, suppress it.
+        // If it's another `&&`/`||`, do NOT recurse further.
         if let Some(and_node) = condition.as_and_node() {
-            Self::collect_suppressed_in_condition(&and_node.left(), offsets);
-            Self::collect_suppressed_in_condition(&and_node.right(), offsets);
+            Self::suppress_if_env_bracket(&and_node.left(), offsets);
+            Self::suppress_if_env_bracket(&and_node.right(), offsets);
         }
         if let Some(or_node) = condition.as_or_node() {
-            Self::collect_suppressed_in_condition(&or_node.left(), offsets);
-            Self::collect_suppressed_in_condition(&or_node.right(), offsets);
+            Self::suppress_if_env_bracket(&or_node.left(), offsets);
+            Self::suppress_if_env_bracket(&or_node.right(), offsets);
         }
 
         // Parenthesized assignment `if (x = ENV['X'])` — do NOT suppress
+    }
+
+    /// If the node is an ENV['X'] call, add its start offset to the suppressed set.
+    fn suppress_if_env_bracket(node: &ruby_prism::Node<'_>, offsets: &mut HashSet<usize>) {
+        if Self::is_env_bracket_call(node) {
+            if let Some(call) = node.as_call_node() {
+                offsets.insert(call.location().start_offset());
+            }
+        }
     }
 }
 
