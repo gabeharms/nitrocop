@@ -24,14 +24,14 @@ use crate::parse::source::SourceFile;
 /// - elsif chains were not skipped (vendor checks `condition_node.parent.elsif?`)
 /// - Non-parameter return values already handled via `truthy_branch_returns_param`
 ///
-/// The vendor RuboCop NodePattern handles these block body shapes:
-/// 1. `(if cond lvar {next|nil})` — if with param in then, next/nil in else
-/// 2. `(if cond {next|nil} lvar)` — if with next/nil in then, param in else
-/// 3. `(if cond (next lvar) {next|nil|nil?})` — next-with-value in then
-/// 4. `(if cond {next|nil|nil?} (next lvar))` — next-with-value in else
-/// 5. `(begin (if cond next nil?) lvar)` — guard clause with bare next
-/// 6. `(begin (if cond (next lvar) nil?) (nil))` — guard with next-value + nil
-/// Plus unless variants of all the above.
+/// The vendor RuboCop NodePattern handles these block body shapes
+/// (plus unless variants of all):
+/// - `(if cond lvar {next|nil})` — if with param in then, next/nil in else
+/// - `(if cond {next|nil} lvar)` — if with next/nil in then, param in else
+/// - `(if cond (next lvar) {next|nil|nil?})` — next-with-value in then
+/// - `(if cond {next|nil|nil?} (next lvar))` — next-with-value in else
+/// - `(begin (if cond next nil?) lvar)` — guard clause with bare next
+/// - `(begin (if cond (next lvar) nil?) (nil))` — guard with next-value + nil
 pub struct MapCompactWithConditionalBlock;
 
 impl Cop for MapCompactWithConditionalBlock {
