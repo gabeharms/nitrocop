@@ -118,8 +118,7 @@ fn check_if_node(
 
     let loc = if_node.location();
     let (line, column) = source.offset_to_line_col(loc.start_offset());
-    let cond_src =
-        std::str::from_utf8(if_node.predicate().location().as_slice()).unwrap_or("...");
+    let cond_src = std::str::from_utf8(if_node.predicate().location().as_slice()).unwrap_or("...");
 
     diagnostics.push(cop.diagnostic(
         source,
@@ -168,10 +167,7 @@ fn check_unless_node(
         source,
         line,
         column,
-        format!(
-            "Do not use `unless {};` - use a newline instead.",
-            cond_src
-        ),
+        format!("Do not use `unless {};` - use a newline instead.", cond_src),
     ));
 }
 
