@@ -24,6 +24,13 @@ use crate::parse::source::SourceFile;
 /// "variable" and the lvar should be the "value", matching RuboCop's
 /// `simple_comparison_lhs/rhs` patterns: `(send {lvar call} :== $_)`.
 ///
+/// FN root cause 3: When an or-chain contained comparisons against multiple
+/// different variables (e.g., `a == '.' || a == '..' || b.call == 'x'`), the
+/// old `collect_comparisons` returned None if variable sources didn't match.
+/// RuboCop's `find_offending_var` uses a Set of variables and only skips
+/// adding values once `variables.size > 1` — it still reports the first
+/// variable's accumulated comparisons. This caused 5 FNs in the corpus.
+///
 /// Fixes:
 /// - Skip `lvar == lvar` comparisons (simple_double_comparison).
 /// - Match RuboCop's variable/value identification: `{lvar, call}` is the
@@ -32,6 +39,9 @@ use crate::parse::source::SourceFile;
 /// - After processing a root OrNode, manually flatten its || chain and
 ///   visit non-Or leaf children for independent nested OrNodes, instead of
 ///   using `inside_or` flag which incorrectly blocked OrNodes inside `&&`.
+/// - Use iterative `find_offending_var_recursive` that tolerates mixed
+///   variables in an or-chain: accumulate comparisons for the first variable,
+///   skip comparisons with different variables without discarding results.
 pub struct MultipleComparison;
 
 /// Result of analyzing a single `==` comparison.
@@ -44,63 +54,70 @@ enum ComparisonResult {
 }
 
 impl MultipleComparison {
-    /// Recursively collect == comparisons joined by ||, returning the variable
-    /// being compared if consistent, along with the comparison count.
-    /// Matches RuboCop's `find_offending_var` logic.
-    fn collect_comparisons<'a>(
-        node: &'a ruby_prism::Node<'a>,
+    /// Recursively find the offending variable in an or-chain, matching
+    /// RuboCop's `find_offending_var` logic. Accumulates into shared state
+    /// passed by mutable reference.
+    ///
+    /// Key behavior matching RuboCop: when a comparison uses a different
+    /// variable, we skip that comparison (don't add its value) but continue
+    /// processing the rest of the chain.
+    fn find_offending_var_recursive<'a>(
+        node: &ruby_prism::Node<'a>,
         allow_method: bool,
-    ) -> Option<(Vec<u8>, usize)> {
-        // Handle OrNode: a == x || a == y
+        first_var: &mut Option<Vec<u8>>,
+        num_vars: &mut usize,
+        count: &mut usize,
+    ) {
         if let Some(or_node) = node.as_or_node() {
             let lhs = or_node.left();
             let rhs = or_node.right();
-
-            let lhs_result = Self::collect_comparisons(&lhs, allow_method);
-            let rhs_result = Self::collect_comparisons(&rhs, allow_method);
-
-            match (lhs_result, rhs_result) {
-                (Some((lhs_var, lhs_count)), Some((rhs_var, rhs_count))) => {
-                    if lhs_var == rhs_var {
-                        return Some((lhs_var, lhs_count + rhs_count));
-                    }
-                    // Different variables but might share if one is empty (skipped method comparison)
-                    if lhs_count == 0 {
-                        return Some((rhs_var, rhs_count));
-                    }
-                    if rhs_count == 0 {
-                        return Some((lhs_var, lhs_count));
-                    }
-                    return None;
-                }
-                (Some(_), None) | (None, Some(_)) => {
-                    return None;
-                }
-                (None, None) => return None,
-            }
+            Self::find_offending_var_recursive(&lhs, allow_method, first_var, num_vars, count);
+            Self::find_offending_var_recursive(&rhs, allow_method, first_var, num_vars, count);
+            return;
         }
 
-        // Handle CallNode with ==
-        if let Some(call) = node.as_call_node() {
-            if call.name().as_slice() == b"==" {
-                let lhs = call.receiver()?;
-                let rhs_args = call.arguments()?;
-                let rhs_list: Vec<_> = rhs_args.arguments().iter().collect();
-                if rhs_list.len() != 1 {
-                    return None;
-                }
-                let rhs = &rhs_list[0];
+        let Some(call) = node.as_call_node() else {
+            return;
+        };
+        if call.name().as_slice() != b"==" {
+            return;
+        }
+        let Some(lhs) = call.receiver() else {
+            return;
+        };
+        let Some(rhs_args) = call.arguments() else {
+            return;
+        };
+        let rhs_list: Vec<_> = rhs_args.arguments().iter().collect();
+        if rhs_list.len() != 1 {
+            return;
+        }
+        let rhs = &rhs_list[0];
 
-                let result = Self::classify_comparison(&lhs, rhs, allow_method)?;
-                return match result {
-                    ComparisonResult::Valid { var_src, count } => Some((var_src, count)),
-                    // simple_double_comparison: both sides are lvars — skip but keep chain alive
-                    // Return a dummy variable with count 0 so the chain continues
-                    ComparisonResult::DoubleVar => Some((lhs.location().as_slice().to_vec(), 0)),
-                };
+        let Some(result) = Self::classify_comparison(&lhs, rhs, allow_method) else {
+            return;
+        };
+
+        match result {
+            ComparisonResult::DoubleVar => {
+                // simple_double_comparison: skip entirely
+            }
+            ComparisonResult::Valid { var_src, count: c } => {
+                if first_var.is_none() {
+                    *first_var = Some(var_src);
+                    *num_vars = 1;
+                    *count += c;
+                } else if *num_vars > 1 {
+                    // Already saw multiple variables — skip all further
+                    // values (matching RuboCop's `return if variables.size > 1`)
+                } else if first_var.as_ref() == Some(&var_src) {
+                    *count += c;
+                } else {
+                    // Different variable — don't add its value
+                    *num_vars += 1;
+                }
             }
         }
-        None
     }
 
     /// Classify a `==` comparison, matching RuboCop's `simple_comparison_lhs/rhs`
@@ -245,23 +262,29 @@ impl<'a> Visit<'a> for MultipleComparisonVisitor<'a> {
 
         // Check if this is an || chain consisting entirely of == comparisons.
         if Self::nested_comparison_or(&lhs, &rhs) {
-            // Process the full chain
-            let lhs_result = MultipleComparison::collect_comparisons(&lhs, self.allow_method);
-            let rhs_result = MultipleComparison::collect_comparisons(&rhs, self.allow_method);
-
-            let result = match (lhs_result, rhs_result) {
-                (Some((lhs_var, lhs_count)), Some((rhs_var, rhs_count))) => {
-                    if lhs_var == rhs_var {
-                        Some(lhs_count + rhs_count)
-                    } else if lhs_count == 0 {
-                        Some(rhs_count)
-                    } else if rhs_count == 0 {
-                        Some(lhs_count)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
+            // Find offending variable across the whole or-chain.
+            // Process both sides separately using shared state.
+            let mut first_var: Option<Vec<u8>> = None;
+            let mut num_vars = 0usize;
+            let mut count = 0usize;
+            MultipleComparison::find_offending_var_recursive(
+                &lhs,
+                self.allow_method,
+                &mut first_var,
+                &mut num_vars,
+                &mut count,
+            );
+            MultipleComparison::find_offending_var_recursive(
+                &rhs,
+                self.allow_method,
+                &mut first_var,
+                &mut num_vars,
+                &mut count,
+            );
+            let result = if first_var.is_some() && count > 0 {
+                Some(count)
+            } else {
+                None
             };
 
             if let Some(count) = result {

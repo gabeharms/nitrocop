@@ -83,3 +83,15 @@ class DynamicAttr
 
   alias_method :other, :name if condition
 end
+
+# Minified Ruby: attr_accessor after semicolon (mid-line) — still needs blank line
+class Cookies<H;attr_accessor :_p
+
+def _n; end
+end
+
+# Minified Ruby: module with attr_accessor after semicolon
+module Base;attr_accessor :env, :request
+
+def run; end
+end

@@ -1,8 +1,17 @@
-use crate::cop::node_type::{BACK_REFERENCE_READ_NODE, NUMBERED_REFERENCE_READ_NODE};
+use crate::cop::node_type::{
+    BACK_REFERENCE_READ_NODE, GLOBAL_VARIABLE_READ_NODE, NUMBERED_REFERENCE_READ_NODE,
+};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Style/PerlBackrefs detects Perl-style regexp backreferences ($1, $&, etc.)
+/// and their English-name equivalents ($MATCH, $PREMATCH, $POSTMATCH,
+/// $LAST_PAREN_MATCH) from Ruby's `English` library. Both forms should be
+/// replaced with `Regexp.last_match(...)` calls.
+///
+/// The English-name globals are parsed as `GlobalVariableReadNode` by Prism,
+/// not `BackReferenceReadNode`, so we must also handle that node type.
 pub struct PerlBackrefs;
 
 impl Cop for PerlBackrefs {
@@ -11,7 +20,11 @@ impl Cop for PerlBackrefs {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[BACK_REFERENCE_READ_NODE, NUMBERED_REFERENCE_READ_NODE]
+        &[
+            BACK_REFERENCE_READ_NODE,
+            NUMBERED_REFERENCE_READ_NODE,
+            GLOBAL_VARIABLE_READ_NODE,
+        ]
     }
 
     fn check_node(
@@ -50,6 +63,28 @@ impl Cop for PerlBackrefs {
                 _ => return,
             };
 
+            diagnostics.push(self.diagnostic(
+                source,
+                line,
+                column,
+                format!("Prefer `{replacement}` over `{var_display}`."),
+            ));
+        }
+
+        // Check for English-name global variable equivalents: $MATCH, $PREMATCH,
+        // $POSTMATCH, $LAST_PAREN_MATCH (from `require 'English'`)
+        if let Some(gvar) = node.as_global_variable_read_node() {
+            let name_slice = gvar.name().as_slice();
+            let (replacement, var_display) = match name_slice {
+                b"$MATCH" => ("Regexp.last_match(0)", "$MATCH"),
+                b"$PREMATCH" => ("Regexp.last_match.pre_match", "$PREMATCH"),
+                b"$POSTMATCH" => ("Regexp.last_match.post_match", "$POSTMATCH"),
+                b"$LAST_PAREN_MATCH" => ("Regexp.last_match(-1)", "$LAST_PAREN_MATCH"),
+                _ => return,
+            };
+
+            let loc = node.location();
+            let (line, column) = source.offset_to_line_col(loc.start_offset());
             diagnostics.push(self.diagnostic(
                 source,
                 line,

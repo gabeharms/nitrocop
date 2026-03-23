@@ -41,12 +41,18 @@ impl Cop for ExponentialNotation {
             return;
         }
 
-        // Strip leading minus for mantissa analysis
-        let working = if let Some(stripped) = lower.strip_prefix('-') {
-            stripped
-        } else {
-            &lower
-        };
+        // The parser gem folds a leading unary `+` into the float literal's
+        // source (e.g. `+2.5e20` → float source "+2.5e20").  Prism does the
+        // same: the FloatNode location includes the `+`.  RuboCop's regex
+        // `/^-?[1-9]…/` does not allow a leading `+`, so any `+`-prefixed
+        // float in exponential notation is always an offense.
+        let has_leading_plus = lower.starts_with('+');
+
+        // Strip leading sign for mantissa analysis
+        let working = lower
+            .strip_prefix('-')
+            .or_else(|| lower.strip_prefix('+'))
+            .unwrap_or(&lower);
 
         let parts: Vec<&str> = working.splitn(2, 'e').collect();
         if parts.len() != 2 {
@@ -72,9 +78,11 @@ impl Cop for ExponentialNotation {
 
         match style {
             "scientific" => {
-                // Mantissa must be >= 1 and < 10
+                // Mantissa must be >= 1 and < 10.
+                // A leading `+` is never valid (RuboCop's regex `/^-?…/`
+                // rejects it), so always flag `+`-prefixed floats.
                 let abs_mantissa = mantissa.abs();
-                if !(1.0..10.0).contains(&abs_mantissa) {
+                if has_leading_plus || !(1.0..10.0).contains(&abs_mantissa) {
                     diagnostics.push(self.diagnostic(
                         source,
                         line,
@@ -84,9 +92,10 @@ impl Cop for ExponentialNotation {
                 }
             }
             "engineering" => {
-                // Exponent must be divisible by 3, mantissa >= 0.1 and < 1000
+                // Exponent must be divisible by 3, mantissa >= 0.1 and < 1000.
+                // A leading `+` is never valid per RuboCop's regex.
                 let abs_mantissa = mantissa.abs();
-                if exponent % 3 != 0 || !(0.1..1000.0).contains(&abs_mantissa) {
+                if has_leading_plus || exponent % 3 != 0 || !(0.1..1000.0).contains(&abs_mantissa) {
                     diagnostics.push(
                         self.diagnostic(
                             source,
@@ -99,7 +108,17 @@ impl Cop for ExponentialNotation {
                 }
             }
             "integral" => {
-                // Mantissa must be an integer without trailing zeros
+                // Mantissa must be an integer without trailing zeros.
+                // A leading `+` is never valid per RuboCop's regex.
+                if has_leading_plus {
+                    diagnostics.push(self.diagnostic(
+                        source,
+                        line,
+                        column,
+                        "Use an integer as mantissa, without trailing zero.".to_string(),
+                    ));
+                    return;
+                }
                 let has_decimal = mantissa_str.contains('.');
                 let mantissa_int: i64 = if has_decimal {
                     diagnostics.push(self.diagnostic(

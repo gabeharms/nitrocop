@@ -30,6 +30,10 @@ use crate::parse::source::SourceFile;
 ///   now allowed per RuboCop's `equals_asgn?` check.
 /// - `extend` calls were rejected; now allowed per RuboCop's `extend_call?`.
 /// - `class << self` with only public defs/assignments wasn't properly validated.
+/// - Empty `class << self` body was rejected (returned false), but RuboCop's
+///   `[].all?` returns true, so empty sclass is convertible.
+/// - Multi-write nodes (`@@a, @@b = nil, nil`) were not recognized as assignments;
+///   RuboCop's `equals_asgn?` includes `masgn` (multi-assignment).
 pub struct StaticClass;
 
 impl Cop for StaticClass {
@@ -140,24 +144,22 @@ fn is_public_class_method(node: &ruby_prism::Node<'_>) -> bool {
 
 /// Check if a `class << self` block is convertible (all children are
 /// public defs or assignments, no macro calls or visibility modifiers).
+/// An empty `class << self` is convertible (matches Ruby's `[].all?` == true).
 fn is_convertible_sclass(node: &ruby_prism::Node<'_>) -> bool {
     let Some(sclass) = node.as_singleton_class_node() else {
         return false;
     };
 
     let children = class_elements(sclass.body());
-    if children.is_empty() {
-        return false;
-    }
-
+    // Empty body: [].all? returns true in Ruby, so empty sclass is convertible
     children.iter().all(|child| {
         // Inside class << self, regular defs (no receiver) are class methods
         child.as_def_node().is_some_and(|d| d.receiver().is_none()) || is_assignment(child)
     })
 }
 
-/// Check if node is an assignment (constant, local var, ivar, cvar, gvar).
-/// Matches RuboCop's `equals_asgn?`.
+/// Check if node is an assignment (constant, local var, ivar, cvar, gvar, multi-assign).
+/// Matches RuboCop's `equals_asgn?` which includes `masgn`.
 fn is_assignment(node: &ruby_prism::Node<'_>) -> bool {
     node.as_constant_write_node().is_some()
         || node.as_constant_path_write_node().is_some()
@@ -165,6 +167,7 @@ fn is_assignment(node: &ruby_prism::Node<'_>) -> bool {
         || node.as_instance_variable_write_node().is_some()
         || node.as_class_variable_write_node().is_some()
         || node.as_global_variable_write_node().is_some()
+        || node.as_multi_write_node().is_some()
 }
 
 /// Check if node is an `extend` call.

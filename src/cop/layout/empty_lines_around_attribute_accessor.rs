@@ -71,9 +71,15 @@ use crate::parse::source::SourceFile;
 ///     an IfNode wrapping the send, not a plain SendNode. Added `has_modifier_conditional()`
 ///     check to detect ` if ` / ` unless ` in the line and skip the allowed-method
 ///     exemption. (1 FN: CocoaPods)
-/// (c) Camping FNs (2) are unfixable — minified Ruby with mid-line attr calls separated
-///     by semicolons. Prism parses these as CallNodes but they fail the standalone-statement
-///     check (not at first non-whitespace position of the line).
+/// (c) Camping FNs (2) were previously considered unfixable — minified Ruby with mid-line
+///     attr calls separated by semicolons. Fixed in fix 7 below.
+///
+/// **Fix 7 (2026-03-23):** 2 remaining FNs from camping's minified Ruby (`class Cookies<H;attr_accessor :_p`).
+/// The standalone-statement check required the call to start at the first non-whitespace position
+/// of its line, which excluded mid-line attr calls after semicolons. Fix: also accept attr calls
+/// where the character immediately before the call start is `;`, since semicolons separate
+/// statements in minified Ruby and Prism parses them as distinct statements with right_sibling
+/// relationships just like newline-separated code.
 pub struct EmptyLinesAroundAttributeAccessor;
 
 const ATTRIBUTE_METHODS: &[&[u8]] = &[b"attr_reader", b"attr_writer", b"attr_accessor", b"attr"];
@@ -143,7 +149,15 @@ impl Cop for EmptyLinesAroundAttributeAccessor {
                 .take_while(|&&b| b == b' ' || b == b'\t')
                 .count();
             if start_col != indent {
-                return;
+                // Also allow attr calls preceded by `;` (minified Ruby where
+                // statements are separated by semicolons on the same line, e.g.,
+                // `class Cookies<H;attr_accessor :_p`). RuboCop's AST sees these
+                // as separate statements with right_sibling checks.
+                let preceded_by_semicolon =
+                    start_col > 0 && call_line.get(start_col - 1).is_some_and(|&b| b == b';');
+                if !preceded_by_semicolon {
+                    return;
+                }
             }
         }
         let (last_line, last_col) = source.offset_to_line_col(loc.end_offset().saturating_sub(1));

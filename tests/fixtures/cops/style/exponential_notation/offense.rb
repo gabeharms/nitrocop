@@ -4,3 +4,7 @@ y = 12.34e3
     ^^^^^^^ Style/ExponentialNotation: Use a mantissa >= 1 and < 10.
 z = 0.314e1
     ^^^^^^^ Style/ExponentialNotation: Use a mantissa >= 1 and < 10.
+a = +2.5e20
+    ^^^^^^^ Style/ExponentialNotation: Use a mantissa >= 1 and < 10.
+b = +2.4e200
+    ^^^^^^^^ Style/ExponentialNotation: Use a mantissa >= 1 and < 10.

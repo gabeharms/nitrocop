@@ -32,7 +32,7 @@ impl Cop for FileNull {
             cop: self,
             diagnostics: Vec::new(),
             contain_dev_null,
-            in_array_or_pair: false,
+            skip_offsets: std::collections::HashSet::new(),
         };
         visitor.visit(&root);
         diagnostics.extend(visitor.diagnostics);
@@ -59,27 +59,37 @@ struct FileNullVisitor<'a> {
     cop: &'a FileNull,
     diagnostics: Vec<Diagnostic>,
     contain_dev_null: bool,
-    in_array_or_pair: bool,
+    /// Start offsets of string nodes that are direct children of array elements
+    /// or hash pair values — these should be skipped (RuboCop skips strings
+    /// whose immediate parent is :array or :pair).
+    skip_offsets: std::collections::HashSet<usize>,
 }
 
 impl<'a, 'pr> Visit<'pr> for FileNullVisitor<'a> {
     fn visit_array_node(&mut self, node: &ruby_prism::ArrayNode<'pr>) {
-        let prev = self.in_array_or_pair;
-        self.in_array_or_pair = true;
+        // Mark direct string children for skipping, but still recurse into
+        // non-string elements (and into string children's siblings).
+        for element in node.elements().iter() {
+            if element.as_string_node().is_some() {
+                self.skip_offsets.insert(element.location().start_offset());
+            }
+        }
         ruby_prism::visit_array_node(self, node);
-        self.in_array_or_pair = prev;
     }
 
     fn visit_assoc_node(&mut self, node: &ruby_prism::AssocNode<'pr>) {
-        let prev = self.in_array_or_pair;
-        self.in_array_or_pair = true;
+        // Mark the value if it's a direct string node.
+        // The key is also checked but typically is a symbol.
+        if node.value().as_string_node().is_some() {
+            self.skip_offsets
+                .insert(node.value().location().start_offset());
+        }
         ruby_prism::visit_assoc_node(self, node);
-        self.in_array_or_pair = prev;
     }
 
     fn visit_string_node(&mut self, node: &ruby_prism::StringNode<'pr>) {
-        // Skip strings inside arrays or hash pairs
-        if self.in_array_or_pair {
+        // Skip strings that are direct children of arrays or hash pairs
+        if self.skip_offsets.contains(&node.location().start_offset()) {
             return;
         }
 

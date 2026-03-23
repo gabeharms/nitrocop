@@ -25,74 +25,65 @@ impl Cop for WhileUntilDo {
     ) {
         // Check while ... do
         if let Some(while_node) = node.as_while_node() {
-            diagnostics.extend(check_loop(
+            if let Some(diag) = check_loop_with_do_loc(
                 self,
                 source,
-                &while_node.location(),
+                &while_node.keyword_loc(),
                 while_node.closing_loc(),
+                while_node.do_keyword_loc(),
                 "while",
-            ));
+            ) {
+                diagnostics.push(diag);
+            }
             return;
         }
 
         // Check until ... do
         if let Some(until_node) = node.as_until_node() {
-            diagnostics.extend(check_loop(
+            if let Some(diag) = check_loop_with_do_loc(
                 self,
                 source,
-                &until_node.location(),
+                &until_node.keyword_loc(),
                 until_node.closing_loc(),
+                until_node.do_keyword_loc(),
                 "until",
-            ));
+            ) {
+                diagnostics.push(diag);
+            }
         }
     }
 }
 
-fn check_loop(
+fn check_loop_with_do_loc(
     cop: &WhileUntilDo,
     source: &SourceFile,
-    outer_loc: &ruby_prism::Location<'_>,
+    keyword_loc: &ruby_prism::Location<'_>,
     closing_loc: Option<ruby_prism::Location<'_>>,
+    do_keyword_loc: Option<ruby_prism::Location<'_>>,
     keyword: &str,
-) -> Vec<Diagnostic> {
-    // Must be multiline (closing_loc exists and is on a different line than keyword)
-    let closing = match closing_loc {
-        Some(c) => c,
-        None => return Vec::new(),
-    };
+) -> Option<Diagnostic> {
+    // Must have a closing `end` (not a modifier form)
+    let closing = closing_loc?;
 
-    let (start_line, _) = source.offset_to_line_col(outer_loc.start_offset());
+    // Must have a `do` keyword
+    let do_loc = do_keyword_loc?;
+
+    let (start_line, _) = source.offset_to_line_col(keyword_loc.start_offset());
     let (end_line, _) = source.offset_to_line_col(closing.start_offset());
 
     // Single-line: no offense
     if start_line == end_line {
-        return Vec::new();
+        return None;
     }
 
-    // Check if there's a `do` keyword
-    // In Prism, while/until nodes have a keyword_loc and optionally a "do" keyword
-    // We look at source between predicate end and body/closing start for "do"
-    let src = &source.content[outer_loc.start_offset()..outer_loc.end_offset()];
-    let src_str = std::str::from_utf8(src).unwrap_or("");
+    let (line, column) = source.offset_to_line_col(do_loc.start_offset());
 
-    // Find "do" after the keyword line. Look at first line for "do" at end.
-    let first_line = src_str.lines().next().unwrap_or("");
-    let trimmed = first_line.trim_end();
-    if !trimmed.ends_with(" do") && !trimmed.ends_with("\tdo") {
-        return Vec::new();
-    }
-
-    // Find the position of "do" in the source
-    let do_offset_in_first_line = trimmed.len() - 2;
-    let do_offset = outer_loc.start_offset() + do_offset_in_first_line;
-    let (line, column) = source.offset_to_line_col(do_offset);
-
-    vec![cop.diagnostic(
+    Some(cop.diagnostic(
         source,
         line,
         column,
         format!("Do not use `do` with multi-line `{}`.", keyword),
-    )]
+    ))
 }
 
 #[cfg(test)]

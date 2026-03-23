@@ -3,6 +3,16 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Flags single-line `if/then/else/end` and `unless/then/else/end` constructs.
+///
+/// Root cause of 12 FNs: the cop previously required `then_keyword_loc` to be present,
+/// but Ruby also allows semicolons instead of `then` (e.g., `if cond; run else dont end`).
+/// Prism sets `then_keyword_loc` to None for the semicolon form. Fix: removed the
+/// `then_keyword_loc` requirement, matching RuboCop's behavior which triggers on any
+/// single-line if/unless with an else branch.
+///
+/// Also added: skip when then-body has multiple statements (matches RuboCop's
+/// `return if node.if_branch&.begin_type?`), and skip when else body is empty.
 pub struct OneLineConditional;
 
 impl Cop for OneLineConditional {
@@ -43,14 +53,25 @@ impl Cop for OneLineConditional {
                 return;
             }
 
-            // Must have a then keyword
-            if if_node.then_keyword_loc().is_none() {
-                return;
-            }
-
             // Must have an else branch
             if if_node.subsequent().is_none() {
                 return;
+            }
+
+            // Skip if then-body has multiple statements (begin_type equivalent)
+            if let Some(stmts) = if_node.statements() {
+                if stmts.body().len() > 1 {
+                    return;
+                }
+            }
+
+            // Skip if else branch body is empty
+            if let Some(else_node) = if_node.subsequent().and_then(|s| s.as_else_node()) {
+                if else_node.statements().is_none()
+                    || else_node.statements().is_some_and(|s| s.body().is_empty())
+                {
+                    return;
+                }
             }
 
             // Must be single-line
@@ -82,14 +103,25 @@ impl Cop for OneLineConditional {
                 return;
             }
 
-            // Must have a then keyword
-            if unless_node.then_keyword_loc().is_none() {
-                return;
-            }
-
             // Must have an else branch
             if unless_node.else_clause().is_none() {
                 return;
+            }
+
+            // Skip if then-body has multiple statements
+            if let Some(stmts) = unless_node.statements() {
+                if stmts.body().len() > 1 {
+                    return;
+                }
+            }
+
+            // Skip if else branch body is empty
+            if let Some(else_node) = unless_node.else_clause() {
+                if else_node.statements().is_none()
+                    || else_node.statements().is_some_and(|s| s.body().is_empty())
+                {
+                    return;
+                }
             }
 
             // Must be single-line

@@ -69,9 +69,15 @@ use crate::parse::source::SourceFile;
 ///   body in an ElseNode and `unless` is a separate UnlessNode (not IfNode).
 ///   Fix: after the elsif chain walk, unwrap ElseNode → single-statement
 ///   IfNode or UnlessNode and continue walking their predicates/branches.
-///   The 1 FN (chatwoot) appears to be a corpus oracle data issue — RuboCop
-///   with default MinBranchesCount=3 does not flag a 2-branch+else chain,
-///   verified independently.
+/// - 1 FN (sixth round, chatwoot): RuboCop's `if_conditional_branches` counts
+///   ternary nodes in else body as branches (since ternaries are `if_type?`),
+///   but `branch_conditions` skips them (via `!node.ternary?`). So a 2-elsif
+///   chain with a ternary in the else body has 3 branches (meets MinBranchesCount)
+///   but only 2 predicates to validate. Fix: in `unwrap_else_to_branch_info`,
+///   detect ternary IfNodes (no `if_keyword_loc`) and return `is_ternary=true`.
+///   The main loop increments `branch_count` but does NOT push the predicate.
+///   The discourse FN could not be reproduced — the pattern (== + =~ + OR) is
+///   correctly detected by nitrocop; may be a corpus oracle data issue.
 pub struct CaseLikeIf;
 
 impl Cop for CaseLikeIf {
@@ -146,10 +152,17 @@ impl Cop for CaseLikeIf {
                 branch_count += 1;
                 predicates.push(elsif.predicate());
                 current_else = elsif.subsequent();
-            } else if let Some((pred, next)) = unwrap_else_to_branch_info(&else_clause) {
-                // else body is a single if/unless node — continue walking
+            } else if let Some((pred, next, is_ternary)) = unwrap_else_to_branch_info(&else_clause)
+            {
+                // else body is a single if/unless node — continue walking.
+                // Ternaries count toward branch_count (matching RuboCop's
+                // if_conditional_branches) but their predicates are NOT added
+                // (matching RuboCop's branch_conditions which skips ternaries
+                // via `!node.ternary?`).
                 branch_count += 1;
-                predicates.push(pred);
+                if !is_ternary {
+                    predicates.push(pred);
+                }
                 current_else = next;
             } else {
                 break;
@@ -263,14 +276,21 @@ fn regexp_has_named_captures(node: &ruby_prism::Node<'_>) -> bool {
 }
 
 /// If a node is an ElseNode whose body is a single if/unless node, return that
-/// node's predicate and its continuation (subsequent/consequent for further walking).
+/// node's predicate, its continuation (subsequent/consequent for further walking),
+/// and whether it's a ternary.
+///
 /// This matches RuboCop's behavior where `branch_conditions` walks through
 /// `node.else_branch` which in Parser AST can be a nested if/unless directly
 /// (both are if_type in Parser), while in Prism they're separate types wrapped
 /// in an ElseNode.
+///
+/// The `is_ternary` flag is important because RuboCop's `branch_conditions`
+/// skips ternaries (via `!node.ternary?`), while `if_conditional_branches`
+/// still counts them as branches. So ternaries contribute to `branch_count`
+/// but their predicates should NOT be validated against the target.
 fn unwrap_else_to_branch_info<'a>(
     node: &ruby_prism::Node<'a>,
-) -> Option<(ruby_prism::Node<'a>, Option<ruby_prism::Node<'a>>)> {
+) -> Option<(ruby_prism::Node<'a>, Option<ruby_prism::Node<'a>>, bool)> {
     let else_node = node.as_else_node()?;
     let stmts = else_node.statements()?;
     let children: Vec<_> = stmts.body().iter().collect();
@@ -278,15 +298,18 @@ fn unwrap_else_to_branch_info<'a>(
         return None;
     }
     let child = &children[0];
-    // IfNode (nested if or modifier if)
+    // IfNode (nested if, modifier if, or ternary)
     if let Some(if_node) = child.as_if_node() {
-        return Some((if_node.predicate(), if_node.subsequent()));
+        // Ternary has no if_keyword_loc in Prism
+        let is_ternary = if_node.if_keyword_loc().is_none();
+        return Some((if_node.predicate(), if_node.subsequent(), is_ternary));
     }
     // UnlessNode (modifier unless or full unless — both are if_type in Parser AST)
     if let Some(unless_node) = child.as_unless_node() {
         return Some((
             unless_node.predicate(),
             unless_node.else_clause().map(|e| e.as_node()),
+            false,
         ));
     }
     None

@@ -34,3 +34,7 @@ resources :posts, only: [:index, :show] do
     get :preview
   end
 end
+
+# Block-pass (&block) is NOT an ambiguous block context — only literal do/end or {} blocks are
+@recorder.inverse_of :drop_table, [:musics, :artists], &block
+                                  ^ Style/SymbolArray: Use `%i` or `%I` for an array of symbols.

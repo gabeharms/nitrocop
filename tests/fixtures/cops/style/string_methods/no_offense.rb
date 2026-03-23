@@ -4,3 +4,5 @@ name.to_sym
 'hello'.upcase
 x.freeze
 y = 'world'
+to_sym(value)
+something&.to_sym

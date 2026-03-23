@@ -52,3 +52,24 @@ class WithSclassAssignment
     def configure; end
   end
 end
+
+class WithEmptySclass
+^^^^^^^^^^^^^^^^^^^^^ Style/StaticClass: Prefer modules to classes with only class methods.
+  class << self
+  end
+end
+
+class WithMultiWrite
+^^^^^^^^^^^^^^^^^^^^^ Style/StaticClass: Prefer modules to classes with only class methods.
+  @@a, @@b = nil, nil
+  def self.bar; end
+end
+
+class WithConstantStruct
+^^^^^^^^^^^^^^^^^^^^^^^^ Style/StaticClass: Prefer modules to classes with only class methods.
+  RoleType = Struct.new(:type, :name) do
+    def attributes
+      { type:, name: }
+    end
+  end
+end

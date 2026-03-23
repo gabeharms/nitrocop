@@ -27,3 +27,8 @@ EMPTY = ''.freeze
 
 DOUBLE_QUOTED = "hello world".freeze
                 ^^^^^^^^^^^^^ Style/RedundantFreeze: Do not freeze immutable objects, as freezing them has no effect.
+
+# Backslash-continuation strings with frozen_string_literal are still plain strings
+# nitrocop-expect: 23:10 Style/RedundantFreeze: Do not freeze immutable objects, as freezing them has no effect.
+MESSAGE = 'hello ' \
+          'world'.freeze

@@ -29,3 +29,7 @@ CONFIG = ENV['APP_CONFIG'].freeze
 
 # Method call results are not known to be immutable (except count/length/size)
 RESULT = Something.calculate.freeze
+
+# Backslash-continuation strings without frozen_string_literal are mutable
+MSG = 'hello ' \
+      'world'.freeze

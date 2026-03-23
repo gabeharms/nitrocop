@@ -8,3 +8,5 @@
 { 'name': 1 }
 { "#{dynamic}": 1 }
 { "has\nnewline": 1 }
+:"has\\and\nnewline"
+:"a\tb"

@@ -79,8 +79,46 @@ impl Cop for FileEmpty {
             }
         }
 
-        // Pattern 2: File.size('path') == 0 or File.size('path').zero?
-        // This is detected at the outer call level
+        // Pattern 2: File.size('path').zero?
+        if method_bytes == b"zero?" {
+            if let Some(recv) = call.receiver() {
+                if let Some(size_call) = recv.as_call_node() {
+                    if size_call.name().as_slice() == b"size" {
+                        if let Some(file_recv) = size_call.receiver() {
+                            if Self::is_file_or_filetest(&file_recv) {
+                                if let Some(size_args) = size_call.arguments() {
+                                    let sa: Vec<_> = size_args.arguments().iter().collect();
+                                    if sa.len() == 1 {
+                                        let file_src =
+                                            &source.as_bytes()[file_recv.location().start_offset()
+                                                ..file_recv.location().end_offset()];
+                                        let file_str = String::from_utf8_lossy(file_src);
+                                        let arg_src =
+                                            &source.as_bytes()[sa[0].location().start_offset()
+                                                ..sa[0].location().end_offset()];
+                                        let arg_str = String::from_utf8_lossy(arg_src);
+                                        let loc = call.location();
+                                        let (line, column) =
+                                            source.offset_to_line_col(loc.start_offset());
+                                        diagnostics.push(self.diagnostic(
+                                            source,
+                                            line,
+                                            column,
+                                            format!(
+                                                "Use `{}.empty?({})` instead.",
+                                                file_str, arg_str
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pattern 3: File.size('path') == 0
         if method_bytes == b"==" {
             if let Some(recv) = call.receiver() {
                 if let Some(size_call) = recv.as_call_node() {

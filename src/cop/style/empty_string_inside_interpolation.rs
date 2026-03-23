@@ -1,11 +1,21 @@
 use crate::cop::node_type::{
-    ELSE_NODE, EMBEDDED_STATEMENTS_NODE, IF_NODE, INTERPOLATED_STRING_NODE, NIL_NODE, STRING_NODE,
-    UNLESS_NODE,
+    ELSE_NODE, EMBEDDED_STATEMENTS_NODE, IF_NODE, INTERPOLATED_MATCH_LAST_LINE_NODE,
+    INTERPOLATED_REGULAR_EXPRESSION_NODE, INTERPOLATED_STRING_NODE, INTERPOLATED_SYMBOL_NODE,
+    INTERPOLATED_X_STRING_NODE, NIL_NODE, STRING_NODE, UNLESS_NODE,
 };
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Style/EmptyStringInsideInterpolation
+///
+/// Checks for empty strings being returned inside string interpolation.
+///
+/// Handles all interpolated node types: strings (including heredocs),
+/// symbols (:`"#{...}"`), xstrings (`` `#{...}` ``), and regexps (`/#{...}/`).
+/// RuboCop's `Interpolation` mixin covers `dstr`, `xstr`, `dsym`, and `regexp`,
+/// which map to Prism's `InterpolatedStringNode`, `InterpolatedXStringNode`,
+/// `InterpolatedSymbolNode`, and `InterpolatedRegularExpressionNode`.
 pub struct EmptyStringInsideInterpolation;
 
 impl Cop for EmptyStringInsideInterpolation {
@@ -18,7 +28,11 @@ impl Cop for EmptyStringInsideInterpolation {
             ELSE_NODE,
             EMBEDDED_STATEMENTS_NODE,
             IF_NODE,
+            INTERPOLATED_MATCH_LAST_LINE_NODE,
+            INTERPOLATED_REGULAR_EXPRESSION_NODE,
             INTERPOLATED_STRING_NODE,
+            INTERPOLATED_SYMBOL_NODE,
+            INTERPOLATED_X_STRING_NODE,
             NIL_NODE,
             STRING_NODE,
             UNLESS_NODE,
@@ -36,14 +50,27 @@ impl Cop for EmptyStringInsideInterpolation {
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "trailing_conditional");
 
-        // Look for interpolated strings containing ternaries with empty string branches
-        let interp_string = if let Some(n) = node.as_interpolated_string_node() {
-            n
-        } else {
+        // Collect parts from any interpolated node type
+        // RuboCop's Interpolation mixin handles dstr, xstr, dsym, regexp
+        let parts = node
+            .as_interpolated_string_node()
+            .map(|n| n.parts())
+            .or_else(|| node.as_interpolated_symbol_node().map(|n| n.parts()))
+            .or_else(|| node.as_interpolated_x_string_node().map(|n| n.parts()))
+            .or_else(|| {
+                node.as_interpolated_regular_expression_node()
+                    .map(|n| n.parts())
+            })
+            .or_else(|| {
+                node.as_interpolated_match_last_line_node()
+                    .map(|n| n.parts())
+            });
+
+        let Some(parts) = parts else {
             return;
         };
 
-        for part in interp_string.parts().iter() {
+        for part in parts.iter() {
             if let Some(embedded) = part.as_embedded_statements_node() {
                 if let Some(stmts) = embedded.statements() {
                     let stmt_list: Vec<_> = stmts.body().iter().collect();
@@ -55,9 +82,6 @@ impl Cop for EmptyStringInsideInterpolation {
                         "trailing_conditional" => {
                             // Check for ternary with empty string as one branch
                             if let Some(ternary) = stmt_list[0].as_if_node() {
-                                let has_if_empty = is_empty_value(&ternary.predicate());
-                                let _ = has_if_empty; // We need to check the branches
-
                                 let if_body = ternary.statements();
                                 let else_body = ternary.subsequent();
 
@@ -111,7 +135,8 @@ impl Cop for EmptyStringInsideInterpolation {
                                         source,
                                         line,
                                         column,
-                                        "Do not use trailing conditionals in string interpolation.".to_string(),
+                                        "Do not use trailing conditionals in string interpolation."
+                                            .to_string(),
                                     ));
                                 }
                             }
@@ -144,10 +169,6 @@ fn is_empty_string_or_nil(node: &ruby_prism::Node<'_>) -> bool {
     if let Some(string_node) = node.as_string_node() {
         return string_node.content_loc().as_slice().is_empty();
     }
-    false
-}
-
-fn is_empty_value(_node: &ruby_prism::Node<'_>) -> bool {
     false
 }
 

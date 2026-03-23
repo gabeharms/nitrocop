@@ -55,11 +55,19 @@ impl Cop for QuotedSymbols {
             }
 
             let has_interpolation = inner.windows(2).any(|w| w == b"#{");
-            let has_escape = inner.contains(&b'\\');
+            if has_interpolation {
+                return; // Double quotes needed for interpolation
+            }
+
             let has_single_quote = inner.contains(&b'\'');
 
-            if has_interpolation || has_escape {
-                return; // Double quotes needed
+            // Check if any escape sequence actually requires double quotes.
+            // Only `\"` and `\\` can be represented in single quotes (as `"` and `\`),
+            // so they don't require double quotes. Any other escape (e.g. `\n`, `\t`)
+            // does require double quotes.
+            let has_required_escape = has_escape_requiring_double_quotes(inner);
+            if has_required_escape {
+                return; // Double quotes needed for special escape sequences
             }
 
             let prefer_single = match style {
@@ -104,6 +112,35 @@ impl Cop for QuotedSymbols {
             }
         }
     }
+}
+
+/// Check if the inner bytes of a double-quoted symbol contain any escape
+/// sequence that requires double quotes. `\"` and `\\` do NOT require double
+/// quotes because they can be represented in single-quoted symbols as literal
+/// `"` and `\` respectively. Any other backslash sequence (e.g. `\n`, `\t`,
+/// `\a`, `\#`) requires double quotes.
+fn has_escape_requiring_double_quotes(inner: &[u8]) -> bool {
+    let mut i = 0;
+    while i < inner.len() {
+        if inner[i] == b'\\' {
+            // Look at what follows the backslash
+            if i + 1 < inner.len() {
+                let next = inner[i + 1];
+                if next != b'"' && next != b'\\' {
+                    // This escape sequence requires double quotes
+                    return true;
+                }
+                // Skip the escaped character
+                i += 2;
+            } else {
+                // Trailing backslash - unusual but doesn't require double quotes
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

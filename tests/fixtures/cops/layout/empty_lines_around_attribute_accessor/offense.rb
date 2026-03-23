@@ -83,3 +83,15 @@ class DynamicAttr
   ^^^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAroundAttributeAccessor: Add an empty line after attribute accessor.
   alias_method :other, :name if condition
 end
+
+# Minified Ruby: attr_accessor after semicolon (mid-line) — still needs blank line
+class Cookies<H;attr_accessor :_p
+                ^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAroundAttributeAccessor: Add an empty line after attribute accessor.
+def _n; end
+end
+
+# Minified Ruby: module with attr_accessor after semicolon
+module Base;attr_accessor :env, :request
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ Layout/EmptyLinesAroundAttributeAccessor: Add an empty line after attribute accessor.
+def run; end
+end
