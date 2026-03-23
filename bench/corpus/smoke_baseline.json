@@ -1,8 +1,8 @@
 {
   "bkeepers__dotenv__34156bf": {
-    "fn": 19,
+    "fn": 18,
     "fp": 9,
-    "matches": 1949,
+    "matches": 1950,
     "nc_files": 35,
     "rate": 98.6,
     "rc_files": 35
@@ -39,11 +39,18 @@
     "rc_files": 288
   },
   "ruby-formatter__rufo__a90e654": {
-    "fn": 612,
-    "fp": 17,
-    "matches": 10291,
+    "fn": 570,
+    "fp": 19,
+    "matches": 10333,
     "nc_files": 157,
-    "rate": 94.2,
+    "overlay_divergence": {
+      "fn": 6422,
+      "fp": 10,
+      "fp_delta": -9,
+      "match_delta": 5852,
+      "matches": 4481
+    },
+    "rate": 94.6,
     "rc_files": 158
   },
   "standardrb__standard__c886a57": {
