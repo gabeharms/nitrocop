@@ -25,6 +25,13 @@ use crate::parse::source::SourceFile;
 /// RuboCop flags ALL `if/unless` with semicolon then-keyword, including multi-line
 /// `if cond;\n  body\nend`. Fixed by removing the same-line `end` check. Also added
 /// UNLESS_NODE to interested_node_types to handle `unless cond;` patterns.
+///
+/// ## Corpus investigation (2026-03-23, round 2)
+///
+/// FP=16, FN=0. All FPs were multi-line `if`/`unless` where a comment after the
+/// condition contained a semicolon (e.g., `if cond # comment; more comment`).
+/// The fallback `has_semicolon_between` scan was including comment text. Fixed by
+/// stopping the scan at `#` (Ruby comment start) in addition to newline.
 pub struct IfWithSemicolon;
 
 impl Cop for IfWithSemicolon {
@@ -56,11 +63,11 @@ impl Cop for IfWithSemicolon {
 fn has_semicolon_between(source: &SourceFile, pred_end: usize, body_start: usize) -> bool {
     if pred_end < body_start {
         let between = &source.content[pred_end..body_start];
-        // Only check up to first newline — semicolons in comments on later lines
-        // should not trigger this cop
+        // Only check up to first newline, and stop at `#` (comment start) —
+        // semicolons inside comments should not trigger this cop.
         between
             .iter()
-            .take_while(|&&b| b != b'\n')
+            .take_while(|&&b| b != b'\n' && b != b'#')
             .any(|&b| b == b';')
     } else {
         false

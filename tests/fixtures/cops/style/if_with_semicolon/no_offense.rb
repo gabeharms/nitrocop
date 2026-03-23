@@ -37,3 +37,18 @@ if a
   something
 else if b; c end
 end
+
+# Multi-line if with comment containing semicolon after condition (FP fix)
+if (spec_override = status["replicas"].presence) # ignores possibility of surge; need a spec_replicas arg for that
+  result["spec"]["replicas"] = spec_override
+end
+
+# Simple if with comment containing semicolon
+if condition # this is a comment; with semicolon
+  do_something
+end
+
+# Unless with comment containing semicolon
+unless done # not done; keep going
+  process
+end
