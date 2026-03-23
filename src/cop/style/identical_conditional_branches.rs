@@ -221,14 +221,11 @@ impl IdenticalConditionalBranches {
             return;
         }
 
-        // Report offense on the first branch's tail
-        let (ref src, line, col, _) = tails[0];
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            col,
-            format!("Move `{src}` out of the conditional."),
-        ));
+        // Report offense on every branch's tail (RuboCop flags all of them)
+        let msg = format!("Move `{}` out of the conditional.", tails[0].0);
+        for (_, line, col, _) in &tails {
+            diagnostics.push(self.diagnostic(source, *line, *col, msg.clone()));
+        }
     }
 
     /// Check identical head (first statement) across all branches.
@@ -288,14 +285,11 @@ impl IdenticalConditionalBranches {
             }
         }
 
-        // Report offense on the first branch's head
-        let (ref src, line, col, _) = heads[0];
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            col,
-            format!("Move `{src}` out of the conditional."),
-        ));
+        // Report offense on every branch's head (RuboCop flags all of them)
+        let msg = format!("Move `{}` out of the conditional.", heads[0].0);
+        for (_, line, col, _) in &heads {
+            diagnostics.push(self.diagnostic(source, *line, *col, msg.clone()));
+        }
     }
 }
 

@@ -6,6 +6,7 @@ if condition
 else
   do_y
   do_z
+  ^^^^ Style/IdenticalConditionalBranches: Move `do_z` out of the conditional.
 end
 if foo
   bar
@@ -14,6 +15,7 @@ if foo
 else
   baz
   result
+  ^^^^^^ Style/IdenticalConditionalBranches: Move `result` out of the conditional.
 end
 if x
   a = 1
@@ -22,6 +24,7 @@ if x
 else
   a = 2
   b
+  ^ Style/IdenticalConditionalBranches: Move `b` out of the conditional.
 end
 
 # if/else identical leading lines
@@ -143,4 +146,5 @@ if x.condition
 else
   bar
   x = do_something
+  ^^^^^^^^^^^^^^^^ Style/IdenticalConditionalBranches: Move `x = do_something` out of the conditional.
 end
