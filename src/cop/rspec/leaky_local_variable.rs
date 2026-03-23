@@ -276,6 +276,18 @@ use crate::parse::source::SourceFile;
 ///   (opal: ~3 FN)
 /// - Conditional reassignment flow analysis gaps (fastlane: ~3 FN)
 /// - Various other VariableForce scope-tracking gaps (~38 FN)
+///
+/// ## Fix (FN: ImplicitNode for Ruby 3.1 keyword shorthand, 2026-03-23)
+///
+/// `node_references_var` (and transitively `node_reads_var`) did not handle
+/// `ImplicitNode`. In Prism, Ruby 3.1+ keyword shorthand `method(url:)`
+/// (equivalent to `method(url: url)`) is represented as an `AssocNode`
+/// where the value is an `ImplicitNode` wrapping a `LocalVariableReadNode`.
+/// The AssocNode handler already recurses into key and value, but when the
+/// value was an `ImplicitNode`, it fell through to `false` at the end of
+/// `node_references_var`. Fix: added `as_implicit_node()` handler that
+/// unwraps and recurses into the inner value. This fixes ~4 FNs from the
+/// stringer-rss corpus repo.
 pub struct LeakyLocalVariable;
 
 impl Cop for LeakyLocalVariable {
@@ -3022,6 +3034,13 @@ fn node_references_var(node: &ruby_prism::Node<'_>, var_name: &[u8]) -> bool {
             return node_references_var(&parent, var_name);
         }
         return false;
+    }
+
+    // ImplicitNode: Ruby 3.1+ keyword shorthand `method(url:)` wraps the
+    // value in an ImplicitNode containing a LocalVariableReadNode (or CallNode).
+    // Unwrap and check the inner node.
+    if let Some(implicit) = node.as_implicit_node() {
+        return node_references_var(&implicit.value(), var_name);
     }
 
     false
