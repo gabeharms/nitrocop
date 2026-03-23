@@ -149,6 +149,17 @@ impl Cop for ExtraSpacing {
 
                     // Flag if: multiple characters, or any tabs (a tab is always >1 col)
                     if (space_count > 1 || has_tab) && i < line.len() {
+                        // Skip spacing before backslash line continuation at end of line.
+                        // RuboCop's token-based approach doesn't see `\` as a token, so
+                        // the space between the last token and `\` is never flagged.
+                        if line[i] == b'\\'
+                            && line[i + 1..]
+                                .iter()
+                                .all(|&b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r')
+                        {
+                            continue;
+                        }
+
                         // Get the byte offset in the full source
                         let abs_offset = line_start_offset + space_start;
 

@@ -120,6 +120,12 @@ syms = %i(foo  bar  baz)
 words = %W(hello  world  #{name})
 isyms = %I(hello  world)
 
+# Backslash line continuation — spacing before \ is not flagged
+expected =  \
+  "Real HTTP connections are disabled"
+message = "The platform"     \
+  "(#{platform}) is not compatible"
+
 # Aligned values with multibyte characters (CJK)
 # Commas should align visually even though byte offsets differ
 data = [
