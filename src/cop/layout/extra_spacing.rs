@@ -77,6 +77,27 @@ use std::ops::Range;
 /// - Word/symbol array ranges (%w/%i/%W/%I) are ignored (spacing is element separation)
 /// - ForceEqualSignAlignment is read from config but not yet implemented (produces
 ///   a different offense message)
+///
+/// ## Investigation findings (2026-03-23)
+///
+/// 8. **Single-tab FPs (fixed)**: The scanner flagged any whitespace run containing
+///    a tab character, even single tabs. RuboCop's token-based approach counts the
+///    number of characters in the gap between tokens, not visual column width. A
+///    single tab is 1 character of whitespace and is NOT extra spacing. Changed
+///    the condition from `space_count > 1 || has_tab` to just `space_count > 1`.
+///    Fixes ~80 FPs from repos using tabs for alignment (louismullie__treat,
+///    pluosi__app-host, github-linguist__linguist, zammad, etc.).
+///
+/// 9. **Empty word/symbol array FNs (fixed)**: The `%w(  )` and `%i(  )` interior
+///    ranges were unconditionally ignored, even for empty arrays where the spaces
+///    are NOT element separators. Added a check that only ignores non-empty arrays.
+///    Fixes ~8 FNs from browsermedia__browsercms and ruby-formatter__rufo.
+///
+/// 10. **Quote-character alignment FNs (fixed)**: `extract_token_at` returned only
+///     a single `"` or `'` character for string delimiters, causing coincidental
+///     Mode 2 alignment matches. RuboCop's `range.source` returns the full string
+///     token. Extended `extract_token_at` to extract the full quoted string, and
+///     also improved `.method_name` extraction for dot-method calls.
 pub struct ExtraSpacing;
 
 impl Cop for ExtraSpacing {
@@ -132,17 +153,13 @@ impl Cop for ExtraSpacing {
             }
 
             // Now scan for extra whitespace within the line.
-            // We detect both multi-space runs AND whitespace runs containing tabs.
-            // A single tab between tokens is extra spacing (it takes >1 column),
-            // just like multiple spaces.
+            // We detect runs of 2+ whitespace characters (spaces and/or tabs).
+            // A single space or tab between tokens is normal; only multi-char
+            // gaps are extra spacing, matching RuboCop's character-count approach.
             while i < line.len() {
                 if line[i] == b' ' || line[i] == b'\t' {
                     let space_start = i;
-                    let mut has_tab = line[i] == b'\t';
                     while i < line.len() && (line[i] == b' ' || line[i] == b'\t') {
-                        if line[i] == b'\t' {
-                            has_tab = true;
-                        }
                         i += 1;
                     }
                     let space_count = i - space_start;

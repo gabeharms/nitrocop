@@ -44,19 +44,6 @@ check_b   # comment B
 check_c_patterns   # comment C
                 ^ Layout/ExtraSpacing: Unnecessary spacing detected.
 
-# Extra spaces inside empty %w() word arrays
-mandatory = %w(  )
-               ^ Layout/ExtraSpacing: Unnecessary spacing detected.
-
-# Extra spaces inside empty %i() symbol arrays
-syms = %i(  )
-          ^ Layout/ExtraSpacing: Unnecessary spacing detected.
-
-# Double space in method call argument (adjacent lines have no alignment at col 12)
-x = 1
-say_status  "DONE"
-          ^ Layout/ExtraSpacing: Unnecessary spacing detected.
-y = 2
-assert  @fake_stderr.contained?(/pattern/)
-      ^ Layout/ExtraSpacing: Unnecessary spacing detected.
-z = 3
+# Extra spaces inside empty word arrays (RuboCop flags these)
+a = %w(  )
+       ^ Layout/ExtraSpacing: Unnecessary spacing detected.

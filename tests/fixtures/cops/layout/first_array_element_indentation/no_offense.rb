@@ -179,12 +179,6 @@ result = (flag ? [
       { token: 'admin', email: 'admin@test.com' }
     ]) }
 
-# FP fix: Single-pair hash value — closing bracket at line indent accepted
-expect(client.search body: [
-         { index: 'foo', query: { match_all: {} } },
-         { index: 'bar', query: { match: { foo: 'bar' } } }
-])
-
 # FP fix: First element on same line as [ — skip closing bracket check
 tests = [ 'tests/resource/file/content_attribute.rb',
           'tests/language/functions_in_puppet_language.rb',
@@ -217,13 +211,21 @@ equivalent = %w{ http://example.com/
 ]
 
 # FP fix: First element on same line with .freeze
-SUBCATEGORIES = %w(
-                    Token\ Right\ Adjusted\ Events
-                    User\ Account\ Management
-                   ).freeze
+WIN_AUDIT_SUBCATEGORIES = ["Account Lockout",
+                                 "Sensitive Privilege Use",
+                                 "User Account Management",
+                                ].freeze
 
-# FP fix: Single-pair hash value with paren-relative — closing bracket flagged
-# (This is a no-offense because closing bracket is at paren_col + 1)
+# FP fix: Single-pair hash value with paren-relative — no intermediate method call
+# paren_col=17, indent_base=18, element_col=20(=18+2), close_col=18
 FactoryBot.create(:limited_admin, :groups => [
-                                    FactoryBot.create(:google_admin_group),
-                                  ])
+                    FactoryBot.create(:google_admin_group),
+                  ])
+
+# FP fix: Single-pair hash value with intermediate method call (`.`)
+# expect(client.search body: [...]) — paren is from expect(), not search
+# RuboCop uses line-relative (on_array path), so closing bracket at line indent is OK
+expect(client.search body: [
+  { index: 'foo', query: { match_all: {} } },
+  { index: 'bar', query: { match: { foo: 'bar' } } }
+])

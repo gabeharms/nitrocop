@@ -666,10 +666,19 @@ impl Cop for FirstArrayElementIndentation {
                     let paren_scan = find_left_paren_on_line(open_line_bytes, open_byte_col);
                     if let Some(paren_byte_col) = paren_scan.paren_col {
                         let paren_col = byte_col_to_char_col(open_line_bytes, paren_byte_col);
+                        // When there's a hash key before `[` and a method call
+                        // (`.`) at depth 0 between the `(` and the hash key, the
+                        // paren belongs to an outer call (e.g., `expect(client.search
+                        // body: [...])`). The array is not a direct argument of the
+                        // paren-bearing method, so use line-relative indent.
+                        let intermediate_method_call = hash_key_byte_col.is_some_and(|hk| {
+                            has_method_call_between(open_line_bytes, paren_byte_col + 1, hk)
+                        });
                         let use_paren_relative =
                             !is_preceded_by_percent_operator(open_line_bytes, open_byte_col)
                                 && !paren_scan.has_binary_operator_at_depth_zero
                                 && !paren_scan.is_grouping_paren
+                                && !intermediate_method_call
                                 && is_direct_argument(
                                     source.as_bytes(),
                                     closing_end_offset,
@@ -785,27 +794,15 @@ impl Cop for FirstArrayElementIndentation {
                         key_bc,
                     )
                 });
-                // For single-pair hash value arrays, accept closing bracket at
-                // line-indent level when:
-                // - base_type is StartOfLine, OR
-                // - base_type is paren-relative but there's an intermediate method
-                //   call (`.`) between the `(` and the hash key, meaning the paren
-                //   doesn't directly contain this array's hash context (e.g.,
-                //   `expect(client.search body: [...])`).
-                // When the hash key IS a direct argument of the paren-bearing call
-                // (e.g., `create(:x, :groups => [...])`), RuboCop enforces
-                // paren-relative for the closing bracket.
-                let has_intermediate_call = matches!(
-                    base_type,
-                    IndentBaseType::FirstColumnAfterLeftParenthesis
-                ) && found_paren_byte_col.is_some_and(|pc| {
-                    hash_key_byte_col
-                        .is_some_and(|hk| has_method_call_between(open_line_bytes, pc + 1, hk))
-                });
-                if hash_key_col.is_some()
+                // For single-pair hash value arrays with line-relative indent,
+                // accept closing bracket at line-indent level. RuboCop doesn't
+                // flag closing brackets for arrays that are single-pair hash
+                // values in line-relative mode.
+                // In paren-relative mode, closing bracket must match indent_base.
+                if matches!(base_type, IndentBaseType::StartOfLine)
+                    && hash_key_col.is_some()
                     && !is_multi_pair
                     && effective_close_col == open_line_indent
-                    && (matches!(base_type, IndentBaseType::StartOfLine) || has_intermediate_call)
                 {
                     return;
                 }
