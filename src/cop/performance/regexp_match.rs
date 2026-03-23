@@ -32,12 +32,14 @@ use ruby_prism::Visit;
 ///
 /// ## Extended corpus investigation (2026-03-23)
 ///
-/// Extended corpus reported FP=38, FN=0. All 38 FPs from repos targeting Ruby < 2.4
-/// (cjstewart88__Tubalr Ruby 1.9.1, liaoziyang__stackneveroverflow Ruby 2.3.0,
-/// infochimps-labs__wukong, pitluga__supply_drop). RuboCop declares
-/// `minimum_target_ruby_version 2.4` because `String#match?`, `Regexp#match?`, and
-/// `Symbol#match?` were added in Ruby 2.4. Fixed by checking TargetRubyVersion and
-/// skipping when < 2.4.
+/// Extended corpus reported FP=38, FN=0. All 38 FPs from vendored gem files in
+/// repos cjstewart88__Tubalr (heroku/ruby/1.9.1/gems/rdoc-*),
+/// liaoziyang__stackneveroverflow (vendor/bundle/ruby/2.3.0/gems/rdoc-*),
+/// infochimps-labs__wukong, and pitluga__supply_drop. Root cause: AllCops.Exclude
+/// patterns like `vendor/**/*` failed to match when the scanned directory was
+/// outside the config's base_dir (corpus oracle scenario). Fixed by adding
+/// scan_roots support to CopFilterSet for out-of-tree path relativization.
+/// The TargetRubyVersion check (minimum 2.4) remains as an additional guard.
 pub struct RegexpMatch;
 
 impl Cop for RegexpMatch {

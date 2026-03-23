@@ -23,9 +23,13 @@ use crate::parse::source::SourceFile;
 /// Extended corpus reported FP=0, FN=1. The single FN is from
 /// brixen__poetics__b382a80 at `bin/poetics:88` (`@history.last(100).map { |s| f.puts s }`).
 /// The cop logic correctly detects this pattern (verified by unit test at
-/// offense.rb:38). The FN is a file-discovery issue: `bin/poetics` is an
-/// extensionless Ruby script that nitrocop may not be scanning (possibly
-/// missing Ruby shebang or skipped by the walker).
+/// offense.rb:38). The FN is a file-discovery asymmetry: `bin/poetics` is an
+/// extensionless Ruby script. Nitrocop detects extensionless Ruby files via
+/// shebang detection (`has_ruby_shebang`). The baseline config also excludes
+/// `bin/**/*` via AllCops.Exclude, which should drop this file from both tools'
+/// comparison after the scan_roots path-matching fix (commit 1f2f67c).
+/// If the FN persists, the file may lack a Ruby shebang or RuboCop may
+/// discover it through a different mechanism (e.g., git ls-files).
 pub struct ChainArrayAllocation;
 
 /// Methods that ALWAYS return a new array.

@@ -21,12 +21,8 @@ use crate::parse::source::SourceFile;
 /// ## Extended corpus investigation (2026-03-23)
 ///
 /// Extended corpus reported FP=6, FN=0. All 6 FPs from vendored gem files
-/// (rdoc/ruby_lex.rb) in repos cjstewart88__Tubalr (heroku/ruby/1.9.1/gems/)
-/// and liaoziyang__stackneveroverflow (vendor/bundle/ruby/2.3.0/gems/). These
-/// are files that RuboCop excludes via AllCops.Exclude (`vendor/**/*`) or
-/// repo-specific config, but nitrocop scans. This is a file-discovery issue,
-/// not a cop logic bug — the cop correctly flags `block_given?` with explicit
-/// `&block` parameter in those files.
+/// with out-of-tree scan paths. Fixed by scan_roots support in CopFilterSet
+/// for AllCops.Exclude path matching (commit 1f2f67c).
 pub struct BlockGivenWithExplicitBlock;
 
 impl Cop for BlockGivenWithExplicitBlock {

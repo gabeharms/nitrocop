@@ -18,11 +18,9 @@ use crate::parse::source::SourceFile;
 ///
 /// ## Extended corpus investigation (2026-03-23)
 ///
-/// Extended corpus reported FP=4, FN=0. All 4 FPs from vendored gem files:
-/// cjstewart88__Tubalr (heroku/ruby/1.9.1/gems/rdoc-*),
-/// liaoziyang__stackneveroverflow (vendor/bundle/ruby/2.3.0/gems/rdoc-*), and
-/// pitluga__supply_drop (examples/vendored-puppet/vendor/puppet-*/...).
-/// File-exclusion infrastructure issue, not a cop logic bug.
+/// Extended corpus reported FP=4, FN=0. All 4 FPs from vendored gem files in
+/// repos with out-of-tree scan paths. Fixed by scan_roots support in
+/// CopFilterSet for AllCops.Exclude path matching (commit 1f2f67c).
 pub struct StringInclude;
 
 /// Check if a single byte is in RuboCop's literal character allowlist.

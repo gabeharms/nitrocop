@@ -16,9 +16,8 @@ use crate::parse::source::SourceFile;
 /// ## Extended corpus investigation (2026-03-23)
 ///
 /// Extended corpus reported FP=9, FN=0. All 9 FPs from vendored gem files
-/// in repos cjstewart88__Tubalr (heroku/ruby/1.9.1/gems/rdoc-*) and
-/// liaoziyang__stackneveroverflow (vendor/bundle/ruby/2.3.0/gems/rdoc-*).
-/// File-exclusion infrastructure issue, not a cop logic bug.
+/// with out-of-tree scan paths. Fixed by scan_roots support in CopFilterSet
+/// for AllCops.Exclude path matching (commit 1f2f67c).
 pub struct RedundantSplitRegexpArgument;
 
 /// Check if regex content is a simple literal that could be replaced by a string.
