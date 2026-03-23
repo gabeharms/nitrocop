@@ -46,6 +46,7 @@ def test_agent_pr_repair_manifest_contains_repair_specific_paths():
     lines = render_manifest("agent-pr-repair")
     assert any(line.endswith("/agent-pr-repair/agent/agent.log") for line in lines)
     assert any(line.endswith("/agent-pr-repair/context/pr.diff") for line in lines)
+    assert any(line.endswith("/agent-pr-repair/repair/cop-check-packet.md") for line in lines)
     assert any(line.endswith("/agent-pr-repair/repair/summary.md") for line in lines)
     assert not any(line.endswith("/context/summary.md") for line in lines)
     assert lines[-1].endswith("manifest.txt")

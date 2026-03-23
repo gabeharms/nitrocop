@@ -365,9 +365,33 @@ jobs:
           bundle config set --local path vendor/bundle
           bundle install --jobs 4 --retry 3
 
+      - name: Cache corpus clones
+        if: steps.pr.outputs.should_run == 'true' && steps.policy.outputs.should_repair == 'true' && steps.repair.outputs.cop_check_failure == 'true'
+        uses: actions/cache@v4
+        with:
+          path: vendor/corpus
+          key: pr-repair-corpus-${{ hashFiles('bench/corpus/manifest.jsonl') }}
+
       - name: Install mold linker
         if: steps.pr.outputs.should_run == 'true' && steps.policy.outputs.should_repair == 'true' && steps.repair.outputs.route != 'skip'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq mold
+
+      - name: Build release binary for local cop-check diagnosis
+        if: steps.pr.outputs.should_run == 'true' && steps.policy.outputs.should_repair == 'true' && steps.repair.outputs.cop_check_failure == 'true'
+        run: cargo build --release
+
+      - name: Precompute local cop-check diagnosis packet
+        if: steps.pr.outputs.should_run == 'true' && steps.policy.outputs.should_repair == 'true' && steps.repair.outputs.cop_check_failure == 'true'
+        run: |
+          python3 scripts/workflows/precompute_repair_cop_check.py \
+            --repo-root "$PWD" \
+            --changed-cops-out "$REPAIR_CHANGED_COPS_FILE" \
+            --output "$REPAIR_COP_CHECK_PACKET_FILE"
+
+      - name: Append local cop-check diagnosis to prompt
+        if: steps.pr.outputs.should_run == 'true' && steps.policy.outputs.should_repair == 'true' && steps.repair.outputs.cop_check_failure == 'true'
+        run: |
+          cat "$REPAIR_COP_CHECK_PACKET_FILE" >> "$FINAL_TASK_FILE"
 
       - name: Run backend setup
         if: steps.pr.outputs.should_run == 'true' && steps.policy.outputs.should_repair == 'true' && steps.repair.outputs.route != 'skip'

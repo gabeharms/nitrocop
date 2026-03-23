@@ -34,6 +34,7 @@ WORKFLOW_RELATIVE = {
         "context/final-task.md",
         "repair/repair.json",
         "repair/apply.patch",
+        "repair/cop-check-packet.md",
         "repair/verify.sh",
         "repair/verify.log",
         "repair/summary.md",

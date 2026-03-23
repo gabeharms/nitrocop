@@ -24,6 +24,7 @@ def test_easy_linux_failure_routes_to_codex():
     result = prepare_pr_repair.classify_run(run)
     assert result["route"] == "easy"
     assert result["backend"] == "codex-hard"
+    assert result["cop_check_failure"] is False
     assert "cargo clippy --profile ci -- -D warnings" in result["verification_commands"]
     assert "cargo test" in result["verification_commands"]
 
@@ -37,6 +38,7 @@ def test_hard_cop_check_routes_to_codex():
     result = prepare_pr_repair.classify_run(run)
     assert result["route"] == "hard"
     assert result["backend"] == "codex-hard"
+    assert result["cop_check_failure"] is True
     assert any("scripts/check-cop.py" in command for command in result["verification_commands"])
 
 
@@ -50,6 +52,7 @@ def test_mixed_failures_escalate_to_hard():
     result = prepare_pr_repair.classify_run(run)
     assert result["route"] == "hard"
     assert result["backend"] == "codex-hard"
+    assert result["cop_check_failure"] is False
     assert any("cargo clippy" in command for command in result["verification_commands"])
     assert any("corpus-smoke-test.py" in command for command in result["verification_commands"])
 
@@ -63,6 +66,7 @@ def test_macos_only_failure_is_skipped():
     result = prepare_pr_repair.classify_run(run)
     assert result["route"] == "skip"
     assert result["backend"] == ""
+    assert result["cop_check_failure"] is False
 
 
 def test_prompt_includes_route_and_failed_packet():

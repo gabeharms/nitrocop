@@ -199,6 +199,10 @@ def classify_run(run: dict) -> dict:
     return {
         "route": route,
         "backend": backend,
+        "cop_check_failure": any(
+            "Check cops against corpus baseline" in job.get("failed_step_names", [])
+            for job in jobs
+        ),
         "jobs": jobs,
         "hard_jobs": hard_jobs,
         "easy_jobs": easy_jobs,
@@ -458,6 +462,7 @@ def main() -> None:
     metadata = {
         "route": classification["route"],
         "backend": classification["backend"],
+        "cop_check_failure": classification["cop_check_failure"],
         "reason": classification["reason"],
         "verification_commands": classification["verification_commands"],
         "corpus_context": corpus_context,
@@ -475,6 +480,7 @@ def main() -> None:
 
     print(f"route={classification['route']}")
     print(f"backend={classification['backend']}")
+    print(f"cop_check_failure={'true' if classification['cop_check_failure'] else 'false'}")
     print(f"reason={classification['reason']}")
     print(f"failed_jobs={len(classification['jobs'])}")
     if "standard" in corpus_context:

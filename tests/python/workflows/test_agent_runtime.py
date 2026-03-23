@@ -33,6 +33,7 @@ def test_build_paths_for_agent_pr_repair():
     assert paths["AGENT_RUNTIME_ROOT"] == "/tmp/runner/agent-pr-repair"
     assert paths["PR_DIFF_FILE"].endswith("/agent-pr-repair/context/pr.diff")
     assert paths["REPAIR_SUMMARY_FILE"].endswith("/agent-pr-repair/repair/summary.md")
+    assert paths["REPAIR_COP_CHECK_PACKET_FILE"].endswith("/agent-pr-repair/repair/cop-check-packet.md")
     assert paths["REPAIR_CHANGED_COPS_FILE"].endswith("/agent-pr-repair/repair/changed-cops.txt")
     assert "SUMMARY_FILE" not in paths
 
