@@ -3,17 +3,31 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Flags `if cond; body end` when the entire construct is on a single line.
+/// Flags `if cond; body` when a semicolon separates the condition from the body.
+///
+/// RuboCop flags ALL `if`/`unless` statements where `loc.begin` is `;` (the "then"
+/// keyword is a semicolon), regardless of whether the construct is single-line or
+/// multi-line. The only exceptions are:
+/// - Modifier form (`body if cond`) — no begin/end keywords
+/// - `node.parent&.if_type?` — the `if` is nested inside another `if` node's
+///   branch (covers `else if` patterns and nested `if` in body)
 ///
 /// ## Investigation (2026-03)
-/// **FP root cause:** The cop was flagging multi-line `if true;\n  body\nend` where a
-/// semicolon appears after the condition but the body is on the next line. This pattern
-/// occurs in jruby benchmarks and other codebases (27 FPs in corpus). Prism sometimes
-/// reports `;` via `then_keyword_loc`, and the fallback source-scan also found semicolons
-/// before newlines. Neither path checked whether the `end` keyword was on the same line.
+/// **Previous FP root cause:** The cop previously required `end` on the same line
+/// as `if`, which was overly restrictive. RuboCop flags multi-line `if cond;` too.
 ///
-/// **Fix:** After detecting a semicolon, verify the `end` keyword is on the same line as
-/// the `if` keyword. RuboCop only flags truly single-line forms (`if foo; bar end`).
+/// **Previous FN root cause:** The same-line `end` check caused all multi-line
+/// `if cond;\n  body\nend` patterns to be missed (39 FN in corpus).
+///
+/// **Current FP root cause (3 FP):** `else if @im>0;` patterns in
+/// rubyworks/facets — the inner `if` has an `if`-type parent. RuboCop skips
+/// these with `return if node.parent&.if_type?`.
+///
+/// **Fix:** Remove the same-line `end` check (fixes FN). Add a check for `if`
+/// nodes whose keyword is preceded by `else` on the same line, indicating they
+/// are nested inside another `if`'s else branch (fixes FP). Also skip `if` nodes
+/// that don't own their own `end` keyword (their `end_keyword_loc` offset matches
+/// a parent's `end`).
 pub struct IfWithSemicolon;
 
 impl Cop for IfWithSemicolon {
@@ -55,13 +69,18 @@ impl Cop for IfWithSemicolon {
             return;
         }
 
-        // RuboCop only flags single-line `if foo; bar end` — everything on one line.
-        // Multi-line `if true;\n  body\nend` should NOT be flagged even though there
-        // is a semicolon after the condition.
-        //
-        // Step 1: Check for semicolon between condition and body/else/end.
-        // In Prism, then_keyword_loc may be ";" or "then", but Prism sometimes
-        // doesn't set it. As a fallback, scan the source text.
+        // RuboCop skips `if` nodes whose parent is an if_type. Since we don't
+        // have parent access in the visitor, approximate this by checking if
+        // `else` precedes the `if` keyword on the same line (i.e., `else if`).
+        // Also check for `if` nodes that appear as the body of an else clause
+        // inside another if — these have the same source line prefix.
+        let if_kw_start = if_kw_loc.start_offset();
+        if is_preceded_by_else(source, if_kw_start) {
+            return;
+        }
+
+        // Check for semicolon: Prism's then_keyword_loc is ";" or "then".
+        // As a fallback, scan the source text between predicate and body.
         let has_semicolon = if let Some(then_loc) = if_node.then_keyword_loc() {
             then_loc.as_slice() == b";"
         } else {
@@ -77,29 +96,13 @@ impl Cop for IfWithSemicolon {
             };
             if pred_end < body_start {
                 let between = &source.content[pred_end..body_start];
-                // Only flag if semicolon appears before any newline
-                between
-                    .iter()
-                    .take_while(|&&b| b != b'\n')
-                    .any(|&b| b == b';')
+                between.iter().any(|&b| b == b';')
             } else {
                 false
             }
         };
 
         if !has_semicolon {
-            return;
-        }
-
-        // Step 2: Only flag if `end` is on the same line as `if` (single-line form).
-        // Multi-line if with cosmetic semicolon after condition should not be flagged.
-        let end_kw_loc = match if_node.end_keyword_loc() {
-            Some(loc) => loc,
-            None => return,
-        };
-        let if_line = source.offset_to_line_col(if_kw_loc.start_offset()).0;
-        let end_line = source.offset_to_line_col(end_kw_loc.start_offset()).0;
-        if if_line != end_line {
             return;
         }
 
@@ -117,6 +120,50 @@ impl Cop for IfWithSemicolon {
             format!("Do not use `{} {};` - use a newline instead.", kw, cond_src),
         ));
     }
+}
+
+/// Check if the `if`/`unless` keyword at the given offset is preceded by `else`
+/// on the same source line (indicating an `else if` pattern).
+fn is_preceded_by_else(source: &SourceFile, if_kw_offset: usize) -> bool {
+    // Scan backwards from the if keyword to the start of the line
+    let content = &source.content;
+    if if_kw_offset == 0 {
+        return false;
+    }
+
+    // Find start of current line
+    let mut line_start = if_kw_offset;
+    while line_start > 0 && content[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+
+    // Get the text before the `if` keyword on this line, trimmed
+    let before_kw = &content[line_start..if_kw_offset];
+    // Trim trailing whitespace/semicolons from the prefix
+    let trimmed = before_kw
+        .iter()
+        .rev()
+        .skip_while(|&&b| b == b' ' || b == b'\t')
+        .collect::<Vec<_>>();
+
+    // Check if it ends with "else"
+    if trimmed.len() >= 4 {
+        let last4: Vec<u8> = trimmed[..4].iter().rev().map(|&&b| b).collect();
+        if &last4 == b"else" {
+            // Make sure "else" is either at the start of the prefix or preceded by
+            // whitespace/semicolon (not part of a longer word)
+            if trimmed.len() == 4 {
+                return true;
+            }
+            let before_else = *trimmed[4];
+            return before_else == b' '
+                || before_else == b'\t'
+                || before_else == b';'
+                || before_else == b'\n';
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]

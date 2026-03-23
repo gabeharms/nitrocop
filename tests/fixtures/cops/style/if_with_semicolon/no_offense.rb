@@ -26,24 +26,14 @@ if provider == 'whatsapp_cloud'
   default_config = {}
 end
 
-# Multi-line if with semicolon after condition (body on next line)
-if true;
-  do_something
+# else if pattern: inner if has parent that is if_type, RuboCop skips it
+if x > 0
+  foo
+else if y > 0; bar else baz end
 end
 
-# Nested multi-line if with semicolons after conditions
-if true;
-  if true;
-    if true;
-      do_something
-    else
-    end
-  else
-  end
-else
-end
-
-# Unless with semicolon, multi-line
-unless done;
-  process
+# Nested if inside else branch (parent is if_type)
+if a
+  something
+else if b; c end
 end
