@@ -50,6 +50,10 @@ SCRIPT_ALLOWLISTS = {
     },
 }
 
+SHARED_SUPPORT_PATHS = [
+    "scripts/shared",
+]
+
 
 MODES = {
     "agent-cop-fix": {
@@ -110,8 +114,14 @@ def preserve_relative_paths(repo_root: Path, dest: Path, relative_paths: list[st
         if not src.exists():
             continue
         target = dest / rel_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, target)
+        if src.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, target)
 
 
 def replace_agent_docs(repo_root: Path) -> None:
@@ -136,8 +146,14 @@ def restore_relative_paths(repo_root: Path, src_root: Path, relative_paths: list
         if not src.exists():
             continue
         target = repo_root / rel_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, target)
+        if src.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, target)
         restored = True
     if restored:
         run(["git", "add", "--", *relative_paths], cwd=repo_root)
@@ -161,19 +177,28 @@ def allowed_scripts(mode: str, backend: str) -> list[str]:
 def prepare_workspace(mode: str, backend: str, repo_root: Path, preserve_ci_to: Path | None) -> str:
     config = MODES[mode]
     script_allowlist = allowed_scripts(mode, backend)
+    support_allowlist = SHARED_SUPPORT_PATHS if script_allowlist else []
 
     if preserve_ci_to is not None:
         preserve_ci_scripts(repo_root, preserve_ci_to)
 
     with tempfile.TemporaryDirectory(prefix="agent-workspace-scripts-") as tmpdir:
         preserved_scripts = Path(tmpdir)
-        if script_allowlist:
-            preserve_relative_paths(repo_root, preserved_scripts, script_allowlist)
+        if script_allowlist or support_allowlist:
+            preserve_relative_paths(
+                repo_root,
+                preserved_scripts,
+                script_allowlist + support_allowlist,
+            )
 
         replace_agent_docs(repo_root)
         prune_paths(repo_root, config["remove_paths"])
-        if script_allowlist:
-            restore_relative_paths(repo_root, preserved_scripts, script_allowlist)
+        if script_allowlist or support_allowlist:
+            restore_relative_paths(
+                repo_root,
+                preserved_scripts,
+                script_allowlist + support_allowlist,
+            )
 
     if not has_staged_or_worktree_changes(repo_root):
         return subprocess.run(

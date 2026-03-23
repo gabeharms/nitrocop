@@ -35,6 +35,8 @@ def test_agent_pr_repair_reads_linked_issue_and_can_update_it():
     assert "Local Cop-Check Diagnosis" in content or "Precompute local cop-check diagnosis packet" in content
     assert '<summary>Task prompt (${{ steps.prompt.outputs.tokens }} tokens)</summary>' in content
     assert 'cat "$FINAL_TASK_FILE"' in content
+    assert "Load repair metadata flags" in content
+    assert 'steps.repair_meta.outputs.cop_check_failure == \'true\'' in content
 
 
 def test_agent_pr_repair_checks_out_repo_before_running_local_scripts():

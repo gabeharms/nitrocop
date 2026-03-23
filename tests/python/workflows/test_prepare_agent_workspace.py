@@ -30,11 +30,28 @@ def make_repo() -> Path:
 
     (tmp / "scripts" / "workflows").mkdir(parents=True)
     (tmp / "scripts" / "workflows" / "helper.py").write_text("print('ok')\n")
-    (tmp / "scripts" / "check-cop.py").write_text("print('check')\n")
-    (tmp / "scripts" / "corpus-smoke-test.py").write_text("print('smoke')\n")
-    (tmp / "scripts" / "dispatch-cops.py").write_text("print('dispatch')\n")
-    (tmp / "scripts" / "investigate-cop.py").write_text("print('investigate')\n")
-    (tmp / "scripts" / "verify-cop-locations.py").write_text("print('verify')\n")
+    (tmp / "scripts" / "shared").mkdir(parents=True)
+    (tmp / "scripts" / "shared" / "__init__.py").write_text("")
+    (tmp / "scripts" / "shared" / "corpus_artifacts.py").write_text(
+        "def download_corpus_results(*args, **kwargs):\n    return ('/tmp/fake.json', 1, '')\n"
+    )
+    (tmp / "scripts" / "shared" / "rubocop_cache.py").write_text("CACHE = {}\n")
+    helper_script = (
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parent))\n"
+        "from shared.corpus_artifacts import download_corpus_results\n"
+        "if '--help' in sys.argv:\n"
+        "    print('ok')\n"
+        "else:\n"
+        "    print(download_corpus_results()[0])\n"
+    )
+    (tmp / "scripts" / "check-cop.py").write_text(helper_script)
+    (tmp / "scripts" / "corpus-smoke-test.py").write_text(helper_script)
+    (tmp / "scripts" / "dispatch-cops.py").write_text(helper_script)
+    (tmp / "scripts" / "investigate-cop.py").write_text(helper_script)
+    (tmp / "scripts" / "verify-cop-locations.py").write_text(helper_script)
     (tmp / "scripts" / "noise.py").write_text("print('noise')\n")
     (tmp / ".github" / "workflows").mkdir(parents=True)
     (tmp / ".github" / "workflows" / "test.yml").write_text("name: test\n")
@@ -94,6 +111,7 @@ def test_agent_cop_fix_codex_normal_keeps_allowlisted_scripts_only():
     assert (repo / "scripts" / "dispatch-cops.py").exists()
     assert (repo / "scripts" / "investigate-cop.py").exists()
     assert (repo / "scripts" / "verify-cop-locations.py").exists()
+    assert (repo / "scripts" / "shared" / "corpus_artifacts.py").exists()
     assert not (repo / "scripts" / "corpus-smoke-test.py").exists()
     assert not (repo / "scripts" / "noise.py").exists()
     assert not (repo / "scripts" / "workflows").exists()
@@ -133,6 +151,7 @@ def test_agent_pr_repair_codex_keeps_subset_scripts_and_bench():
     assert (repo / "scripts" / "corpus-smoke-test.py").exists()
     assert (repo / "scripts" / "investigate-cop.py").exists()
     assert (repo / "scripts" / "verify-cop-locations.py").exists()
+    assert (repo / "scripts" / "shared" / "corpus_artifacts.py").exists()
     assert not (repo / "scripts" / "noise.py").exists()
     assert not (repo / "scripts" / "workflows").exists()
     assert (repo / "bench" / "corpus" / "manifest.jsonl").exists()
@@ -143,8 +162,30 @@ def test_agent_pr_repair_codex_keeps_subset_scripts_and_bench():
     assert git(repo, "log", "--format=%s", "-1") == "tmp: clean workspace for agent"
 
 
+def test_reduced_workspace_helper_scripts_are_runnable():
+    repo = make_repo()
+    run_script(repo, "agent-pr-repair", "codex-hard")
+
+    for rel_path in [
+        "scripts/check-cop.py",
+        "scripts/corpus-smoke-test.py",
+        "scripts/dispatch-cops.py",
+        "scripts/investigate-cop.py",
+        "scripts/verify-cop-locations.py",
+    ]:
+        result = subprocess.run(
+            [sys.executable, str(repo / rel_path), "--help"],
+            cwd=str(repo),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        assert "ok" in result.stdout
+
+
 if __name__ == "__main__":
     test_agent_cop_fix_codex_normal_keeps_allowlisted_scripts_only()
     test_agent_cop_fix_minimax_prunes_all_scripts()
     test_agent_pr_repair_codex_keeps_subset_scripts_and_bench()
+    test_reduced_workspace_helper_scripts_are_runnable()
     print("All tests passed.")
