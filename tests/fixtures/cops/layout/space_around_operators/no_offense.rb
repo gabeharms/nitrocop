@@ -210,3 +210,18 @@ result = first_value +
   second_value
 x = a ||
   b
+
+# Alignment with a blank line between assignments (RuboCop accepts this)
+expected = posts(:welcome)
+
+tagging2  = Tagging.all
+
+# Alignment: setter methods and other = operators at same column
+unit  = rate_detail.showback_unit
+rate  = rate_detail.rate
+type  = rate_detail.type
+
+# Alignment across non-assignment lines at different indentation
+a  = 1
+foo(bar)
+b  = 2

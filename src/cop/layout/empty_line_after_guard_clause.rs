@@ -213,83 +213,86 @@ impl Cop for EmptyLineAfterGuardClause {
     ) {
         // Extract body statements, the overall location, and whether it's block form.
         // We handle both modifier and block-form if/unless, plus ternaries.
-        let (body_stmts, loc, end_keyword_loc, is_ternary) =
-            if let Some(if_node) = node.as_if_node() {
-                // Skip elsif nodes
-                if let Some(kw) = if_node.if_keyword_loc() {
-                    if kw.as_slice() == b"elsif" {
-                        return;
-                    }
-                }
-                // Ternary: no if_keyword_loc, has else branch
-                if if_node.if_keyword_loc().is_none() {
-                    // Ternary guard: check if either branch contains a guard
-                    if if_node.subsequent().is_some() {
-                        // Has else branch — check if the if-branch is a guard
-                        if let Some(stmts) = if_node.statements() {
-                            let body: Vec<_> = stmts.body().iter().collect();
-                            if body.len() == 1 && is_guard_stmt(&body[0]) {
-                                // Ternary with guard in if-branch
-                                return self.check_ternary_guard(
-                                    source,
-                                    &if_node.location(),
-                                    diagnostics,
-                                    &mut corrections,
-                                );
-                            }
-                        }
-                    }
+        let (body_stmts, loc, end_keyword_loc, is_ternary) = if let Some(if_node) =
+            node.as_if_node()
+        {
+            // Skip elsif nodes
+            if let Some(kw) = if_node.if_keyword_loc() {
+                if kw.as_slice() == b"elsif" {
                     return;
                 }
-                // Block-form if/else/end: RuboCop suppresses the offense when the
-                // `if` node has no right_sibling (i.e., it's embedded in an assignment
-                // like `ret = if...else...end`). We approximate this by checking if the
-                // `if` keyword is NOT the first non-whitespace on its line — if there's
-                // code before it (like `ret = `), it's an embedded expression and should
-                // be skipped.
-                if if_node.end_keyword_loc().is_some() {
-                    if let Some(subsequent) = if_node.subsequent() {
-                        if subsequent.as_else_node().is_some() {
-                            // Check if `if` keyword is preceded by code on the same line
-                            if let Some(kw) = if_node.if_keyword_loc() {
-                                let (kw_line, kw_col) = source.offset_to_line_col(kw.start_offset());
-                                let lines_vec: Vec<&[u8]> = source.lines().collect();
-                                if let Some(line_content) = lines_vec.get(kw_line.saturating_sub(1)) {
-                                    // Check if all chars before the `if` keyword are whitespace
-                                    // Use byte offset: compute bytes before the keyword
-                                    let line_start_offset = source.line_col_to_offset(kw_line, 0).unwrap_or(0);
-                                    let kw_byte_offset = kw.start_offset();
-                                    let prefix = &source.as_bytes()[line_start_offset..kw_byte_offset];
-                                    let has_code_before = prefix.iter().any(|&b| b != b' ' && b != b'\t');
-                                    if has_code_before {
-                                        return;
-                                    }
+            }
+            // Ternary: no if_keyword_loc, has else branch
+            if if_node.if_keyword_loc().is_none() {
+                // Ternary guard: check if either branch contains a guard
+                if if_node.subsequent().is_some() {
+                    // Has else branch — check if the if-branch is a guard
+                    if let Some(stmts) = if_node.statements() {
+                        let body: Vec<_> = stmts.body().iter().collect();
+                        if body.len() == 1 && is_guard_stmt(&body[0]) {
+                            // Ternary with guard in if-branch
+                            return self.check_ternary_guard(
+                                source,
+                                &if_node.location(),
+                                diagnostics,
+                                &mut corrections,
+                            );
+                        }
+                    }
+                }
+                return;
+            }
+            // Block-form if/else/end: RuboCop suppresses the offense when the
+            // `if` node has no right_sibling (i.e., it's embedded in an assignment
+            // like `ret = if...else...end`). We approximate this by checking if the
+            // `if` keyword is NOT the first non-whitespace on its line — if there's
+            // code before it (like `ret = `), it's an embedded expression and should
+            // be skipped.
+            if if_node.end_keyword_loc().is_some() {
+                if let Some(subsequent) = if_node.subsequent() {
+                    if subsequent.as_else_node().is_some() {
+                        // Check if `if` keyword is preceded by code on the same line
+                        if let Some(kw) = if_node.if_keyword_loc() {
+                            let (kw_line, kw_col) = source.offset_to_line_col(kw.start_offset());
+                            let lines_vec: Vec<&[u8]> = source.lines().collect();
+                            if let Some(line_content) = lines_vec.get(kw_line.saturating_sub(1)) {
+                                // Check if all chars before the `if` keyword are whitespace
+                                // Use byte offset: compute bytes before the keyword
+                                let line_start_offset =
+                                    source.line_col_to_offset(kw_line, 0).unwrap_or(0);
+                                let kw_byte_offset = kw.start_offset();
+                                let prefix = &source.as_bytes()[line_start_offset..kw_byte_offset];
+                                let has_code_before =
+                                    prefix.iter().any(|&b| b != b' ' && b != b'\t');
+                                if has_code_before {
+                                    return;
                                 }
                             }
                         }
                     }
                 }
-                match if_node.statements() {
-                    Some(s) => (s, if_node.location(), if_node.end_keyword_loc(), false),
-                    None => return,
-                }
-            } else if let Some(unless_node) = node.as_unless_node() {
-                // Skip unless/else forms
-                if unless_node.else_clause().is_some() {
-                    return;
-                }
-                match unless_node.statements() {
-                    Some(s) => (
-                        s,
-                        unless_node.location(),
-                        unless_node.end_keyword_loc(),
-                        false,
-                    ),
-                    None => return,
-                }
-            } else {
+            }
+            match if_node.statements() {
+                Some(s) => (s, if_node.location(), if_node.end_keyword_loc(), false),
+                None => return,
+            }
+        } else if let Some(unless_node) = node.as_unless_node() {
+            // Skip unless/else forms
+            if unless_node.else_clause().is_some() {
                 return;
-            };
+            }
+            match unless_node.statements() {
+                Some(s) => (
+                    s,
+                    unless_node.location(),
+                    unless_node.end_keyword_loc(),
+                    false,
+                ),
+                None => return,
+            }
+        } else {
+            return;
+        };
 
         let is_modifier = end_keyword_loc.is_none() && !is_ternary;
 
@@ -386,8 +389,7 @@ impl Cop for EmptyLineAfterGuardClause {
                 // Compute the byte position within the line where the if node ends.
                 // effective_end_offset is a byte offset into the file; subtract the
                 // line's start byte offset to get the position within the line.
-                let line_start_byte =
-                    source.line_col_to_offset(if_end_line, 0).unwrap_or(0);
+                let line_start_byte = source.line_col_to_offset(if_end_line, 0).unwrap_or(0);
                 let end_byte_in_line = effective_end_offset.saturating_sub(line_start_byte);
                 let after_pos = end_byte_in_line + 1;
                 if after_pos < cur_line.len() {
