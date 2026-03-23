@@ -304,20 +304,33 @@ def schema_example(value)
   end
 end
 
-# FN fix: multi-assign inside unless body, block in nested block in else of inner if
-def get_login_info(sources)
-  username, password = nil, nil
-  unless sources.empty?
-    if force_account
-      host, username, password = sources.find { |h, u, p| h == target }
-    else
-      choose do |menu|
-        sources.each do |host, olduser, oldpw|
-                         ^^^^ Lint/ShadowingOuterLocalVariable: Shadowing outer local variable - `host`.
-          menu.choice(olduser, host)
-        end
-      end
-    end
+# FN fix: Thread.new(value) — RuboCop only suppresses Ractor.new, not Thread.new
+def threaded_or_sequential(lib, &block)
+  if use_threads?
+    Thread.new { block.call(lib) }
+  else
+    value = block.call(lib)
+    Thread.new(value) { |value| value }
+                         ^^^^^ Lint/ShadowingOuterLocalVariable: Shadowing outer local variable - `value`.
   end
 end
+
+# FN fix: Thread.new with splat args — not suppressed (only Ractor.new is special)
+def start_thread(*args)
+  Thread.new(*args) { |*args| process(*args) }
+                       ^^^^^ Lint/ShadowingOuterLocalVariable: Shadowing outer local variable - `args`.
+end
+
+# FN fix: reduce with call arg matching block param — not suppressed by RuboCop
+def apply_filters(content, filters)
+  filters.reduce(content) { |content, filter| filter.apply(content) }
+                             ^^^^^^^ Lint/ShadowingOuterLocalVariable: Shadowing outer local variable - `content`.
+end
+
+# FN fix: File.open with call arg matching block param
+def overwrite_file(file, new_content)
+  File.open(file, "w") { |file| file.puts new_content }
+                          ^^^^ Lint/ShadowingOuterLocalVariable: Shadowing outer local variable - `file`.
+end
+
 
