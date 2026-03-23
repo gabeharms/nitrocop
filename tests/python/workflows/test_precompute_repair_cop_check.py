@@ -18,6 +18,7 @@ def test_render_packet_includes_changed_cop_results():
                 "command": "python3 scripts/check-cop.py Style/MixinUsage --verbose --rerun --quick --clone",
                 "status": 1,
                 "output": (
+                    "  (used batch --corpus-check mode)\n"
                     "Repos with offenses (2):\n"
                     "      35  travis-ci__dpl__8c6eabc\n"
                     "      29  puppetlabs__puppet__e227c27\n\n"
@@ -34,6 +35,7 @@ def test_render_packet_includes_changed_cop_results():
     assert "FN increased from 0 to 38" in packet
     assert "Start here:" in packet
     assert "python3 scripts/investigate-cop.py Style/MixinUsage --input /tmp/standard.json --repos-only" in packet
+    assert "python3 scripts/check-cop.py Style/MixinUsage --verbose --rerun --quick --clone --no-batch" in packet
     assert "/repo/vendor/corpus/travis-ci__dpl__8c6eabc" in packet
     assert "/repo/vendor/corpus/puppetlabs__puppet__e227c27" in packet
 
@@ -67,9 +69,15 @@ def test_extract_top_repo_ids_reads_repo_block():
     ]
 
 
+def test_used_batch_mode_detects_batch_marker():
+    assert precompute_repair_cop_check.used_batch_mode("  (used batch --corpus-check mode)\n")
+    assert not precompute_repair_cop_check.used_batch_mode("Repos with offenses (2):\n")
+
+
 if __name__ == "__main__":
     test_render_packet_includes_changed_cop_results()
     test_render_packet_handles_no_changed_cops()
     test_tail_lines_truncates_to_suffix()
     test_extract_top_repo_ids_reads_repo_block()
+    test_used_batch_mode_detects_batch_marker()
     print("All tests passed.")

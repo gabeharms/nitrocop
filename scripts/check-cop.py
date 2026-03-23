@@ -19,6 +19,7 @@ Usage:
     python3 scripts/check-cop.py Lint/Void              # quick aggregate count check
     python3 scripts/check-cop.py Lint/Void --verbose     # per-repo count breakdown
     python3 scripts/check-cop.py Lint/Void --verbose --rerun --quick  # fast iteration
+    python3 scripts/check-cop.py Lint/Void --verbose --rerun --quick --no-batch  # force per-repo subprocess mode
     python3 scripts/check-cop.py Lint/Void --threshold 5 # allow up to 5 excess
 """
 
@@ -532,6 +533,45 @@ def run_nitrocop_aggregate(cop_name: str) -> int:
     return sum(c for c in per_repo.values() if c >= 0)
 
 
+def rerun_local_per_repo(
+    cop_name: str,
+    data: dict,
+    *,
+    quick: bool,
+    has_activity_index: bool,
+    no_batch: bool,
+) -> dict[str, int]:
+    """Re-run nitrocop locally, preferring batch mode unless disabled."""
+    ensure_binary_fresh()
+    clear_file_cache()
+    print("Running nitrocop per-repo...", file=sys.stderr)
+
+    per_repo = None
+    if not no_batch:
+        per_repo = run_nitrocop_batch(cop_name)
+        if per_repo is not None:
+            print("  (used batch --corpus-check mode)", file=sys.stderr)
+
+    if per_repo is None:
+        if no_batch:
+            print(
+                "  (forced per-repo subprocess mode; skipped batch --corpus-check)",
+                file=sys.stderr,
+            )
+        relevant_repos = None
+        if quick:
+            relevant_repos = relevant_repos_for_cop(cop_name, data)
+            if not has_activity_index:
+                print(
+                    "WARNING: corpus artifact lacks cop_activity_repos; "
+                    "quick rerun falls back to divergence-only data",
+                    file=sys.stderr,
+                )
+        per_repo = run_nitrocop_per_repo(cop_name, relevant_repos=relevant_repos)
+
+    return per_repo
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Check a cop against the corpus for aggregate count regressions")
@@ -546,6 +586,8 @@ def main():
                         help="Force re-execution of nitrocop (ignore local cache)")
     parser.add_argument("--quick", action="store_true",
                         help="Only run repos with baseline activity (faster, may miss new FPs on zero-baseline repos)")
+    parser.add_argument("--no-batch", action="store_true",
+                        help="Skip local batch --corpus-check mode and force per-repo subprocess rerun")
     parser.add_argument("--clone", action="store_true",
                         help="Auto-clone needed corpus repos from manifest (for CI use with --rerun --quick)")
     parser.add_argument("--extended", action="store_true",
@@ -647,26 +689,13 @@ def main():
             print("Using cached nitrocop results (pass --rerun to re-execute)", file=sys.stderr)
             per_repo = cached
         else:
-            ensure_binary_fresh()
-            clear_file_cache()
-            # Try batch mode first (single process, much faster)
-            print("Running nitrocop per-repo...", file=sys.stderr)
-            per_repo = run_nitrocop_batch(args.cop)
-            if per_repo is not None:
-                print("  (used batch --corpus-check mode)", file=sys.stderr)
-            else:
-                # Fall back to per-repo subprocess mode
-                # --quick: only run repos where baseline has activity for this cop
-                relevant_repos = None
-                if args.quick:
-                    relevant_repos = relevant_repos_for_cop(args.cop, data)
-                    if not has_activity_index:
-                        print(
-                            "WARNING: corpus artifact lacks cop_activity_repos; "
-                            "quick rerun falls back to divergence-only data",
-                            file=sys.stderr,
-                        )
-                per_repo = run_nitrocop_per_repo(args.cop, relevant_repos=relevant_repos)
+            per_repo = rerun_local_per_repo(
+                args.cop,
+                data,
+                quick=args.quick,
+                has_activity_index=has_activity_index,
+                no_batch=args.no_batch,
+            )
             save_cached_results(args.cop, per_repo)
 
         # Older corpus artifacts do not include cop_activity_repos, so clone mode

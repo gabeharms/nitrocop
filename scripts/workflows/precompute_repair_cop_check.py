@@ -48,12 +48,17 @@ def extract_top_repo_ids(output: str, limit: int = 5) -> list[str]:
     return repo_ids
 
 
+def used_batch_mode(output: str) -> bool:
+    return "used batch --corpus-check mode" in output
+
+
 def render_start_here(
     cop: str,
     top_repos: list[str],
     *,
     standard_corpus: Path | None,
     corpus_dir: Path,
+    batch_mode: bool,
 ) -> list[str]:
     lines = [
         "Start here:",
@@ -62,6 +67,13 @@ def render_start_here(
     if standard_corpus is not None:
         lines.append(
             f"- Baseline corpus context: `python3 scripts/investigate-cop.py {cop} --input {standard_corpus} --repos-only`"
+        )
+    if batch_mode and top_repos:
+        lines.extend(
+            [
+                f"- Batch sanity check if counts look suspicious: `python3 scripts/check-cop.py {cop} --verbose --rerun --quick --clone --no-batch`",
+                "- This local packet used batch `--corpus-check`; compare 1-2 top repos in per-repo mode before inventing a full manual sweep.",
+            ]
         )
     for repo_id in top_repos:
         lines.append(f"- Inspect repo: `{corpus_dir / repo_id}`")
@@ -111,6 +123,7 @@ def render_packet(
                     top_repos,
                     standard_corpus=standard_corpus,
                     corpus_dir=corpus_dir,
+                    batch_mode=used_batch_mode(str(result["output"])),
                 ),
                 "",
                 "```bash",
