@@ -53,7 +53,7 @@ impl Cop for Size {
             cop: self,
             source,
             diagnostics: Vec::new(),
-            block_body_stmt_offset: None,
+            block_body_stmt_range: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -64,28 +64,34 @@ struct SizeVisitor<'a, 'src> {
     cop: &'a Size,
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
-    /// Byte offset of the sole statement in a block body, if any.
+    /// Byte range (start, end) of the sole statement in a block body, if any.
     /// Used to match RuboCop's `node.parent&.block_type?` — only the call node
-    /// at this exact offset is suppressed, not its deeply nested children.
-    block_body_stmt_offset: Option<usize>,
+    /// spanning this exact range is suppressed, not chained or nested children.
+    /// Chained calls like `[].count.should` share the same start_offset but
+    /// differ in end_offset, so comparing both is necessary.
+    block_body_stmt_range: Option<(usize, usize)>,
 }
 
 impl SizeVisitor<'_, '_> {
     /// Visit a block-like node's body, recording the sole statement's offset
     /// so that only a `count` call at that exact position is suppressed.
     fn visit_block_body(&mut self, body: &ruby_prism::Node<'_>) {
-        let prev = self.block_body_stmt_offset;
+        let prev = self.block_body_stmt_range;
         if let Some(stmts) = body.as_statements_node() {
             let mut iter = stmts.body().iter();
             if let Some(first) = iter.next() {
                 if iter.next().is_none() {
-                    // Single statement — record its offset
-                    self.block_body_stmt_offset = Some(first.location().start_offset());
+                    // Single statement — record its full byte range
+                    let loc = first.location();
+                    self.block_body_stmt_range = Some((
+                        loc.start_offset(),
+                        loc.start_offset() + loc.as_slice().len(),
+                    ));
                 }
             }
         }
         self.visit(body);
-        self.block_body_stmt_offset = prev;
+        self.block_body_stmt_range = prev;
     }
 }
 
@@ -97,11 +103,15 @@ impl<'pr> Visit<'pr> for SizeVisitor<'_, '_> {
         {
             // RuboCop: skip when `node.parent&.block_type?` — the `count` call
             // is the direct sole statement of a block body. We check by comparing
-            // byte offsets: only the call at the exact position of the sole block
-            // body statement is suppressed, not deeply nested children.
+            // both start and end byte offsets: only the call spanning the exact
+            // range of the sole block body statement is suppressed. Chained calls
+            // like `[].count.should` share the same start_offset but differ in
+            // end_offset, so comparing both is necessary.
+            let node_loc = node.location();
+            let node_end = node_loc.start_offset() + node_loc.as_slice().len();
             let is_direct_block_body = self
-                .block_body_stmt_offset
-                .is_some_and(|off| off == node.location().start_offset());
+                .block_body_stmt_range
+                .is_some_and(|(start, end)| start == node_loc.start_offset() && end == node_end);
             if !is_direct_block_body {
                 if let Some(recv) = node.receiver() {
                     if is_array_or_hash_receiver(&recv) {
