@@ -211,6 +211,43 @@ use crate::parse::source::SourceFile;
 /// `is_inside_conditional_block()`. When scanning backwards, an `end` at lower indent
 /// closes a sibling scope — conditional keywords beyond it are in a different scope and
 /// should not affect the current def.
+///
+/// ## Investigation (2026-03-23): FP=6 (extended), FN=2 (extended)
+///
+/// **FP root cause 1 (travis-ci/travis-api)**: `def delete(account_env_var);
+/// account_env_var.delete(account_env_var); end` — receiver is the method's own
+/// parameter (`LocalVariableReadNode` in Prism). RuboCop's NodePattern only matches
+/// `(send nil? _)` receivers (method calls), not `(lvar _)` (local variable reads).
+/// The cop was accepting `LocalVariableReadNode` as a delegatable receiver.
+///
+/// Fix: Changed `local_variable_read_node` check in `is_delegatable_receiver` to return
+/// `false`. In a def body, a name is an lvar only when it's a parameter — parameters
+/// are not valid delegation targets.
+///
+/// **FP root cause 2 (4 vendored gem paths)**: Files in `heroku/ruby/1.9.1/gems/` and
+/// `vendor/bundle/ruby/` paths. These are vendored gems that RuboCop excludes by default
+/// via `Exclude` patterns. Not a cop logic issue — file exclusion responsibility.
+///
+/// **FP root cause 3 (travis-ci/travis-yaml)**: `def !@; !value; end` at line 92.
+/// Cannot verify without full file access — likely private/protected/module_function
+/// context in the file that our line-based scanning misses.
+///
+/// **FN root cause (rabbit-shocker/rabbit)**: `def disconnect_key(keyval, modifier);
+/// @user_accel_group.disconnect_key(keyval, modifier); end` inside an `else` block after
+/// `private`. The `is_inside_conditional_block` backward scan stopped at `def connect_key`
+/// (a sibling method at the same indent) before reaching the enclosing `else` keyword.
+///
+/// Fix: Replaced the `def ` stop condition in `is_inside_conditional_block` with
+/// sibling method depth tracking. `end` at same indent increments depth (entering
+/// a sibling body going backward), `def ` at same indent decrements it (exiting).
+/// While inside a sibling body (depth > 0), all content is skipped. This allows
+/// scanning past sibling def...end pairs to find enclosing conditional keywords.
+///
+/// **FN (amuta/kumi)**: `def pop = frames.pop` inside a `Data.define do...end` block.
+/// Cop detects the pattern correctly in isolation. The FN is likely caused by file-level
+/// `private` context that our line-based scanner picks up but RuboCop's AST-based
+/// `node_visibility` doesn't (because the def is inside a block, not a class body sibling).
+/// Cannot verify without full file access.
 pub struct Delegate;
 
 impl Cop for Delegate {
@@ -383,7 +420,13 @@ impl Cop for Delegate {
                     && recv_call.block().is_none()
             }
         } else if receiver.as_local_variable_read_node().is_some() {
-            true
+            // In Prism, a local variable read means this name was declared as a
+            // parameter or assigned in the current scope. RuboCop's NodePattern
+            // uses `(send nil? _)` which only matches method calls, not lvars.
+            // In a def body, a name becomes an lvar only if it's a parameter.
+            // Since delegate targets are methods/ivars/constants (not params),
+            // skip lvar receivers.
+            false
         } else {
             receiver.as_constant_read_node().is_some() || receiver.as_constant_path_node().is_some()
         };
@@ -476,6 +519,12 @@ fn is_inside_conditional_block(source: &SourceFile, def_offset: usize) -> bool {
     let (def_line, def_col) = source.offset_to_line_col(def_offset);
     let lines: Vec<&[u8]> = source.lines().collect();
 
+    // Track sibling method depth: when scanning backward, `end` at same indent
+    // enters a sibling method body, `def` at same indent exits it. While inside
+    // a sibling body (depth > 0), skip all lines to avoid matching conditional
+    // keywords from inside other methods.
+    let mut sibling_depth: usize = 0;
+
     // Scan backwards from the def to find an enclosing block-opening keyword
     // at a LOWER indent than the def. If found before a class/module/end
     // boundary, the def is nested inside a conditional.
@@ -491,25 +540,38 @@ fn is_inside_conditional_block(source: &SourceFile, def_offset: usize) -> bool {
             continue;
         }
 
-        // Stop at class/module boundary at lower indent — we've left the scope
-        if indent < def_col && (trimmed.starts_with(b"class ") || trimmed.starts_with(b"module ")) {
-            return false;
+        let is_end = trimmed == b"end"
+            || trimmed.starts_with(b"end ")
+            || trimmed.starts_with(b"end;")
+            || trimmed.starts_with(b"end#");
+
+        // Track sibling method bodies at the same indent level.
+        // Going backward: `end` opens (enters) a sibling body, `def ` closes (exits) it.
+        if indent == def_col {
+            if is_end {
+                sibling_depth += 1;
+                continue;
+            }
+            if trimmed.starts_with(b"def ") {
+                sibling_depth = sibling_depth.saturating_sub(1);
+                continue;
+            }
         }
 
-        // Stop at `def ` at same indent — reached another method definition
-        if indent == def_col && trimmed.starts_with(b"def ") {
+        // While inside a sibling method body, skip all content
+        if sibling_depth > 0 {
+            continue;
+        }
+
+        // Stop at class/module boundary at lower indent — we've left the scope
+        if indent < def_col && (trimmed.starts_with(b"class ") || trimmed.starts_with(b"module ")) {
             return false;
         }
 
         // Stop at `end` at lower indent — crossed out of a sibling method/block
         // scope. Without this, conditional keywords (rescue/ensure/elsif/etc.)
         // from inside OTHER methods would falsely match.
-        if indent < def_col
-            && (trimmed == b"end"
-                || trimmed.starts_with(b"end ")
-                || trimmed.starts_with(b"end;")
-                || trimmed.starts_with(b"end#"))
-        {
+        if indent < def_col && is_end {
             return false;
         }
 

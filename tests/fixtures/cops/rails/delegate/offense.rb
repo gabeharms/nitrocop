@@ -184,3 +184,26 @@ class Timer
     end
   end
 end
+
+# Delegation with arguments inside else block after private (rabbit-shocker pattern)
+# `private` at class body level doesn't affect defs inside if/else in RuboCop's AST.
+# The sibling_depth tracking in is_inside_conditional_block scans past sibling
+# def...end pairs to find the enclosing else keyword.
+class KeyHandler
+  private
+
+  def some_helper
+    something.helper
+  end
+
+  if GTK_VERSION >= 3
+    def connect_key(keyval, modifier, flags, &block)
+      @accel_group.connect(keyval, modifier, flags, &block)
+    end
+  else
+    def disconnect_key(keyval, modifier)
+    ^^^ Rails/Delegate: Use `delegate` to define delegations.
+      @user_accel_group.disconnect_key(keyval, modifier)
+    end
+  end
+end
