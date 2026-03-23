@@ -332,8 +332,7 @@ impl DependentVisitor<'_> {
         // a block with extra arguments. RuboCop's association_extension_block? pattern
         // only matches `has_many :name` (exactly one arg), so when extra args are
         // present with a block, RuboCop fails to walk up to with_options.
-        let with_options_applies =
-            !(call.block().is_some() && Self::has_extra_args(call));
+        let with_options_applies = !(call.block().is_some() && Self::has_extra_args(call));
 
         let has_dependent = has_dependent
             || (with_options_applies
