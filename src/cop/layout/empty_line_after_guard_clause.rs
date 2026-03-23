@@ -164,6 +164,19 @@ use crate::parse::source::SourceFile;
 /// - A correct future fix needs repo-level identification of those new excess
 ///   offenses first; do not reland the reverted boundary-tightening approach
 ///   without isolating the regressions.
+///
+/// ## Corpus investigation (2026-03-23)
+///
+/// Corpus oracle reported FP=1, FN=28.
+///
+/// FP=1: `if raise_error ... else ... end` with `or raise` in the if-branch
+/// was treated as a guard clause. RuboCop's `guard_clause_node` returns nil
+/// for `if...else...end` without elsif (regular if/else is never a guard).
+/// Fix: skip block-form if nodes that have a direct else clause (not elsif).
+///
+/// FN=28: Various modifier guard patterns (return/next/break if) followed by
+/// code without a blank line. Not addressed in this batch — requires deeper
+/// investigation of the text-based next-sibling classification.
 pub struct EmptyLineAfterGuardClause;
 
 /// Guard clause keywords that appear at the start of an expression.
@@ -227,6 +240,16 @@ impl Cop for EmptyLineAfterGuardClause {
                         }
                     }
                     return;
+                }
+                // Skip block-form if/else (no elsif) — RuboCop's guard_clause_node
+                // returns nil for `if...else...end` without elsif. But
+                // `if...elsif...end` CAN be a guard if all branches return.
+                if if_node.end_keyword_loc().is_some() {
+                    if let Some(subsequent) = if_node.subsequent() {
+                        if subsequent.as_else_node().is_some() {
+                            return;
+                        }
+                    }
                 }
                 match if_node.statements() {
                     Some(s) => (s, if_node.location(), if_node.end_keyword_loc(), false),
