@@ -137,6 +137,7 @@ impl Cop for DoubleNegation {
             conditional_last_line_stack: Vec::new(),
             statements_last_line_stack: Vec::new(),
             parent_is_statements: false,
+            parent_is_parens: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -173,6 +174,10 @@ struct DoubleNegationVisitor<'a> {
     /// stmts_last_line check apply — matching RuboCop's
     /// `find_parent_not_enumerable` + `begin_type?` check.
     parent_is_statements: bool,
+    /// Whether the current node is inside a `ParenthesesNode`. In Parser AST,
+    /// parens produce `begin` nodes, and RuboCop's `find_parent_not_enumerable`
+    /// returns true for `begin_type?` → allowing `!!` inside `(!!expr)`.
+    parent_is_parens: bool,
 }
 
 impl DoubleNegationVisitor<'_> {
@@ -651,6 +656,13 @@ impl<'pr> Visit<'pr> for DoubleNegationVisitor<'_> {
         ruby_prism::visit_call_node(self, node);
         self.parent_is_statements = saved_parent;
         self.parent_is_parens = saved_parens;
+    }
+
+    fn visit_parentheses_node(&mut self, node: &ruby_prism::ParenthesesNode<'pr>) {
+        let saved = self.parent_is_parens;
+        self.parent_is_parens = true;
+        ruby_prism::visit_parentheses_node(self, node);
+        self.parent_is_parens = saved;
     }
 
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
