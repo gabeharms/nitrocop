@@ -252,7 +252,7 @@ impl RedundantCondition {
     }
 
     /// Handle an if node (including ternary): checks all offense patterns
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     fn check_if(
         &self,
         source: &SourceFile,
