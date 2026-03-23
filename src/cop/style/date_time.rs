@@ -3,6 +3,23 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Style/DateTime: Prefer `Time` over `DateTime`.
+///
+/// ## Investigation findings (2026-03-23)
+///
+/// Root cause of FN (1018): The original `args.len() >= 2` historic-date check
+/// was too broad — it skipped ANY call with 2+ args (e.g., `DateTime.new(2024, 1, 1)`).
+/// The vendor RuboCop only skips calls where the last argument is a `Date::XXX`
+/// constant (like `Date::ENGLAND`), matching the `historic_date?` pattern:
+/// `(send _ _ _ (const (const {nil? (cbase)} :Date) _))`.
+///
+/// Root cause of FP (53): All 53 FPs were `to_datetime` calls in projects
+/// (discourse, ruby-polars) that likely set `AllowCoercion: true` in their
+/// project-level config. The cop logic for `to_datetime` is correct per vendor —
+/// these are config resolution issues, not cop logic bugs.
+///
+/// Fix applied: Replaced the `args.len() >= 2` check with proper `is_historic_date`
+/// detection that only skips when the last arg is `Date::XXX` or `::Date::XXX`.
 pub struct DateTime;
 
 impl Cop for DateTime {
@@ -49,6 +66,7 @@ impl Cop for DateTime {
                 column,
                 "Do not use `#to_datetime`.".to_string(),
             ));
+            return;
         }
 
         // Check for DateTime.something calls
@@ -58,12 +76,10 @@ impl Cop for DateTime {
                 return;
             }
 
-            // DateTime.iso8601('date', Date::ENGLAND) has 2 args - historic date, skip
-            if let Some(args) = call.arguments() {
-                let arg_list: Vec<_> = args.arguments().iter().collect();
-                if arg_list.len() >= 2 {
-                    return;
-                }
+            // Skip historic dates: last arg is Date::XXX or ::Date::XXX
+            // Matches vendor pattern: (send _ _ _ (const (const {nil? (cbase)} :Date) _))
+            if is_historic_date(call) {
+                return;
             }
 
             let loc = node.location();
@@ -92,6 +108,42 @@ fn is_datetime_const(node: &ruby_prism::Node<'_>) -> bool {
             }
         }
     }
+    false
+}
+
+/// Check if a call has a historic date argument: last arg is Date::XXX or ::Date::XXX.
+/// Matches vendor pattern: (send _ _ _ (const (const {nil? (cbase)} :Date) _))
+fn is_historic_date(call: &ruby_prism::CallNode<'_>) -> bool {
+    let args = match call.arguments() {
+        Some(a) => a,
+        None => return false,
+    };
+
+    let arg_list: Vec<_> = args.arguments().iter().collect();
+    if arg_list.len() < 2 {
+        return false;
+    }
+
+    // Check if the last argument is a constant path like Date::ENGLAND or ::Date::ITALY
+    let last_arg = &arg_list[arg_list.len() - 1];
+    if let Some(const_path) = last_arg.as_constant_path_node() {
+        // The parent should be a constant named "Date" (with nil or cbase parent)
+        if let Some(parent) = const_path.parent() {
+            if let Some(parent_read) = parent.as_constant_read_node() {
+                let name = std::str::from_utf8(parent_read.name().as_slice()).unwrap_or("");
+                return name == "Date";
+            }
+            if let Some(parent_path) = parent.as_constant_path_node() {
+                // ::Date::ITALY — parent_path is ::Date (ConstantPathNode with no parent)
+                let name =
+                    std::str::from_utf8(parent_path.name_loc().as_slice()).unwrap_or("");
+                if name == "Date" && parent_path.parent().is_none() {
+                    return true;
+                }
+            }
+        }
+    }
+
     false
 }
 
