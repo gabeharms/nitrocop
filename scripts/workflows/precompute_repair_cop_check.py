@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -52,6 +53,155 @@ def used_batch_mode(output: str) -> bool:
     return "used batch --corpus-check mode" in output
 
 
+def normalize_example(ex) -> tuple[str, str, list[str] | None]:
+    if isinstance(ex, dict):
+        return ex.get("loc", ""), ex.get("msg", ""), ex.get("src")
+    return ex, "", None
+
+
+def parse_example_loc(loc: str) -> tuple[str, str, int] | None:
+    if ": " not in loc:
+        return None
+    repo_id, rest = loc.split(": ", 1)
+    last_colon = rest.rfind(":")
+    if last_colon < 0:
+        return None
+    filepath = rest[:last_colon]
+    try:
+        line = int(rest[last_colon + 1:])
+    except ValueError:
+        return None
+    return repo_id, filepath, line
+
+
+def top_repo_breakdown(
+    repo_breakdown: dict[str, dict[str, int]],
+    *,
+    kind: str,
+    limit: int = 3,
+) -> list[tuple[str, int]]:
+    repos = [
+        (repo_id, counts.get(kind, 0))
+        for repo_id, counts in repo_breakdown.items()
+        if counts.get(kind, 0) > 0
+    ]
+    repos.sort(key=lambda item: (-item[1], item[0]))
+    return repos[:limit]
+
+
+def select_examples_for_kind(
+    examples: list,
+    *,
+    preferred_repos: list[str],
+    limit: int = 3,
+) -> list[tuple[str, str, list[str] | None]]:
+    preferred: list[tuple[str, str, list[str] | None]] = []
+    seen: set[str] = set()
+    repo_priority = {repo_id: idx for idx, repo_id in enumerate(preferred_repos)}
+
+    parsed_examples: list[tuple[int, str, str, str, list[str] | None]] = []
+    for ex in examples:
+        loc, msg, src = normalize_example(ex)
+        parsed = parse_example_loc(loc)
+        if parsed is None:
+            priority = len(preferred_repos)
+        else:
+            priority = repo_priority.get(parsed[0], len(preferred_repos))
+        parsed_examples.append((priority, loc, msg, loc, src))
+
+    parsed_examples.sort(key=lambda item: (item[0], item[1]))
+    for _priority, _sort_loc, msg, loc, src in parsed_examples:
+        if not loc or loc in seen:
+            continue
+        seen.add(loc)
+        preferred.append((loc, msg, src))
+        if len(preferred) >= limit:
+            break
+    return preferred
+
+
+def render_example_section(
+    title: str,
+    examples: list[tuple[str, str, list[str] | None]],
+) -> list[str]:
+    if not examples:
+        return []
+    lines = [title]
+    for loc, msg, src in examples:
+        msg_suffix = f" — {msg}" if msg else ""
+        lines.append(f"- `{loc}`{msg_suffix}")
+        if src:
+            lines.append("```ruby")
+            lines.extend(src[:8])
+            lines.append("```")
+    lines.append("")
+    return lines
+
+
+def render_oracle_context(
+    cop: str,
+    *,
+    standard_corpus: Path | None,
+    oracle_by_cop: dict[str, dict],
+    oracle_repo_breakdown: dict[str, dict[str, dict[str, int]]],
+) -> list[str]:
+    if standard_corpus is None:
+        return []
+    cop_entry = oracle_by_cop.get(cop)
+    if not cop_entry:
+        return []
+
+    lines = [
+        "Oracle context from CI corpus artifact:",
+        f"- Repos and exact examples: `python3 scripts/investigate-cop.py {cop} --input {standard_corpus} --fn-only --context --limit 10`",
+    ]
+
+    repo_breakdown = oracle_repo_breakdown.get(cop, {})
+    top_fn = top_repo_breakdown(repo_breakdown, kind="fn")
+    top_fp = top_repo_breakdown(repo_breakdown, kind="fp")
+    if top_fn:
+        lines.append("Oracle FN hotspots:")
+        for repo_id, count in top_fn:
+            lines.append(f"- `{repo_id}` ({count} FN)")
+    if top_fp:
+        lines.append("Oracle FP hotspots:")
+        for repo_id, count in top_fp:
+            lines.append(f"- `{repo_id}` ({count} FP)")
+    if top_fn or top_fp:
+        lines.append("")
+
+    preferred_repos = [repo_id for repo_id, _count in top_fn] or [repo_id for repo_id, _count in top_fp]
+    fn_examples = select_examples_for_kind(
+        cop_entry.get("fn_examples", []),
+        preferred_repos=preferred_repos,
+    )
+    fp_examples = select_examples_for_kind(
+        cop_entry.get("fp_examples", []),
+        preferred_repos=preferred_repos,
+        limit=2,
+    )
+    lines.extend(render_example_section("Representative oracle FN examples:", fn_examples))
+    lines.extend(render_example_section("Representative oracle FP examples:", fp_examples))
+    return lines
+
+
+def load_oracle_context(
+    standard_corpus: Path | None,
+) -> tuple[dict[str, dict], dict[str, dict[str, dict[str, int]]]]:
+    if standard_corpus is None or not standard_corpus.exists():
+        return {}, {}
+    data = json.loads(standard_corpus.read_text())
+    by_cop = {entry["cop"]: entry for entry in data.get("by_cop", [])}
+    repo_breakdown: dict[str, dict[str, dict[str, int]]] = {}
+    for repo_id, cops in data.get("by_repo_cop", {}).items():
+        for cop, entry in cops.items():
+            repo_breakdown.setdefault(cop, {})[repo_id] = {
+                "fp": entry.get("fp", 0),
+                "fn": entry.get("fn", 0),
+            }
+    return by_cop, repo_breakdown
+
+
 def render_start_here(
     cop: str,
     top_repos: list[str],
@@ -85,7 +235,11 @@ def render_packet(
     *,
     standard_corpus: Path | None = None,
     corpus_dir: Path = Path("vendor/corpus"),
+    oracle_by_cop: dict[str, dict] | None = None,
+    oracle_repo_breakdown: dict[str, dict[str, dict[str, int]]] | None = None,
 ) -> str:
+    oracle_by_cop = oracle_by_cop or {}
+    oracle_repo_breakdown = oracle_repo_breakdown or {}
     lines = [
         "",
         "## Local Cop-Check Diagnosis",
@@ -126,6 +280,12 @@ def render_packet(
                     batch_mode=used_batch_mode(str(result["output"])),
                 ),
                 "",
+                *render_oracle_context(
+                    str(result["cop"]),
+                    standard_corpus=standard_corpus,
+                    oracle_by_cop=oracle_by_cop,
+                    oracle_repo_breakdown=oracle_repo_breakdown,
+                ),
                 "```bash",
                 result["command"],
                 "```",
@@ -161,6 +321,8 @@ def main() -> int:
 
     repo_root = args.repo_root.resolve()
     standard_corpus = os.environ.get("REPAIR_CORPUS_STANDARD_FILE")
+    standard_corpus_path = Path(standard_corpus) if standard_corpus else None
+    oracle_by_cop, oracle_repo_breakdown = load_oracle_context(standard_corpus_path)
     changed_result = run_capture(
         [
             sys.executable,
@@ -214,8 +376,10 @@ def main() -> int:
     args.output.write_text(
         render_packet(
             results,
-            standard_corpus=Path(standard_corpus) if standard_corpus else None,
+            standard_corpus=standard_corpus_path,
             corpus_dir=repo_root / "vendor" / "corpus",
+            oracle_by_cop=oracle_by_cop,
+            oracle_repo_breakdown=oracle_repo_breakdown,
         )
     )
     failed = sum(1 for result in results if isinstance(result["status"], int) and result["status"] != 0)
