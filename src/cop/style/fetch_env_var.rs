@@ -490,14 +490,6 @@ struct FetchEnvVarVisitor<'a> {
 }
 
 impl FetchEnvVarVisitor<'_> {
-    /// Process an if/unless condition: collect suppressed offsets for nodes IN the
-    /// condition, and extract qualifying keys for body suppression.
-    fn process_condition(&mut self, condition: &ruby_prism::Node<'_>) {
-        FetchEnvVar::collect_suppressed_in_condition(condition, &mut self.suppressed_offsets);
-        let keys = FetchEnvVar::extract_condition_keys(self.source.as_bytes(), condition);
-        self.condition_keys.push(keys);
-    }
-
     /// Check if a normalized ENV key matches any key from ancestor if/unless conditions.
     fn key_matches_any_condition(&self, key: &[u8]) -> bool {
         self.condition_keys.iter().any(|keys| keys.contains(key))
@@ -506,14 +498,46 @@ impl FetchEnvVarVisitor<'_> {
 
 impl<'pr> Visit<'pr> for FetchEnvVarVisitor<'_> {
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
-        self.process_condition(&node.predicate());
-        ruby_prism::visit_if_node(self, node);
+        let predicate = node.predicate();
+
+        // First visit the predicate WITHOUT condition_keys pushed,
+        // so ENV[] calls IN the condition are not suppressed by key matching.
+        // The suppressed_offsets handle condition-internal suppression.
+        FetchEnvVar::collect_suppressed_in_condition(&predicate, &mut self.suppressed_offsets);
+        self.visit(&predicate);
+
+        // Then push condition keys and visit body/else.
+        let keys =
+            FetchEnvVar::extract_condition_keys(self.source.as_bytes(), &predicate);
+        self.condition_keys.push(keys);
+
+        if let Some(body) = node.statements() {
+            self.visit(&body.as_node());
+        }
+        if let Some(subsequent) = node.subsequent() {
+            self.visit(&subsequent);
+        }
+
         self.condition_keys.pop();
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
-        self.process_condition(&node.predicate());
-        ruby_prism::visit_unless_node(self, node);
+        let predicate = node.predicate();
+
+        FetchEnvVar::collect_suppressed_in_condition(&predicate, &mut self.suppressed_offsets);
+        self.visit(&predicate);
+
+        let keys =
+            FetchEnvVar::extract_condition_keys(self.source.as_bytes(), &predicate);
+        self.condition_keys.push(keys);
+
+        if let Some(body) = node.statements() {
+            self.visit(&body.as_node());
+        }
+        if let Some(else_clause) = node.else_clause() {
+            self.visit(&else_clause.as_node());
+        }
+
         self.condition_keys.pop();
     }
 
