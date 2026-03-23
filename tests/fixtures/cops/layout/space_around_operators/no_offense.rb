@@ -179,3 +179,34 @@ rewrites = {
   "shouldn\u2019t return something"      => 'does not return something',
   "SHOULDN\u2019T BE true"               => 'IS NOT true',
 }
+
+# Alignment across blank line (RuboCop accepts this)
+expected = posts(:welcome)
+
+tagging  = Tagging.all.merge!(includes: :taggable).find(taggings(:welcome_general).id)
+
+# Alignment when extra space exists and adjacent line has same = alignment
+@integer_message = 12345
+@output  = StringIO.new
+@logger  = Logger.new(@output)
+
+# Alignment with different operators ending with = (e.g., var.foo = a aligned with var.bar != b)
+var.foo       = a
+var.bar      != b
+var.quux     <= c
+var.garply   >= d
+var.corge    == e
+var.fred     += f
+var.baz     === g
+
+# Hash rocket alignment (extra space after => for alignment)
+{
+  1 =>  2,
+  11 => 3
+}
+
+# Operator at start of continuation line (no space before +, -)
+result = first_value +
+  second_value
+x = a ||
+  b

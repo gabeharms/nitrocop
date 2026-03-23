@@ -74,3 +74,13 @@ x  = 1
 # Extra spaces around => (not aligned)
 {'key'  => 'val'}
         ^^ Layout/SpaceAroundOperators: Operator `=>` should be surrounded by a single space.
+
+# Extra space around operator preceded by aligned << inside a string (should not suppress)
+x   += foo
+    ^^ Layout/SpaceAroundOperators: Operator `+=` should be surrounded by a single space.
+'yz << bar'
+
+# Extra space before operator preceded by aligned << inside a string (text scanner)
+x   = foo
+    ^ Layout/SpaceAroundOperators: Operator `=` should be surrounded by a single space.
+'yz = bar'
