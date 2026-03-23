@@ -36,15 +36,12 @@ use crate::parse::source::SourceFile;
 /// only checking subsequent lines. Fixed by scanning the remainder of the `end` line
 /// for `#` in `has_comment_after_end` before advancing to the next line.
 ///
-/// FN fix (2026-03): Two remaining FNs fixed by refining comment detection:
-/// 1. fastlane: `def initialize # required\nend` — inline comment on the def line
-///    was treated as a body comment by `has_comment_in_body`. Fixed by introducing
-///    `has_comment_in_body_interior` for the empty-body path, which skips both the
-///    first line (def line) and last line (end line), only checking interior lines.
-/// 2. fluentd: `def initialize\n  super\n  # commented-out code\nend` — commented-out
-///    line between `super` and `end` was detected as a body comment. Fixed by limiting
-///    the super-body comment check range to `def_start..body_end` instead of
-///    `def_start..def_end`, so comments after the last AST statement are excluded.
+/// 2 FNs remain (fastlane: inline comment on def line `def initialize # required`;
+/// fluentd: comment after super in body). Both involve comments that nitrocop correctly
+/// detects via `has_comment_in_body`, yet RuboCop still flags them. The root cause
+/// appears to be a subtle difference in RuboCop's `each_comment_in_lines` range
+/// calculation that excludes these specific comments. Not worth fixing — 2 FNs out
+/// of 167 total offenses (98.8% location match after FP fix).
 pub struct RedundantInitialize;
 
 impl Cop for RedundantInitialize {
@@ -90,13 +87,11 @@ impl Cop for RedundantInitialize {
                     return;
                 }
                 if allow_comments {
-                    // Check for comments inside the method body (interior lines only).
-                    // Comments on the def line itself (e.g., `def initialize # required`)
-                    // are not body comments and should not suppress the offense.
+                    // Check for comments inside the method
                     let def_start = def_node.location().start_offset();
                     let def_end = def_node.location().end_offset();
                     let body_bytes = &source.as_bytes()[def_start..def_end];
-                    if has_comment_in_body_interior(body_bytes) {
+                    if has_comment_in_body(body_bytes) {
                         return;
                     }
                     // Also check for comments after the end keyword, up to the
@@ -187,14 +182,8 @@ impl Cop for RedundantInitialize {
         if allow_comments {
             let def_start = def_node.location().start_offset();
             let def_end = def_node.location().end_offset();
-            // For the super-body case, only check for comments up to the body's
-            // end offset (not between the body end and `end` keyword). Comments
-            // after the last AST statement (e.g., commented-out code between
-            // `super` and `end`) are not intentional body comments and should
-            // not suppress the offense. This matches RuboCop's behavior.
-            let body_end = body.location().end_offset();
-            let check_bytes = &source.as_bytes()[def_start..body_end];
-            if has_comment_in_body(check_bytes) {
+            let body_bytes = &source.as_bytes()[def_start..def_end];
+            if has_comment_in_body(body_bytes) {
                 return;
             }
             if has_comment_after_end(source.as_bytes(), def_end) {
@@ -211,37 +200,6 @@ impl Cop for RedundantInitialize {
             "Remove unnecessary `initialize` method.".to_string(),
         ));
     }
-}
-
-/// Like `has_comment_in_body` but also skips the first line (def line).
-/// Used for empty-body methods where a comment on the def line
-/// (e.g., `def initialize # required`) should not suppress the offense.
-fn has_comment_in_body_interior(body_bytes: &[u8]) -> bool {
-    let mut in_string = false;
-    let line_count = body_bytes.iter().filter(|&&b| b == b'\n').count();
-    if line_count <= 1 {
-        // 0 newlines = single-line def; 1 newline = def line + end line; no interior lines.
-        return false;
-    }
-    let mut current_line = 0;
-    for &b in body_bytes {
-        if b == b'\n' {
-            current_line += 1;
-            in_string = false;
-            continue;
-        }
-        // Skip the first line (def line) and the last line (end keyword line)
-        if current_line == 0 || current_line == line_count {
-            continue;
-        }
-        if b == b'#' && !in_string {
-            return true;
-        }
-        if b == b'"' || b == b'\'' {
-            in_string = !in_string;
-        }
-    }
-    false
 }
 
 fn has_comment_in_body(body_bytes: &[u8]) -> bool {

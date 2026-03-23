@@ -4,23 +4,16 @@ use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
 
 /// Corpus investigation (2026-03-17):
-/// - FP=5 (fixed): Previously treated bare `proc` blocks as chained sends, suppressing
-///   the offense. But RuboCop's `chained_send?` pattern `(send !nil? ...)` requires a
-///   non-nil receiver. Bare `proc` has no receiver, so RuboCop DOES flag `return nil`
-///   inside it. `Proc.new` has receiver `Proc`, so it IS suppressed (chained send).
-///   Fix: removed special `is_proc` case; let normal block handling determine
-///   `is_chained_send` based on receiver presence.
-/// - FN=2 (fixed): `return nil` inside `lambda do...end` (method-style lambda, not stabby `-> {}`).
+/// - FP=5: All in fastlane, `return nil` inside `proc do |result| ... end` blocks.
+///   Root cause: proc creates non-local exit context (return exits the enclosing method),
+///   so RuboCop suppresses the offense (defers to Lint/NonLocalExitFromIterator).
+///   Fix: detect `proc` and `Proc.new` calls and treat their blocks as iterator blocks.
+/// - FN=2: `return nil` inside `lambda do...end` (method-style lambda, not stabby `-> {}`).
 ///   Root cause: Prism parses `lambda do...end` as CallNode (not LambdaNode). The
 ///   visit_call_node pushed a block context but didn't reset the block stack like
 ///   visit_lambda_node does for stabby lambdas. When nested inside an outer iterator
 ///   block, the outer block remained on the stack and suppressed the offense.
 ///   Fix: detect `lambda` calls and save/restore block stack (same as visit_lambda_node).
-///
-/// Corpus investigation (2026-03-23):
-/// - FN=6: All in bare `proc do |result| ... end` blocks (fastlane, i18n-tasks, newrelic).
-///   Same root cause as the earlier FP=5 fix above — the is_proc special case was
-///   incorrectly suppressing offenses for bare `proc` (no receiver).
 pub struct ReturnNil;
 
 impl Cop for ReturnNil {
@@ -157,6 +150,34 @@ impl<'pr> Visit<'pr> for ReturnNilVisitor<'_, '_> {
                         self.visit(&body);
                     }
                     self.block_stack = saved;
+                    return;
+                }
+
+                // `proc do...end` and `Proc.new do...end` create non-local exit
+                // contexts — `return` inside a proc returns from the enclosing
+                // method. Treat as an iterator block to suppress the offense,
+                // matching RuboCop's behavior which defers to
+                // Lint/NonLocalExitFromIterator.
+                let is_proc = (method_name == b"proc" && node.receiver().is_none())
+                    || (method_name == b"new"
+                        && node.receiver().is_some_and(|r| {
+                            r.as_constant_read_node()
+                                .is_some_and(|c| c.name().as_slice() == b"Proc")
+                                || r.as_constant_path_node().is_some_and(|cp| {
+                                    cp.parent().is_none()
+                                        && cp.name().is_some_and(|n| n.as_slice() == b"Proc")
+                                })
+                        }));
+                if is_proc {
+                    self.block_stack.push(BlockContext {
+                        has_args: true,
+                        is_chained_send: true,
+                        is_define_method: false,
+                    });
+                    if let Some(body) = block_node.body() {
+                        self.visit(&body);
+                    }
+                    self.block_stack.pop();
                     return;
                 }
 

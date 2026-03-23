@@ -21,8 +21,3 @@ x.to_s
 # Implicit concatenation with multiple interpolated parts
 "#{AGENT_INSTRUCTION} Please rephrase the following response. " \
   "#{LANGUAGE_INSTRUCTION}"
-
-# Shorthand variable interpolation with other content — not redundant
-"hello #@foo"
-"prefix #@@bar suffix"
-"#$baz world"

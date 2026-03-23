@@ -34,15 +34,3 @@ outer_left_x = 48.24
 outer_right_x = 547.04
 lines.select { |it| it[:from][:x] == outer_left_x || it[:from][:x] == outer_right_x }
                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/MultipleComparison: Avoid comparing a variable with multiple items in a conditional, use `Array#include?` instead.
-
-# Mixed-variable || chain: first variable has enough comparisons, then a different variable appears
-next if language == '.' || language == '..' || language == 'Binary' || File.basename(language) == 'ace_modes.json'
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/MultipleComparison: Avoid comparing a variable with multiple items in a conditional, use `Array#include?` instead.
-
-# Mixed-variable || chain: call as variable with different method at the end
-if env['params'][@key].downcase == 'true' || env['params'][@key].downcase == 't' || env['params'][@key].to_i == 1
-   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/MultipleComparison: Avoid comparing a variable with multiple items in a conditional, use `Array#include?` instead.
-
-# Two comparisons of same variable then a different variable (2 >= threshold)
-return 'trataPeticion' if three_ds_info == 'AuthenticationData' || three_ds_info == 'ChallengeResponse' || data[:sca_exemption] == 'MIT'
-                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/MultipleComparison: Avoid comparing a variable with multiple items in a conditional, use `Array#include?` instead.

@@ -6,12 +6,3 @@ unless foo then baz else bar end
 
 if cond then run else dont end
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/OneLineConditional: Favor the ternary operator (`?:`) over single-line `if/then/else/end` constructs.
-
-if cond; run else dont end
-^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/OneLineConditional: Favor the ternary operator (`?:`) over single-line `if/then/else/end` constructs.
-
-unless cond; run else dont end
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/OneLineConditional: Favor the ternary operator (`?:`) over single-line `unless/then/else/end` constructs.
-
-if cond then else dont end
-^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/OneLineConditional: Favor the ternary operator (`?:`) over single-line `if/then/else/end` constructs.

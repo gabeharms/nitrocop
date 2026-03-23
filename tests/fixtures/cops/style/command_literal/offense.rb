@@ -6,6 +6,3 @@ result = %x(ls -la)
 
 output = %x(echo hello)
          ^^^^^^^^^^^^^^ Style/CommandLiteral: Use backticks around command string.
-
-x = `echo \`ls\``
-    ^^^^^^^^^^^^^^ Style/CommandLiteral: Use `%x` around command string.

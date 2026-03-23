@@ -12,9 +12,6 @@ use crate::parse::source::SourceFile;
 ///   is enabled (`check_for_string?` calls `frozen_string_literals_enabled?`).
 ///   An earlier attempt removed this check, causing +56 FP on multi_json smoke test.
 ///   The check was restored.
-/// - FN=2 root cause: only checked line 1 for the frozen_string_literal magic comment,
-///   but in rouge repo the comment is on line 2 (after `# -*- coding: utf-8 -*- #`).
-///   Fixed by scanning the first 3 lines (shebang, encoding, magic comment).
 pub struct RedundantFetchBlock;
 
 impl RedundantFetchBlock {
@@ -66,19 +63,10 @@ impl Cop for RedundantFetchBlock {
     ) {
         let safe_for_constants = config.get_bool("SafeForConstants", false);
         // RuboCop only flags string defaults when frozen_string_literal: true
-        // The magic comment can appear on lines 1-3 (after shebang and/or encoding)
-        let frozen_string_literal = source.lines().take(3).any(|line| {
-            let s = match std::str::from_utf8(line) {
-                Ok(s) => s.trim(),
-                Err(_) => return false,
-            };
-            if let Some(rest) = s.strip_prefix('#') {
-                let rest = rest.trim_start();
-                if let Some(value) = rest.strip_prefix("frozen_string_literal:") {
-                    return value.trim() == "true";
-                }
-            }
-            false
+        let frozen_string_literal = source.lines().next().is_some_and(|line| {
+            std::str::from_utf8(line)
+                .unwrap_or("")
+                .contains("frozen_string_literal: true")
         });
 
         let call = match node.as_call_node() {
@@ -202,32 +190,5 @@ impl Cop for RedundantFetchBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::run_cop_full;
     crate::cop_fixture_tests!(RedundantFetchBlock, "cops/style/redundant_fetch_block");
-
-    #[test]
-    fn frozen_string_literal_on_line2_after_encoding() {
-        // frozen_string_literal: true on line 2 (after encoding comment) should still flag string blocks
-        let source =
-            b"# -*- coding: utf-8 -*- #\n# frozen_string_literal: true\n\nopts.fetch(:prefix) { 'RG' }\n";
-        let diags = run_cop_full(&RedundantFetchBlock, source);
-        assert_eq!(
-            diags.len(),
-            1,
-            "Should flag string block when frozen_string_literal is on line 2"
-        );
-    }
-
-    #[test]
-    fn frozen_string_literal_on_line2_after_shebang() {
-        // frozen_string_literal: true on line 2 (after shebang) should still flag string blocks
-        let source =
-            b"#!/usr/bin/env ruby\n# frozen_string_literal: true\n\nopts.fetch(:prefix) { 'RG' }\n";
-        let diags = run_cop_full(&RedundantFetchBlock, source);
-        assert_eq!(
-            diags.len(),
-            1,
-            "Should flag string block when frozen_string_literal is on line 2 after shebang"
-        );
-    }
 }

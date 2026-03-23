@@ -3,12 +3,6 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Style/StringMethods: checks if configured preferred methods are used over non-preferred.
-///
-/// Default mapping: `intern` -> `to_sym`. RuboCop fires on ALL calls to the
-/// method name, including receiver-less calls like `intern(value)` (implicit self).
-/// Previously nitrocop required a receiver, causing 6 FNs on rails and rake repos
-/// where `intern(...)` was called without an explicit receiver.
 pub struct StringMethods;
 
 impl Cop for StringMethods {
@@ -39,6 +33,11 @@ impl Cop for StringMethods {
             Some(c) => c,
             None => return,
         };
+
+        // Must have a receiver
+        if call.receiver().is_none() {
+            return;
+        }
 
         let name = call.name().as_slice();
         let name_str = match std::str::from_utf8(name) {

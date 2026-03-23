@@ -48,17 +48,36 @@ def nested_example
   end
 end
 
-# Proc.new has a receiver, so chained_send is true — suppressed
+# return nil inside proc blocks should NOT be flagged
+# proc creates non-local exit context — return exits the enclosing method
+def method_with_proc
+  handler = proc do |result|
+    return nil if result.nil?
+  end
+end
+
+# Proc.new also creates non-local exit context
 def method_with_proc_new
   handler = Proc.new do |result|
     return nil unless result.valid?
   end
 end
 
-# ::Proc.new (qualified constant path) also has a receiver — suppressed
+# ::Proc.new (qualified constant path) also creates non-local exit context
 def method_with_qualified_proc_new
   handler = ::Proc.new do |result|
     return nil if result.error?
   end
 end
 
+# proc inside hash value inside method call
+def method_with_proc_in_hash
+  SomeApi.run(
+    handlers: {
+      '*' => proc do |result|
+        log("error: #{result[:status]}")
+        return nil
+      end
+    }
+  )
+end

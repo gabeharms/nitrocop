@@ -26,7 +26,7 @@ impl Cop for NonNilCheck {
             diagnostics: Vec::new(),
             include_semantic_changes,
             in_predicate_method: false,
-            predicate_last_stmt_range: None,
+            predicate_last_stmt_offset: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -39,8 +39,8 @@ struct NonNilCheckVisitor<'a, 'src> {
     diagnostics: Vec<Diagnostic>,
     include_semantic_changes: bool,
     in_predicate_method: bool,
-    /// Start and end offsets of the last statement in the current predicate method body.
-    predicate_last_stmt_range: Option<(usize, usize)>,
+    /// Start offset of the last statement in the current predicate method body.
+    predicate_last_stmt_offset: Option<usize>,
 }
 
 impl<'pr> Visit<'pr> for NonNilCheckVisitor<'_, '_> {
@@ -49,18 +49,16 @@ impl<'pr> Visit<'pr> for NonNilCheckVisitor<'_, '_> {
         let is_predicate = name.ends_with(b"?");
 
         let prev_in_predicate = self.in_predicate_method;
-        let prev_last_range = self.predicate_last_stmt_range;
+        let prev_last_offset = self.predicate_last_stmt_offset;
 
         self.in_predicate_method = is_predicate;
-        self.predicate_last_stmt_range = if is_predicate {
+        self.predicate_last_stmt_offset = if is_predicate {
             node.body().and_then(|body| {
                 if let Some(stmts) = body.as_statements_node() {
                     let body_stmts: Vec<_> = stmts.body().iter().collect();
-                    body_stmts
-                        .last()
-                        .map(|n| (n.location().start_offset(), n.location().end_offset()))
+                    body_stmts.last().map(|n| n.location().start_offset())
                 } else {
-                    Some((body.location().start_offset(), body.location().end_offset()))
+                    Some(body.location().start_offset())
                 }
             })
         } else {
@@ -70,7 +68,7 @@ impl<'pr> Visit<'pr> for NonNilCheckVisitor<'_, '_> {
         ruby_prism::visit_def_node(self, node);
 
         self.in_predicate_method = prev_in_predicate;
-        self.predicate_last_stmt_range = prev_last_range;
+        self.predicate_last_stmt_offset = prev_last_offset;
     }
 
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
@@ -85,13 +83,10 @@ impl<'pr> Visit<'pr> for NonNilCheckVisitor<'_, '_> {
                     && node.receiver().is_some()
                 {
                     // RuboCop skips the last expression of predicate methods (def foo?)
-                    // Only skip when the != nil node IS the last statement itself,
-                    // not when it's a subexpression (e.g., `x != nil && y`).
-                    let loc = node.location();
                     let is_predicate_return = self.in_predicate_method
-                        && self.predicate_last_stmt_range
-                            == Some((loc.start_offset(), loc.end_offset()));
+                        && self.predicate_last_stmt_offset == Some(node.location().start_offset());
                     if !is_predicate_return {
+                        let loc = node.location();
                         let (line, column) = self.source.offset_to_line_col(loc.start_offset());
                         if self.include_semantic_changes {
                             self.diagnostics.push(self.cop.diagnostic(
@@ -126,11 +121,8 @@ impl<'pr> Visit<'pr> for NonNilCheckVisitor<'_, '_> {
                         && inner_call.receiver().is_some()
                     {
                         let is_predicate_return = self.in_predicate_method
-                            && self.predicate_last_stmt_range
-                                == Some((
-                                    node.location().start_offset(),
-                                    node.location().end_offset(),
-                                ));
+                            && self.predicate_last_stmt_offset
+                                == Some(node.location().start_offset());
                         if !is_predicate_return {
                             let loc = node.location();
                             let (line, column) = self.source.offset_to_line_col(loc.start_offset());

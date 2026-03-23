@@ -13,15 +13,3 @@
 { "role": 1, "color": 2 }
   ^^^^^^^ Style/QuotedSymbols: Prefer single-quoted symbols when you don't need string interpolation or special symbols.
              ^^^^^^^^ Style/QuotedSymbols: Prefer single-quoted symbols when you don't need string interpolation or special symbols.
-
-:"$\""
-^^^^^^ Style/QuotedSymbols: Prefer single-quoted symbols when you don't need string interpolation or special symbols.
-
-:"$\\"
-^^^^^^ Style/QuotedSymbols: Prefer single-quoted symbols when you don't need string interpolation or special symbols.
-
-:"\""
-^^^^^ Style/QuotedSymbols: Prefer single-quoted symbols when you don't need string interpolation or special symbols.
-
-:"I\"like\"quotes"
-^^^^^^^^^^^^^^^^^^ Style/QuotedSymbols: Prefer single-quoted symbols when you don't need string interpolation or special symbols.

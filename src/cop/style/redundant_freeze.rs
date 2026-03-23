@@ -7,17 +7,6 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Style/RedundantFreeze
-///
-/// FN fixes (13 FN -> 0 FN):
-/// 1. Hyphenated magic comment: Ruby accepts both `# frozen_string_literal: true`
-///    and `# frozen-string-literal: true`, but the cop only checked underscores.
-///    Accounted for 5 FNs in rack-test and others.
-/// 2. Backslash-continuation strings: `'hello ' \ 'world'.freeze` is parsed by
-///    Prism as an InterpolatedStringNode with StringNode children (no actual
-///    interpolation). These are still frozen under `frozen_string_literal: true`
-///    but were not recognized by `is_plain_string`. Accounted for remaining FNs
-///    in scss-lint and other repos.
 pub struct RedundantFreeze;
 
 impl RedundantFreeze {
@@ -116,24 +105,8 @@ impl RedundantFreeze {
     }
 
     /// Check if a node is a plain (non-interpolated) string literal.
-    /// Also matches implicit string concatenation (backslash continuation)
-    /// where all parts are plain strings (no interpolation).
     fn is_plain_string(node: &ruby_prism::Node<'_>) -> bool {
-        if node.as_string_node().is_some() {
-            return true;
-        }
-        // InterpolatedStringNode (dstr) with only StringNode children is an
-        // implicit concatenation of plain strings (backslash continuation).
-        // This is still frozen under `frozen_string_literal: true`.
-        if let Some(interp) = node.as_interpolated_string_node() {
-            // Only treat as plain string if it has no interpolation parts
-            // (all children are StringNode, no EmbeddedStatementsNode etc.)
-            return interp
-                .parts()
-                .iter()
-                .all(|part| part.as_string_node().is_some());
-        }
-        false
+        node.as_string_node().is_some()
     }
 
     /// Check if the source file has `# frozen_string_literal: true` in the
@@ -153,12 +126,7 @@ impl RedundantFreeze {
             }
             if let Some(rest) = s.strip_prefix('#') {
                 let rest = rest.trim_start();
-                // Ruby accepts both underscores and hyphens in the magic comment:
-                // `# frozen_string_literal: true` and `# frozen-string-literal: true`
                 if let Some(value) = rest.strip_prefix("frozen_string_literal:") {
-                    return value.trim() == "true";
-                }
-                if let Some(value) = rest.strip_prefix("frozen-string-literal:") {
                     return value.trim() == "true";
                 }
             }
@@ -411,49 +379,6 @@ mod tests {
             diags.len(),
             1,
             "Expected 1 offense with magic comment, got {}: {:?}",
-            diags.len(),
-            diags
-        );
-    }
-
-    #[test]
-    fn hyphenated_frozen_string_literal_comment() {
-        // Ruby accepts both underscores and hyphens in magic comments
-        let source = b"# frozen-string-literal: true\nCONST = 'hello'.freeze\n";
-        let diags = crate::testutil::run_cop_full(&RedundantFreeze, source);
-        assert_eq!(
-            diags.len(),
-            1,
-            "Expected 1 offense with hyphenated magic comment, got {}: {:?}",
-            diags.len(),
-            diags
-        );
-    }
-
-    #[test]
-    fn backslash_continuation_string_flagged_with_frozen_literal() {
-        // Backslash continuation of plain strings is still a frozen string literal
-        let source = b"# frozen_string_literal: true\nMSG = 'hello ' \\\n      'world'.freeze\n";
-        let diags = crate::testutil::run_cop_full(&RedundantFreeze, source);
-        assert_eq!(
-            diags.len(),
-            1,
-            "Expected 1 offense for backslash-continuation string, got {}: {:?}",
-            diags.len(),
-            diags
-        );
-    }
-
-    #[test]
-    fn backslash_continuation_with_interpolation_not_flagged() {
-        // Backslash continuation with interpolation is mutable
-        let source =
-            b"# frozen_string_literal: true\nMSG = \"hello #{name} \" \\\n      'world'.freeze\n";
-        let diags = crate::testutil::run_cop_full(&RedundantFreeze, source);
-        assert_eq!(
-            diags.len(),
-            0,
-            "Expected 0 offenses for interpolated backslash-continuation, got {}: {:?}",
             diags.len(),
             diags
         );

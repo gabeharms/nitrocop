@@ -56,16 +56,3 @@ def wrap2
     yield opts
   end
 end
-
-# Lambda with non-yield body should not be flagged
-def t
-  metric.time(name, -> { do_something })
-end
-
-# Lambda with yield outside method def should not be flagged
--> { yield }.call
-
-# Lambda with args that don't match yield should not be flagged
-def u
-  metric.time(name, ->(x) { yield })
-end

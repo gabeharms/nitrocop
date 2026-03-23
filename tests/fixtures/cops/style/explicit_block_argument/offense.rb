@@ -22,18 +22,3 @@ def q
   super { yield }
   ^^^^^^^^^^^^^^^^ Style/ExplicitBlockArgument: Consider using explicit block argument in the surrounding method's signature over `yield`.
 end
-
-def r
-  metric.time(name, attrs, -> { yield })
-                           ^^^^^^^^^^ Style/ExplicitBlockArgument: Consider using explicit block argument in the surrounding method's signature over `yield`.
-end
-
-def s
-  -> { yield }.call
-  ^^^^^^^^^^^^ Style/ExplicitBlockArgument: Consider using explicit block argument in the surrounding method's signature over `yield`.
-end
-
-def t(name, *args)
-  metric.time(name, -> { yield })
-                    ^^^^^^^^^^^^ Style/ExplicitBlockArgument: Consider using explicit block argument in the surrounding method's signature over `yield`.
-end

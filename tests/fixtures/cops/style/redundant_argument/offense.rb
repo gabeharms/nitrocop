@@ -32,13 +32,3 @@ str.to_i(10)
 
 arr.sum(0)
        ^^^ Style/RedundantArgument: Argument `0` is redundant because it is implied by default.
-
-# Block with redundant argument is still redundant
-arr.sum(0) { |x| x * 2 }
-       ^^^ Style/RedundantArgument: Argument `0` is redundant because it is implied by default.
-
-donations.sum(0) { |d| d[:amount] }
-             ^^^ Style/RedundantArgument: Argument `0` is redundant because it is implied by default.
-
-"chunky bacon".split(" ") { |s| s.capitalize }
-                    ^^^^^ Style/RedundantArgument: Argument `" "` is redundant because it is implied by default.

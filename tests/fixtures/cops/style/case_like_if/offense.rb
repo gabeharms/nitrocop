@@ -97,19 +97,3 @@ elsif data['status'] == 'pending'
 else
   default_action
 end
-
-# Two elsif + else with ternary in else body (ternary counts as branch in RuboCop)
-if record['type'] == 'phone'
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/CaseLikeIf: Convert `if-elsif` to `case-when`.
-elsif record['type'] == 'email'
-else
-  record.is_a?(String) ? record.downcase : record
-end
-
-# Mix of == and =~ with OR in branch
-if name == "a"
-^^^^^^^^^^^^^^ Style/CaseLikeIf: Convert `if-elsif` to `case-when`.
-elsif name =~ /\Aorder:\w+\z/i
-elsif name =~ /\Ain:title\z/i || name == "b"
-elsif name =~ /\Ain:all\z/i
-end

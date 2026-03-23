@@ -15,6 +15,3 @@ foo do |item|
   puts _1_foo
 end
 bar { |x| x.to_s + "_1" }
--> { _1.to_s }
--> { _1 + _2 }
-handler = -> { puts _1 }

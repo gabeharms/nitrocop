@@ -10,7 +10,3 @@ arr.shuffle.slice(2)
 arr.shuffle.slice(foo)
 arr.shuffle[2]
 arr.shuffle[foo]
-arr.shuffle[1, 3]
-arr.shuffle[1..3]
-arr.shuffle[foo, bar]
-arr.shuffle[0, bar]

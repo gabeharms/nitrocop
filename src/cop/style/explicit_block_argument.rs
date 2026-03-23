@@ -28,11 +28,9 @@ use crate::parse::source::SourceFile;
 ///   which matched (None, None) in the zip comparison.
 /// - Fixed FPs on blocks with `&b` parameter — `extract_block_param_names`
 ///   now checks for block, rest, and keyword_rest params and bails out.
-/// - Added support for `-> { yield }` lambdas (LambdaNode) containing a
-///   single bare yield. These appear as arguments (`foo(-> { yield })`) or
-///   as receivers (`-> { yield }.call`). Only zero-arg lambdas with zero-arg
-///   yield are matched, since lambdas with params forwarded to yield would
-///   use the block form instead.
+/// - Remaining FNs (2): `->{ yield }.call` — lambda containing yield. This
+///   is a LambdaNode as receiver of `.call`, not a block attached to a call.
+///   Would require visiting LambdaNode bodies, which is a different pattern.
 pub struct ExplicitBlockArgument;
 
 impl Cop for ExplicitBlockArgument {
@@ -67,67 +65,6 @@ struct ExplicitBlockArgumentVisitor<'a> {
 }
 
 impl<'a> ExplicitBlockArgumentVisitor<'a> {
-    /// Check if a lambda node is `-> { yield }` (zero-arg lambda with bare yield).
-    fn check_lambda(&mut self, node: &ruby_prism::LambdaNode<'_>) {
-        if self.def_depth == 0 {
-            return;
-        }
-
-        let body = match node.body() {
-            Some(b) => b,
-            None => return,
-        };
-
-        let stmts = match body.as_statements_node() {
-            Some(s) => s,
-            None => return,
-        };
-
-        let body_nodes: Vec<_> = stmts.body().into_iter().collect();
-        if body_nodes.len() != 1 {
-            return;
-        }
-
-        let yield_node = match body_nodes[0].as_yield_node() {
-            Some(y) => y,
-            None => return,
-        };
-
-        // Lambda must have no parameters
-        if let Some(params) = node.parameters() {
-            // If it has a BlockParametersNode with actual parameters, skip
-            if let Some(block_params) = params.as_block_parameters_node() {
-                if let Some(p) = block_params.parameters() {
-                    if !p.requireds().is_empty()
-                        || !p.optionals().is_empty()
-                        || p.rest().is_some()
-                        || !p.keywords().is_empty()
-                        || p.keyword_rest().is_some()
-                        || p.block().is_some()
-                    {
-                        return;
-                    }
-                }
-            } else if params.as_numbered_parameters_node().is_some() {
-                return;
-            }
-        }
-
-        // Yield must have no arguments
-        if yield_node.arguments().is_some() {
-            return;
-        }
-
-        let start = node.location().start_offset();
-        let (line, column) = self.source.offset_to_line_col(start);
-        self.diagnostics.push(self.cop.diagnostic(
-            self.source,
-            line,
-            column,
-            "Consider using explicit block argument in the surrounding method's signature over `yield`.".to_string(),
-        ));
-    }
-
     /// Check if a call node has a yielding block: `something { |args| yield args }`
     /// where the block body is a single yield statement and args match.
     /// `call_start` is the start offset of the full expression (call + block).
@@ -278,11 +215,6 @@ impl<'a, 'pr> Visit<'pr> for ExplicitBlockArgumentVisitor<'a> {
             self.check_call_with_block(&block, node.location().start_offset());
         }
         ruby_prism::visit_forwarding_super_node(self, node);
-    }
-
-    fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
-        self.check_lambda(node);
-        ruby_prism::visit_lambda_node(self, node);
     }
 
     fn visit_super_node(&mut self, node: &ruby_prism::SuperNode<'pr>) {

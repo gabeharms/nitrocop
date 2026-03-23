@@ -69,33 +69,6 @@ def with_shorthand_keywords(type:, hash:)
   ^^^^^^^^^^^^^^^^^^^^ Style/SuperArguments: Call `super` without arguments and parentheses when the signature is identical.
 end
 
-# Anonymous block forwarding: def foo(xml, &) / super(xml, &)
-def parse(xml, &)
-  super(xml, &)
-  ^^^^^^^^^^^^^^ Style/SuperArguments: Call `super` without arguments and parentheses when the signature is identical.
-end
-
-# Anonymous block with block literal override: def foo(name, *args, &) / super(name, *args) { ... }
-def namespace(name, *args, &)
-  super(name, *args) do
-  ^^^^^^^^^^^^^^^^^^^ Style/SuperArguments: Call `super` without arguments and parentheses when all positional and keyword arguments are forwarded.
-    instance_eval(&)
-    execute_patches_for(name)
-  end
-end
-
-# Anonymous keyword rest forwarding: def foo(io, delete: 1, **) / super(io, delete:, **)
-def upload(io, delete: false, **)
-  super(io, delete:, **)
-  ^^^^^^^^^^^^^^^^^^^^^^ Style/SuperArguments: Call `super` without arguments and parentheses when the signature is identical.
-end
-
-# Anonymous rest forwarding: def foo(name, *) / super(name, *)
-def process(name, *)
-  super(name, *)
-  ^^^^^^^^^^^^^^ Style/SuperArguments: Call `super` without arguments and parentheses when the signature is identical.
-end
-
 # Nested def — inner super should flag for inner def
 def outer(a)
   def inner(b:)

@@ -1,18 +1,11 @@
 use crate::cop::node_type::{
     CALL_NODE, CLASS_VARIABLE_AND_WRITE_NODE, CLASS_VARIABLE_OPERATOR_WRITE_NODE,
-    CLASS_VARIABLE_OR_WRITE_NODE, CLASS_VARIABLE_TARGET_NODE, CLASS_VARIABLE_WRITE_NODE,
+    CLASS_VARIABLE_OR_WRITE_NODE, CLASS_VARIABLE_WRITE_NODE,
 };
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Checks for uses of class variables (`@@var`).
-///
-/// ### FN root cause (16 total)
-/// `ClassVariableTargetNode` (from `MultiWriteNode` / parallel assignment like
-/// `@@a, @@b = 1, 2`) was not handled. Added to `interested_node_types` and
-/// `check_node`. Top FN repos: xiki (9), natalie (3), devise (1),
-/// eventmachine (1), treat (1), rails (1).
 pub struct ClassVars;
 
 impl Cop for ClassVars {
@@ -26,7 +19,6 @@ impl Cop for ClassVars {
             CLASS_VARIABLE_AND_WRITE_NODE,
             CLASS_VARIABLE_OPERATOR_WRITE_NODE,
             CLASS_VARIABLE_OR_WRITE_NODE,
-            CLASS_VARIABLE_TARGET_NODE,
             CLASS_VARIABLE_WRITE_NODE,
         ]
     }
@@ -87,20 +79,6 @@ impl Cop for ClassVars {
             let name = cvasgn.name();
             let name_str = String::from_utf8_lossy(name.as_slice());
             let loc = cvasgn.name_loc();
-            let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
-                source,
-                line,
-                column,
-                format!("Replace class var {} with a class instance var.", name_str),
-            ));
-        }
-
-        // Check class variable target in multi-assignment: @@foo, @@bar = 1, 2
-        if let Some(cvt) = node.as_class_variable_target_node() {
-            let name = cvt.name();
-            let name_str = String::from_utf8_lossy(name.as_slice());
-            let loc = cvt.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
             diagnostics.push(self.diagnostic(
                 source,

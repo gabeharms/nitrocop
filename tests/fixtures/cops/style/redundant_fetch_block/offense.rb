@@ -11,9 +11,3 @@ hash.fetch(:key) { 'default' }
 # String default with frozen_string_literal: true is flagged
 val = hash.fetch(:key) { 'fallback' }
            ^^^^^^^^^^^^^^^^^^^^^^^^^ Style/RedundantFetchBlock: Use `fetch(:key, 'fallback')` instead of `fetch(:key) { 'fallback' }`.
-
-hash.fetch(:key) { true }
-     ^^^^^^^^^^^^^^^^^^^^ Style/RedundantFetchBlock: Use `fetch(:key, true)` instead of `fetch(:key) { true }`.
-
-hash.fetch(:key) { nil }
-     ^^^^^^^^^^^^^^^^^^^ Style/RedundantFetchBlock: Use `fetch(:key, nil)` instead of `fetch(:key) { nil }`.

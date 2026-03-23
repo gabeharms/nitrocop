@@ -58,18 +58,12 @@ enum DefParam {
     Positional(Vec<u8>),
     /// Rest param: `*args`
     Rest(Vec<u8>),
-    /// Anonymous rest param: `*`
-    AnonymousRest,
     /// Required or optional keyword param: `name:` or `name: default`
     Keyword(Vec<u8>),
     /// Keyword rest param: `**kwargs`
     KeywordRest(Vec<u8>),
-    /// Anonymous keyword rest param: `**`
-    AnonymousKeywordRest,
     /// Block param: `&block`
     Block(Vec<u8>),
-    /// Anonymous block param: `&`
-    AnonymousBlock,
     /// Forwarding parameter: `...`
     Forwarding,
 }
@@ -98,8 +92,6 @@ fn extract_def_params(params: &ruby_prism::ParametersNode<'_>) -> Vec<DefParam> 
         if let Some(rp) = rest.as_rest_parameter_node() {
             if let Some(name) = rp.name() {
                 result.push(DefParam::Rest(name.as_slice().to_vec()));
-            } else {
-                result.push(DefParam::AnonymousRest);
             }
         }
     }
@@ -130,16 +122,12 @@ fn extract_def_params(params: &ruby_prism::ParametersNode<'_>) -> Vec<DefParam> 
         } else if let Some(kwr) = kw_rest.as_keyword_rest_parameter_node() {
             if let Some(name) = kwr.name() {
                 result.push(DefParam::KeywordRest(name.as_slice().to_vec()));
-            } else {
-                result.push(DefParam::AnonymousKeywordRest);
             }
         }
     }
     if let Some(block) = params.block() {
         if let Some(name) = block.name() {
             result.push(DefParam::Block(name.as_slice().to_vec()));
-        } else {
-            result.push(DefParam::AnonymousBlock);
         }
     }
     result
@@ -164,13 +152,6 @@ fn super_arg_matches_def_param(arg: &ruby_prism::Node<'_>, def_param: &DefParam)
             }
             false
         }
-        DefParam::AnonymousRest => {
-            // Anonymous rest forwarding: `*` in super matches `*` in def
-            if let Some(splat) = arg.as_splat_node() {
-                return splat.expression().is_none();
-            }
-            false
-        }
         DefParam::Keyword(name) => {
             if let Some(assoc) = arg.as_assoc_node() {
                 return keyword_pair_matches(&assoc, name);
@@ -187,13 +168,6 @@ fn super_arg_matches_def_param(arg: &ruby_prism::Node<'_>, def_param: &DefParam)
             }
             false
         }
-        DefParam::AnonymousKeywordRest => {
-            // Anonymous keyword rest forwarding: `**` in super matches `**` in def
-            if let Some(splat) = arg.as_assoc_splat_node() {
-                return splat.value().is_none();
-            }
-            false
-        }
         DefParam::Block(name) => {
             if let Some(block_arg) = arg.as_block_argument_node() {
                 if let Some(expr) = block_arg.expression() {
@@ -201,13 +175,6 @@ fn super_arg_matches_def_param(arg: &ruby_prism::Node<'_>, def_param: &DefParam)
                         return lv.name().as_slice() == name.as_slice();
                     }
                 }
-            }
-            false
-        }
-        DefParam::AnonymousBlock => {
-            // Anonymous block forwarding: `&` in super matches `&` in def
-            if let Some(block_arg) = arg.as_block_argument_node() {
-                return block_arg.expression().is_none();
             }
             false
         }
@@ -288,7 +255,7 @@ impl<'pr> Visit<'pr> for SuperChecker<'_> {
         let effective_def_params: Vec<&DefParam> = if has_block_literal {
             self.def_params
                 .iter()
-                .filter(|p| !matches!(p, DefParam::Block(_) | DefParam::AnonymousBlock))
+                .filter(|p| !matches!(p, DefParam::Block(_)))
                 .collect()
         } else {
             self.def_params.iter().collect()
@@ -324,12 +291,12 @@ impl<'pr> Visit<'pr> for SuperChecker<'_> {
                 let non_block_params: Vec<&DefParam> = self
                     .def_params
                     .iter()
-                    .filter(|p| !matches!(p, DefParam::Block(_) | DefParam::AnonymousBlock))
+                    .filter(|p| !matches!(p, DefParam::Block(_)))
                     .collect();
                 let has_block_param = self
                     .def_params
                     .iter()
-                    .any(|p| matches!(p, DefParam::Block(_) | DefParam::AnonymousBlock));
+                    .any(|p| matches!(p, DefParam::Block(_)));
                 if has_block_param
                     && flat_args.len() == non_block_params.len()
                     && flat_args
@@ -358,7 +325,7 @@ impl<'pr> Visit<'pr> for SuperChecker<'_> {
                 && self
                     .def_params
                     .iter()
-                    .any(|p| matches!(p, DefParam::Block(_) | DefParam::AnonymousBlock));
+                    .any(|p| matches!(p, DefParam::Block(_)));
             let message = if has_unreplaced_block {
                 "Call `super` without arguments and parentheses when all positional and keyword arguments are forwarded."
             } else {
@@ -433,6 +400,34 @@ fn has_param_reassignment(body: &ruby_prism::Node<'_>, name: &[u8]) -> bool {
 
 impl<'pr> Visit<'pr> for SuperArgumentsVisitor<'_> {
     fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+        // If the method has an anonymous keyword rest (**), the super call
+        // has different semantics — don't flag it.
+        if let Some(params) = node.parameters() {
+            if let Some(kw_rest) = params.keyword_rest() {
+                if kw_rest
+                    .as_keyword_rest_parameter_node()
+                    .is_some_and(|k| k.name().is_none())
+                {
+                    return;
+                }
+            }
+            // Also skip anonymous rest (*) — Ruby 3.2+
+            if let Some(rest) = params.rest() {
+                if rest
+                    .as_rest_parameter_node()
+                    .is_some_and(|r| r.name().is_none())
+                {
+                    return;
+                }
+            }
+            // Skip anonymous block (&) — Ruby 3.1+
+            if let Some(block) = params.block() {
+                if block.name().is_none() {
+                    return;
+                }
+            }
+        }
+
         let def_params = if let Some(params) = node.parameters() {
             extract_def_params(&params)
         } else {
@@ -460,7 +455,7 @@ impl<'pr> Visit<'pr> for SuperArgumentsVisitor<'_> {
             let effective_params: Vec<DefParam> = if has_block_reassignment {
                 def_params
                     .into_iter()
-                    .filter(|p| !matches!(p, DefParam::Block(_) | DefParam::AnonymousBlock))
+                    .filter(|p| !matches!(p, DefParam::Block(_)))
                     .collect()
             } else {
                 def_params

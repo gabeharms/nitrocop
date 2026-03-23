@@ -93,32 +93,31 @@ impl<'pr> Visit<'pr> for RedundantInterpVisitor<'_, '_> {
 
 impl RedundantInterpVisitor<'_, '_> {
     fn check_redundant_interpolation(&mut self, node: &ruby_prism::InterpolatedStringNode<'_>) {
-        // Must have exactly one part
+        // Must have exactly one part that is an embedded statements node
         let parts: Vec<_> = node.parts().into_iter().collect();
         if parts.len() != 1 {
             return;
         }
 
-        // Case 1: #{expr} — embedded statements with a single non-string expression
-        if let Some(embedded) = parts[0].as_embedded_statements_node() {
-            let statements = match embedded.statements() {
-                Some(s) => s,
-                None => return,
-            };
+        let embedded = match parts[0].as_embedded_statements_node() {
+            Some(e) => e,
+            None => return,
+        };
 
-            let body: Vec<_> = statements.body().into_iter().collect();
-            if body.len() != 1 {
-                return;
-            }
+        // Must have exactly one statement inside #{...}
+        let statements = match embedded.statements() {
+            Some(s) => s,
+            None => return,
+        };
 
-            // Skip if the inner expression is a string literal (that would be double-interpolation)
-            let inner = &body[0];
-            if inner.as_string_node().is_some() || inner.as_interpolated_string_node().is_some() {
-                return;
-            }
-        } else if parts[0].as_embedded_variable_node().is_none() {
-            // Case 2: #@var, #@@var, #$var — embedded variable shorthand
-            // If it's neither embedded statements nor embedded variable, skip
+        let body: Vec<_> = statements.body().into_iter().collect();
+        if body.len() != 1 {
+            return;
+        }
+
+        // Skip if the inner expression is a string literal (that would be double-interpolation)
+        let inner = &body[0];
+        if inner.as_string_node().is_some() || inner.as_interpolated_string_node().is_some() {
             return;
         }
 

@@ -21,14 +21,7 @@ use crate::parse::source::SourceFile;
 /// `"a b".split(" ", &proc {})` was flagged as redundant because Prism stores
 /// `&expr` block arguments in `call.block()` rather than in `arguments()`, so
 /// `arg_list.len() == 1` and the cop only saw `" "`. Added early return when
-/// `call.block()` is a `BlockArgumentNode` (e.g., `&proc`, `&block`).
-///
-/// ## Fix: allow regular blocks with redundant args (3 FN):
-/// The original `call.block().is_some()` early return was too broad — it also
-/// skipped regular `{ }` / `do..end` blocks (which are `BlockNode` in Prism).
-/// RuboCop correctly flags `sum(0) { |x| x }` and `split(" ") { |s| s }` as
-/// redundant because the block doesn't change the default argument value.
-/// Narrowed the check to only skip `BlockArgumentNode` (`&expr`) blocks.
+/// `call.block().is_some()` since a block argument changes method semantics.
 pub struct RedundantArgument;
 
 impl Cop for RedundantArgument {
@@ -69,14 +62,10 @@ impl Cop for RedundantArgument {
             return;
         }
 
-        // If the call has a &block argument (e.g., `split(" ", &proc {})`),
-        // skip: the &block changes method dispatch semantics. But regular
-        // blocks ({ } / do..end) don't change the default argument, so
-        // `sum(0) { |x| x }` is still redundant.
-        if call
-            .block()
-            .is_some_and(|b| b.as_block_argument_node().is_some())
-        {
+        // If the call has a block (do..end or {}) or any argument is a block
+        // argument (&proc, &block), the default argument is not redundant
+        // because the block changes method semantics.
+        if call.block().is_some() {
             return;
         }
 

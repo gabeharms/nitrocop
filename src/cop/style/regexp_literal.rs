@@ -3,41 +3,11 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Check if a `%r` regexp literal appears to be a method argument (with or without parens).
-/// RuboCop exempts `%r` with space/eq-starting content when `node.parent&.call_type?`.
-/// We approximate by scanning backwards from the node start: if the preceding
-/// non-whitespace token is an identifier character (bare arg) or `(` or `,` (paren arg),
-/// it's likely a method call argument. If preceded by `=` (assignment), newline/start-of-file
-/// (standalone), `[`, `|`, etc., it's not a method argument.
-fn is_method_call_argument(source: &[u8], node_start: usize) -> bool {
-    let mut i = node_start;
-    while i > 0 {
-        i -= 1;
-        match source[i] {
-            b' ' | b'\t' => continue,
-            // Identifier-like chars: method name immediately before the %r (bare arg)
-            c if c.is_ascii_alphanumeric() || c == b'_' || c == b'?' || c == b'!' => {
-                return true;
-            }
-            // Opening paren or comma: method call with parens
-            b'(' | b',' => return true,
-            // Anything else (=, [, newline, etc.) means not a method arg
-            _ => return false,
-        }
-    }
-    false
-}
-
 /// FP fix (2026-03): slashes inside `#{}` interpolation segments were wrongly
 /// counted as inner slashes, causing false "Use %r" suggestions on regexps like
 /// `/#{Regexp.quote("</")}/ `. RuboCop's `node_body` only examines `:str` children,
 /// so interpolation content is excluded. Fixed by iterating over Prism's `parts()`
 /// and only collecting `StringNode` content for the slash check.
-///
-/// FN fix (2026-03): The space/eq content exemption was applied unconditionally,
-/// but RuboCop only exempts `%r` with space/eq-starting content when the regexp
-/// is a direct argument to a method call without parentheses (`node.parent&.call_type?`).
-/// Fixed by scanning bytes before the node to detect bare method argument context.
 pub struct RegexpLiteral;
 
 impl Cop for RegexpLiteral {
@@ -113,11 +83,9 @@ impl Cop for RegexpLiteral {
         // when the regexp is a method argument without parentheses:
         //   do_something %r{ regexp}  # valid
         //   do_something / regexp/    # syntax error
-        // RuboCop only exempts this when node.parent is a call_type (method call).
-        // We approximate by checking the source context before the %r node.
-        let content_starts_with_space_or_eq = !content_bytes.is_empty()
-            && (content_bytes[0] == b' ' || content_bytes[0] == b'=')
-            && is_method_call_argument(source.as_bytes(), node_start);
+        // Allow %r in these cases (matching RuboCop's behavior).
+        let content_starts_with_space_or_eq =
+            !content_bytes.is_empty() && (content_bytes[0] == b' ' || content_bytes[0] == b'=');
 
         match enforced_style {
             "slashes" => {

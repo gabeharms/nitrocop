@@ -3,14 +3,6 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Style/CommandLiteral — enforces backtick vs %x for command literals.
-///
-/// Corpus investigation (FP=0, FN=7, all in opal): The 7 FNs were backtick
-/// literals containing escaped inner backticks (e.g. `` `echo \`ls\`` ``).
-/// In `backticks` mode, RuboCop flags these with "Use `%x` around command
-/// string." because inner backticks make the backtick form hard to read.
-/// nitrocop was missing this case — it only flagged `%x` usage in `backticks`
-/// mode but didn't flag backtick literals with inner backticks.
 pub struct CommandLiteral;
 
 impl Cop for CommandLiteral {
@@ -79,17 +71,8 @@ impl Cop for CommandLiteral {
 
         match enforced_style {
             "backticks" => {
-                if is_backtick && disallowed_backtick {
-                    // Backtick literal contains inner backticks — suggest %x instead
-                    let (line, column) = source.offset_to_line_col(node_loc.start_offset());
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        line,
-                        column,
-                        "Use `%x` around command string.".to_string(),
-                    ));
-                } else if !is_backtick && !disallowed_backtick {
-                    // %x literal without inner backticks — suggest backticks
+                // Flag %x usage unless it contains backticks (and AllowInnerBackticks is false)
+                if !is_backtick && !disallowed_backtick {
                     let (line, column) = source.offset_to_line_col(node_loc.start_offset());
                     diagnostics.push(self.diagnostic(
                         source,
@@ -139,62 +122,4 @@ impl Cop for CommandLiteral {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(CommandLiteral, "cops/style/command_literal");
-
-    fn config_with_style(style: &str) -> crate::cop::CopConfig {
-        let mut config = crate::cop::CopConfig::default();
-        config.options.insert(
-            "EnforcedStyle".to_string(),
-            serde_yml::Value::String(style.to_string()),
-        );
-        config
-    }
-
-    #[test]
-    fn percent_x_style_flags_backticks() {
-        let source = b"x = `simple command`\ny = `cmd with #{expr}`\n";
-        let config = config_with_style("percent_x");
-        let diags = crate::testutil::run_cop_full_with_config(&CommandLiteral, source, config);
-        assert_eq!(diags.len(), 2, "Expected 2 offenses but got {:?}", diags);
-    }
-
-    #[test]
-    fn percent_x_style_flags_nested_backticks() {
-        let source = b"z = `outer #{`inner`}`\n";
-        let config = config_with_style("percent_x");
-        let diags = crate::testutil::run_cop_full_with_config(&CommandLiteral, source, config);
-        // Both outer and inner backtick xstrings should be flagged
-        assert_eq!(diags.len(), 2, "Expected 2 offenses but got {:?}", diags);
-    }
-
-    #[test]
-    fn percent_x_style_flags_multiline_backticks() {
-        let source = b"w = `\n  multiline\n  command\n`\n";
-        let config = config_with_style("percent_x");
-        let diags = crate::testutil::run_cop_full_with_config(&CommandLiteral, source, config);
-        assert_eq!(diags.len(), 1, "Expected 1 offense but got {:?}", diags);
-    }
-
-    #[test]
-    fn backticks_style_flags_inner_backticks() {
-        // In default backticks mode, backtick literals with escaped inner backticks
-        // should be flagged with "Use %x" since backticks can't cleanly represent them
-        let source = b"x = `echo \\`ls\\``\n";
-        let config = config_with_style("backticks");
-        let diags = crate::testutil::run_cop_full_with_config(&CommandLiteral, source, config);
-        assert_eq!(diags.len(), 1, "Expected 1 offense but got {:?}", diags);
-        assert!(
-            diags[0].message.contains("%x"),
-            "Expected '%x' in message but got: {}",
-            diags[0].message
-        );
-    }
-
-    #[test]
-    fn backticks_style_allows_percent_x_with_inner_backticks() {
-        // In backticks mode, %x literals with inner backticks are allowed
-        let source = b"x = %x(echo `ls`)\n";
-        let config = config_with_style("backticks");
-        let diags = crate::testutil::run_cop_full_with_config(&CommandLiteral, source, config);
-        assert_eq!(diags.len(), 0, "Expected 0 offenses but got {:?}", diags);
-    }
 }

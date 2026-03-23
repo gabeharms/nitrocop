@@ -38,6 +38,11 @@ impl Cop for ClassCheck {
             return;
         }
 
+        // Must have a receiver
+        if call_node.receiver().is_none() {
+            return;
+        }
+
         // Check against enforced style
         let (prefer, current) = if enforced_style == "is_a?" {
             ("is_a?", "kind_of?")

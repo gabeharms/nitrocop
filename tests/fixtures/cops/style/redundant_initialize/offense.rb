@@ -26,13 +26,3 @@ def initialize()
 ^^^^^^^^^^^^^^^^ Style/RedundantInitialize: Remove unnecessary `initialize` method.
   super()
 end
-
-def initialize # required
-^^^^^^^^^^^^^^ Style/RedundantInitialize: Remove unnecessary empty `initialize` method.
-end
-
-def initialize
-^^^^^^^^^^^^^^ Style/RedundantInitialize: Remove unnecessary `initialize` method.
-  super
-  # @_sockets = [] # for keepalived sockets
-end

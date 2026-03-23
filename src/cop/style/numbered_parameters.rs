@@ -1,15 +1,8 @@
-use crate::cop::node_type::{BLOCK_NODE, CALL_NODE, LAMBDA_NODE, NUMBERED_PARAMETERS_NODE};
+use crate::cop::node_type::{BLOCK_NODE, CALL_NODE, NUMBERED_PARAMETERS_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// ## Corpus investigation (2026-03-23)
-///
-/// FP=0, FN=3. All FN were lambda literals (`-> do ... end`) using numbered
-/// parameters in multi-line blocks. The cop only handled `CallNode` with a
-/// `BlockNode` child but missed `LambdaNode` which is the Prism representation
-/// of `->` lambda literals. Fixed by adding `LAMBDA_NODE` to interested node
-/// types and handling it alongside block nodes.
 pub struct NumberedParameters;
 
 impl Cop for NumberedParameters {
@@ -18,7 +11,7 @@ impl Cop for NumberedParameters {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[BLOCK_NODE, CALL_NODE, LAMBDA_NODE, NUMBERED_PARAMETERS_NODE]
+        &[BLOCK_NODE, CALL_NODE, NUMBERED_PARAMETERS_NODE]
     }
 
     fn check_node(
@@ -32,20 +25,7 @@ impl Cop for NumberedParameters {
     ) {
         let style = config.get_str("EnforcedStyle", "allow_single_line");
 
-        // Handle lambda literals (-> { ... } / -> do ... end)
-        if let Some(lambda_node) = node.as_lambda_node() {
-            let params = match lambda_node.parameters() {
-                Some(p) => p,
-                None => return,
-            };
-            if params.as_numbered_parameters_node().is_none() {
-                return;
-            }
-            self.report_if_applicable(source, &lambda_node.location(), style, diagnostics);
-            return;
-        }
-
-        // Handle method call blocks (foo.bar { ... } / foo.bar do ... end)
+        // Check for blocks that use numbered parameters
         let call = match node.as_call_node() {
             Some(c) => c,
             None => return,
@@ -76,19 +56,8 @@ impl Cop for NumberedParameters {
             return;
         }
 
-        self.report_if_applicable(source, &node.location(), style, diagnostics);
-    }
-}
-
-impl NumberedParameters {
-    fn report_if_applicable(
-        &self,
-        source: &SourceFile,
-        loc: &ruby_prism::Location<'_>,
-        style: &str,
-        diagnostics: &mut Vec<Diagnostic>,
-    ) {
         if style == "disallow" {
+            let loc = node.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
             diagnostics.push(self.diagnostic(
                 source,
@@ -99,9 +68,12 @@ impl NumberedParameters {
         }
 
         if style == "allow_single_line" {
-            let (start_line, _) = source.offset_to_line_col(loc.start_offset());
-            let (end_line, _) = source.offset_to_line_col(loc.end_offset().saturating_sub(1));
+            // Flag if multi-line block
+            let block_loc = block_node.location();
+            let (start_line, _) = source.offset_to_line_col(block_loc.start_offset());
+            let (end_line, _) = source.offset_to_line_col(block_loc.end_offset().saturating_sub(1));
             if start_line != end_line {
+                let loc = node.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
                 diagnostics.push(self.diagnostic(
                     source,
