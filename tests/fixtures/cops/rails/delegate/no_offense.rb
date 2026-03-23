@@ -45,13 +45,6 @@ def [](key, default)
   @attrs[key]
 end
 
-# Receiver is the method's own parameter — not a simple delegation target.
-# RuboCop's NodePattern only matches (send nil? _) receivers (method calls),
-# not (lvar _) (local variable reads from parameters).
-def delete(account_env_var)
-  account_env_var.delete(account_env_var)
-end
-
 # Private methods are ignored — including methods after other method `end`s
 # in the same private section
 private

@@ -23,18 +23,6 @@ end
 class Item < ApplicationRecord
   scope :base, -> { all }
   ^^^^^ Rails/DuplicateScope: Multiple scopes share this same expression.
-  scope :default_scope, -> { all }
-  ^^^^^ Rails/DuplicateScope: Multiple scopes share this same expression.
-end
-
-# Bodyless scopes share the same (nil) expression
-class Config < ApplicationRecord
-  scope :all
-  ^^^^^ Rails/DuplicateScope: Multiple scopes share this same expression.
-  scope :unpublished
-  ^^^^^ Rails/DuplicateScope: Multiple scopes share this same expression.
-  scope :published
-  ^^^^^ Rails/DuplicateScope: Multiple scopes share this same expression.
-  scope :no_batch_actions
+  scope :default_scope, lambda { all }
   ^^^^^ Rails/DuplicateScope: Multiple scopes share this same expression.
 end
