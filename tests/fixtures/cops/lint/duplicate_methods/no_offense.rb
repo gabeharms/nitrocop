@@ -293,3 +293,9 @@ class << Multiton
   def foo; 1; end
   def bar; 2; end
 end
+
+# Different methods in class << call_expr are fine
+class << Object.new
+  def foo; 1; end
+  def bar; 2; end
+end

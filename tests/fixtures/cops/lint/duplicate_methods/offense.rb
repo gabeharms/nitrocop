@@ -206,3 +206,18 @@ class CaseVariant
     ^^^^^^^^^^^^^^^ Lint/DuplicateMethods: Method `CaseVariant#bar` is defined at both test.rb:182 and test.rb:184.
   end
 end
+
+# class << Object.new — send-type sclass expression
+class << Object.new
+  def meth; 1; end
+  def meth; 2; end
+  ^^^^^^^^^^^^^^^^^^ Lint/DuplicateMethods: Method `new.meth` is defined at both test.rb:190 and test.rb:191.
+end
+
+# class << some_call.chain — method name from outermost call
+record = Object.new
+class << record.response
+  def body; 1; end
+  def body; 2; end
+  ^^^^^^^^^^^^^^^^^^ Lint/DuplicateMethods: Method `response.body` is defined at both test.rb:197 and test.rb:198.
+end

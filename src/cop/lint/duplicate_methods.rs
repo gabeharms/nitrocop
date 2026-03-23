@@ -130,12 +130,22 @@ use ruby_prism::Visit;
 ///   in scope. Fixed by only applying the `plain_block_depth > 0` early return
 ///   to instance methods and `def self.method`, not `def ConstName.method`.
 ///
-/// Remaining FN not addressed (edge cases, ~3 total):
+/// ### Round 9 (FP=0, FN=4 standard; FP=6, FN=53 extended)
+/// Root causes of FN:
+/// - `class << call_expr` (e.g., `class << Object.new`, `class << @reflex.controller.response`)
+///   was treated as invisible (`plain_block_depth += 1`). RuboCop's `found_sclass_method`
+///   handles this case: when `parent_module_name` returns nil and the sclass expression is
+///   a `send_type?` (method call), it tracks methods as `receiver_method_name.method_name`.
+///   Fixed by checking if the sclass expression is a CallNode, extracting its method name,
+///   and pushing it as a singleton scope. Methods inside are now tracked (e.g., `def body`
+///   inside `class << response` becomes `response.body`).
+///
+/// Remaining FN not addressed (edge cases):
 /// - `def VCR.version` at top level in Rake tasks — constant not in scope stack
 ///   (defined in separate module, no class/module ancestor wrapping the def).
-/// - `def FakeModel.calling_let!` inside test describe blocks — same issue.
-/// - `def response.body` inside `class << @reflex.controller.response` — sclass
-///   expression is a method call chain, not a constant, so methods are invisible.
+///   RuboCop's `lookup_constant` also returns nil here (no class/module ancestors).
+/// - `def FakeModel.calling_let!` inside test describe blocks — same issue:
+///   constant is not an enclosing class/module in the AST ancestor chain.
 pub struct DuplicateMethods;
 
 impl Cop for DuplicateMethods {
@@ -916,12 +926,38 @@ impl<'pr> Visit<'pr> for DupMethodVisitor<'_, '_> {
                 self.visit(&body);
             }
             self.scope_stack = saved_scopes;
-        } else {
-            // `class << some_expr` (e.g., `class << @obj.response`)
+        } else if expr.as_call_node().is_some() {
+            // `class << some_call_expr` (e.g., `class << Object.new`,
+            // `class << @reflex.controller.response`)
             //
-            // RuboCop's `parent_module_name_for_sclass` returns nil for non-const
-            // non-self expressions, and `found_sclass_method` only handles
-            // send-type receivers. Methods inside are effectively invisible.
+            // RuboCop's `found_sclass_method` handles defs inside sclass when
+            // the sclass expression is a `send_type?` (method call). It tracks
+            // methods as `receiver_method_name.method_name`. For example:
+            //   class << Object.new
+            //     def meth; end  → tracked as `new.meth`
+            //   end
+            //   class << @reflex.controller.response
+            //     def body; end  → tracked as `response.body`
+            //   end
+            //
+            // We extract the call's method name and use it as a pseudo-scope
+            // so that defs inside are tracked and duplicates detected.
+            let call = expr.as_call_node().unwrap();
+            let recv_method = std::str::from_utf8(call.name().as_slice()).unwrap_or("");
+            let saved_scopes = self.scope_stack.clone();
+            self.scope_stack.clear();
+            self.scope_stack.push(ScopeEntry {
+                name: recv_method.to_string(),
+                is_singleton: true,
+            });
+            if let Some(body) = node.body() {
+                self.visit(&body);
+            }
+            self.scope_stack = saved_scopes;
+        } else {
+            // `class << @some_ivar` or other non-call, non-const, non-self expressions.
+            // RuboCop's `found_sclass_method` only handles send_type? receivers,
+            // so these are effectively invisible.
             self.plain_block_depth += 1;
             if let Some(body) = node.body() {
                 self.visit(&body);
