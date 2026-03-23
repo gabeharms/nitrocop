@@ -242,6 +242,38 @@ def test_select_backend_for_entry_easy_cop_uses_codex_normal():
     assert result["code_bugs"] == 2
 
 
+def test_build_start_here_section_uses_repo_hotspots_and_examples():
+    corpus = {
+        "repo_breakdown": {
+            "travis-ci__dpl__8c6eabc": {"fp": 3, "fn": 0},
+            "puppetlabs__puppet__e227c27": {"fp": 0, "fn": 4},
+            "autolab__Autolab__674efe9": {"fp": 2, "fn": 0},
+        },
+        "fp_examples": [
+            {"loc": "travis-ci__dpl__8c6eabc: lib/foo.rb:10", "msg": "bad fp", "src": None},
+            {"loc": "autolab__Autolab__674efe9: app/bar.rb:20", "msg": "another fp", "src": None},
+        ],
+        "fn_examples": [
+            {"loc": "puppetlabs__puppet__e227c27: manifests/init.rb:30", "msg": "missed fn", "src": None},
+        ],
+    }
+    section = gct.build_start_here_section("Style/MixinUsage", corpus)
+    assert "## Start Here" in section
+    assert "python3 scripts/investigate-cop.py Style/MixinUsage --repos-only" in section
+    assert "`travis-ci__dpl__8c6eabc` (3 FP) — example `lib/foo.rb:10`" in section
+    assert "`puppetlabs__puppet__e227c27` (4 FN) — example `manifests/init.rb:30`" in section
+    assert "Representative FP examples:" in section
+    assert "Representative FN examples:" in section
+
+
+def test_build_start_here_section_empty_when_no_corpus_examples():
+    section = gct.build_start_here_section(
+        "Style/Foo",
+        {"repo_breakdown": {}, "fp_examples": [], "fn_examples": []},
+    )
+    assert section == ""
+
+
 def test_choose_issue_state_preserves_blocked_without_open_pr():
     issue = {"labels": [{"name": "state:blocked"}]}
     assert gct.choose_issue_state(issue, has_open_pr=False) == "state:blocked"
@@ -398,6 +430,8 @@ if __name__ == "__main__":
     test_has_failed_attempt_ignores_open_prs()
     test_select_backend_for_entry_uses_issue_difficulty_when_present()
     test_select_backend_for_entry_easy_cop_uses_codex_normal()
+    test_build_start_here_section_uses_repo_hotspots_and_examples()
+    test_build_start_here_section_empty_when_no_corpus_examples()
     test_choose_issue_state_preserves_blocked_without_open_pr()
     test_sorted_dispatch_candidates_orders_by_tier_then_total_then_cop()
     test_cmd_issues_sync_reopens_diverging_issue_and_closes_resolved_issue()

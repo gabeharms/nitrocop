@@ -279,15 +279,26 @@ def get_corpus_data(cop: str, input_path: Path | None, extended: bool) -> dict:
         except Exception as e:
             print(f"Warning: could not download corpus data: {e}", file=sys.stderr)
             return {"fp": 0, "fn": 0, "matches": 0,
-                    "fp_examples": [], "fn_examples": []}
+                    "fp_examples": [], "fn_examples": [], "repo_breakdown": {}}
 
     data = json.loads(input_path.read_text())
     by_cop = data.get("by_cop", [])
+    by_repo_cop = data.get("by_repo_cop", {})
     cop_entry = next((e for e in by_cop if e["cop"] == cop), None)
 
     if cop_entry is None:
         return {"fp": 0, "fn": 0, "matches": 0,
-                "fp_examples": [], "fn_examples": []}
+                "fp_examples": [], "fn_examples": [], "repo_breakdown": {}}
+
+    repo_breakdown = {}
+    for repo_id, cops in by_repo_cop.items():
+        if cop not in cops:
+            continue
+        entry = cops[cop]
+        repo_breakdown[repo_id] = {
+            "fp": entry.get("fp", 0),
+            "fn": entry.get("fn", 0),
+        }
 
     return {
         "fp": cop_entry.get("fp", 0),
@@ -295,6 +306,7 @@ def get_corpus_data(cop: str, input_path: Path | None, extended: bool) -> dict:
         "matches": cop_entry.get("matches", 0),
         "fp_examples": cop_entry.get("fp_examples", []),
         "fn_examples": cop_entry.get("fn_examples", []),
+        "repo_breakdown": repo_breakdown,
     }
 
 
@@ -303,6 +315,109 @@ def _normalize_example(ex) -> tuple[str, str, list[str] | None]:
     if isinstance(ex, dict):
         return ex.get("loc", ""), ex.get("msg", ""), ex.get("src")
     return ex, "", None
+
+
+def _parse_example_loc(loc: str) -> tuple[str, str, int] | None:
+    """Parse `repo_id: path/to/file.rb:line` into components."""
+    if ": " not in loc:
+        return None
+    repo_id, rest = loc.split(": ", 1)
+    last_colon = rest.rfind(":")
+    if last_colon < 0:
+        return None
+    filepath = rest[:last_colon]
+    try:
+        line = int(rest[last_colon + 1:])
+    except ValueError:
+        return None
+    return repo_id, filepath, line
+
+
+def _top_repos(
+    repo_breakdown: dict[str, dict[str, int]], kind: str, limit: int = 3,
+) -> list[tuple[str, int]]:
+    repos = [
+        (repo_id, counts.get(kind, 0))
+        for repo_id, counts in repo_breakdown.items()
+        if counts.get(kind, 0) > 0
+    ]
+    repos.sort(key=lambda item: (-item[1], item[0]))
+    return repos[:limit]
+
+
+def _sample_examples_for_repo(examples: list, repo_id: str, limit: int = 1) -> list[str]:
+    matches = []
+    for ex in examples:
+        loc, _msg, _src = _normalize_example(ex)
+        parsed = _parse_example_loc(loc)
+        if parsed is None:
+            continue
+        ex_repo_id, filepath, line = parsed
+        if ex_repo_id != repo_id:
+            continue
+        matches.append(f"{filepath}:{line}")
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def build_start_here_section(cop: str, corpus: dict) -> str:
+    """Build a compact investigation guide from corpus hotspots."""
+    repo_breakdown = corpus.get("repo_breakdown", {})
+    fp_examples = corpus.get("fp_examples", [])
+    fn_examples = corpus.get("fn_examples", [])
+
+    top_fp_repos = _top_repos(repo_breakdown, "fp")
+    top_fn_repos = _top_repos(repo_breakdown, "fn")
+
+    if not top_fp_repos and not top_fn_repos and not fp_examples and not fn_examples:
+        return ""
+
+    lines = [
+        "## Start Here",
+        "",
+        "Use the existing corpus data to focus on the most concentrated regressions first.",
+        "",
+        "Helpful local commands:",
+        f"- `python3 scripts/investigate-cop.py {cop} --repos-only`",
+        f"- `python3 scripts/investigate-cop.py {cop} --context`",
+        f"- `python3 scripts/verify-cop-locations.py {cop}`",
+        "",
+    ]
+
+    if top_fp_repos:
+        lines.append("Top FP repos:")
+        for repo_id, count in top_fp_repos:
+            samples = _sample_examples_for_repo(fp_examples, repo_id)
+            suffix = f" — example `{samples[0]}`" if samples else ""
+            lines.append(f"- `{repo_id}` ({count} FP){suffix}")
+        lines.append("")
+
+    if top_fn_repos:
+        lines.append("Top FN repos:")
+        for repo_id, count in top_fn_repos:
+            samples = _sample_examples_for_repo(fn_examples, repo_id)
+            suffix = f" — example `{samples[0]}`" if samples else ""
+            lines.append(f"- `{repo_id}` ({count} FN){suffix}")
+        lines.append("")
+
+    if fp_examples:
+        lines.append("Representative FP examples:")
+        for ex in fp_examples[:3]:
+            loc, msg, _src = _normalize_example(ex)
+            msg_suffix = f" — {msg}" if msg else ""
+            lines.append(f"- `{loc}`{msg_suffix}")
+        lines.append("")
+
+    if fn_examples:
+        lines.append("Representative FN examples:")
+        for ex in fn_examples[:3]:
+            loc, msg, _src = _normalize_example(ex)
+            msg_suffix = f" — {msg}" if msg else ""
+            lines.append(f"- `{loc}`{msg_suffix}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _extract_source_lines(src: list[str]) -> tuple[list[str], str | None, int | None]:
@@ -915,6 +1030,10 @@ condition that matches the SPECIFIC differentiating context.
         for note in pitfalls:
             parts.append(f"- {note}")
         parts.append("")
+
+    start_here = build_start_here_section(cop, corpus)
+    if start_here:
+        parts.append(start_here)
 
     # Pre-diagnostic results (high-value: before source code)
     if diagnostics:
