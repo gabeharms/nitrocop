@@ -118,13 +118,31 @@ jobs:
             echo "force=${{ github.event.inputs.force }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Preflight PR open state
+        id: preflight
+        env:
+          GH_TOKEN: ${{ steps.actions-read-token.outputs.token }}
+        run: |
+          PR_STATE=$(gh pr view "${{ steps.target.outputs.pr_number }}" \
+            --repo "${{ github.repository }}" \
+            --json state --jq '.state')
+          echo "state=$PR_STATE" >> "$GITHUB_OUTPUT"
+          if [ "$PR_STATE" = "OPEN" ]; then
+            echo "should_continue=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_continue=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=PR is not open" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.preflight.outputs.should_continue == 'true'
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Load PR metadata and gate repair
         id: pr
+        if: steps.preflight.outputs.should_continue == 'true'
         env:
           GH_TOKEN: ${{ steps.actions-read-token.outputs.token }}
         run: |
@@ -139,8 +157,13 @@ jobs:
             --checks-head-sha "${{ steps.target.outputs.head_sha }}" \
             >> "$GITHUB_OUTPUT"
 
+      - name: Skip closed PRs
+        if: steps.preflight.outputs.should_continue != 'true'
+        run: |
+          echo "::notice::Skipping auto-repair: ${{ steps.preflight.outputs.skip_reason }}"
+
       - name: Skip untrusted or stale PRs
-        if: steps.pr.outputs.should_run != 'true'
+        if: steps.preflight.outputs.should_continue == 'true' && steps.pr.outputs.should_run != 'true'
         run: |
           echo "::notice::Skipping auto-repair: ${{ steps.pr.outputs.skip_reason }}"
 
