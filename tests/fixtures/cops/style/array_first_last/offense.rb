@@ -17,7 +17,7 @@ padding[0] += delta
        ^^^ Style/ArrayFirstLast: Use `first`.
 
 line_widths[-1] += width
-            ^^^^ Style/ArrayFirstLast: Use `last`.
+           ^^^^ Style/ArrayFirstLast: Use `last`.
 
 options[0] += 1
        ^^^ Style/ArrayFirstLast: Use `first`.
@@ -27,7 +27,7 @@ params[0] ||= "localhost"
       ^^^ Style/ArrayFirstLast: Use `first`.
 
 colors[-1] ||= "red"
-       ^^^^ Style/ArrayFirstLast: Use `last`.
+      ^^^^ Style/ArrayFirstLast: Use `last`.
 
 # Logical-and assignment on indexed access (IndexAndWriteNode)
 items[0] &&= transform(value)
