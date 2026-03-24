@@ -33,3 +33,6 @@ Config::LIMIT != total
 
 /pattern/ == text
 ^^^^^^^^^^^^^^^^^ Style/YodaCondition: Prefer non-Yoda conditions.
+
+{"foo" => ["bar"], "baz" => ["quux"]} == params
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/YodaCondition: Prefer non-Yoda conditions.

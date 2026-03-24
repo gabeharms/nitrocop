@@ -21,3 +21,12 @@ total != Config::LIMIT
 3 < 1r
 1 > 1i
 [[1, 2], [3, 4]] == [[1, 2], [3, 4]]
+
+# Interpolated string (dstr) is literal in RuboCop — both sides constant
+0 != "Local offset should not be zero for #{ENV['TZ']}"
+
+# Interpolated string on LHS — RuboCop skips via interpolation? check
+"#{interpolation}" == foo
+
+# Interpolated regexp on LHS — also skipped by interpolation? check
+/#{pattern}/ == text

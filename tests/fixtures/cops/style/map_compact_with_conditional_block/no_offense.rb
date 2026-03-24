@@ -43,3 +43,14 @@ ary.map do |item|
     next
   end
 end.do_something
+# Multi-parameter blocks — returning one param is not equivalent to select/reject
+# RuboCop's node matcher requires exactly one block argument: (args $(arg _))
+options.map do |key, value|
+  key if value.present?
+end.compact
+hash.map { |k, v| k if v > 0 }.compact
+items.filter_map do |name, spec|
+  name if spec.metadata['default']
+end
+# Multi-parameter with unless
+pairs.map { |a, b| a unless b.nil? }.compact
