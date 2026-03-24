@@ -325,3 +325,40 @@ describe "fetching" do
     create_feed(last_fetched:)
   end
 end
+
+# def self.method with variables leaking into example scopes via .each
+describe "dynamic cases" do
+  def self.define_cases(items)
+    items.each do |label, value|
+      result = value.upcase
+      ^^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyLocalVariable: Do not use local variables defined outside of examples inside of them.
+      context label do
+        it { expect(something).to eq(result) }
+      end
+    end
+  end
+end
+
+# def method with variables leaking into RSpec.describe inside a block
+describe "instance method" do
+  def run_test
+    counter = 0
+    ^^^^^^^^^^ RSpec/LeakyLocalVariable: Do not use local variables defined outside of examples inside of them.
+    with_new_rspec_environment do
+      RSpec.describe "inner" do
+        it { expect(counter).to eq(0) }
+      end
+    end
+  end
+end
+
+# def self.method with direct example scopes (no wrapping describe)
+describe "direct examples in def self" do
+  def self.it_is_correct_for(label, expected)
+    result = expected.to_s
+    ^^^^^^^^^^^^^^^^^^^^^^^ RSpec/LeakyLocalVariable: Do not use local variables defined outside of examples inside of them.
+    it "is correct for #{label}" do
+      expect(compute).to eq(result)
+    end
+  end
+end

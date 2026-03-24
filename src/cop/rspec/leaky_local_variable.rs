@@ -300,27 +300,35 @@ use crate::parse::source::SourceFile;
 ///   so it skips RSpec cops. nitrocop has them compiled in. Fix requires
 ///   infrastructure: check project Gemfile.lock for plugin gem presence.
 ///
-/// **53 FN — require VariableForce implementation:**
-/// RuboCop's `VariableForce` (~800 LOC Ruby) is a per-assignment dataflow
-/// engine that tracks variable lifetime through all execution paths with
-/// branch-aware analysis. Our cop uses AST-walking heuristics instead.
+/// **53 FN — partially addressed:**
 ///
-/// Root causes of remaining FN:
-/// - `def self.method` + `.each` with nested example groups (~11 FN,
-///   DataDog/chef): `check_def_level_vars` collects assignments but the
-///   interaction between `.each` block scope and nested `context`/`it`
-///   blocks isn't tracked precisely enough.
+/// ## Fix (FN: def bodies inside example groups, 2026-03-24)
+///
+/// Added `check_defs_in_scope` to `check_scope_for_leaky_vars`. Previously,
+/// `def`/`def self.method` nodes inside example group blocks were invisible:
+/// `collect_assignments_in_scope` stops at def boundaries, and
+/// `check_def_level_vars` only runs at file level. The new function
+/// recursively finds def nodes inside example group block bodies and checks
+/// their internal variables for leaks into example scopes (both via
+/// `check_var_used_in_describe_blocks` for nested describe/context, and
+/// `check_var_used_in_example_scopes` for direct it/before/let/subject).
+///
+/// Patterns fixed:
+/// - `def self.define_cases` with `.each` + nested `context`/`it` (~11 FN,
+///   DataDog/chef/yard/phony)
+/// - `def run_test` with `RSpec.describe` inside wrapper blocks (~7 FN,
+///   DataDog CI)
+/// - `def self.it_is_correct_for` with direct `it` blocks (no wrapping
+///   describe)
+///
+/// Remaining FN (~35):
 /// - Conditional write kills (~3 FN, fastlane): `before` hook writes
 ///   variable inside `unless initialized` — flow analysis returns
 ///   `WriteBeforeRead` (killing the outer value), but the write is
 ///   conditional so the file-level value can still reach later `it` blocks.
-/// - Block-local scoping edge cases (~39 FN): variables captured across
-///   multiple nested blocks, rescue/ensure reassignment, `for` loop
-///   scoping differences, etc.
-///
-/// Building VariableForce in Rust means implementing a per-assignment
-/// reference tracker with branch-aware dataflow — a substantial effort
-/// but the right long-term path to close the remaining FN gap.
+/// - Block-local scoping edge cases (~32 FN): variables captured across
+///   multiple nested blocks, rescue/ensure reassignment, lambda assignments,
+///   etc. These require VariableForce-level dataflow analysis.
 pub struct LeakyLocalVariable;
 
 impl Cop for LeakyLocalVariable {
@@ -878,6 +886,151 @@ fn check_scope_for_leaky_vars(
         };
 
         if used_in_example_scope {
+            let (line, column) = source.offset_to_line_col(assign.offset);
+            diagnostics.push(
+                cop.diagnostic(
+                    source,
+                    line,
+                    column,
+                    "Do not use local variables defined outside of examples inside of them."
+                        .to_string(),
+                ),
+            );
+        }
+    }
+
+    // Also check def/def self.method bodies inside this example group block
+    // for variables that leak into example scopes within the def body.
+    check_defs_in_scope(source, &stmts, diagnostics, cop);
+}
+
+/// Find `def` and `def self.method` nodes inside an example group block and
+/// check their bodies for variables that leak into example scopes.
+///
+/// This handles patterns like:
+/// ```ruby
+/// describe "dynamic" do
+///   def self.define_cases(items)
+///     items.each do |label, value|
+///       result = value.upcase         # assignment inside def body
+///       context label do
+///         it { expect(x).to eq(result) }  # leaks into example scope
+///       end
+///     end
+///   end
+/// end
+/// ```
+fn check_defs_in_scope(
+    source: &SourceFile,
+    stmts: &ruby_prism::StatementsNode<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    cop: &LeakyLocalVariable,
+) {
+    for stmt in stmts.body().iter() {
+        find_and_check_defs_in_node(&stmt, source, diagnostics, cop);
+    }
+}
+
+/// Recursively search for `def` nodes within example group block bodies.
+fn find_and_check_defs_in_node(
+    node: &ruby_prism::Node<'_>,
+    source: &SourceFile,
+    diagnostics: &mut Vec<Diagnostic>,
+    cop: &LeakyLocalVariable,
+) {
+    // Check for def node (handles both `def foo` and `def self.foo`)
+    if let Some(def_node) = node.as_def_node() {
+        check_def_body_for_leaky_vars(def_node, source, diagnostics, cop);
+        return; // don't recurse into nested defs
+    }
+
+    // Recurse into call blocks (e.g., other method calls wrapping defs)
+    if let Some(call) = node.as_call_node() {
+        if let Some(blk) = call.block() {
+            if let Some(bn) = blk.as_block_node() {
+                if let Some(body) = bn.body() {
+                    if let Some(stmts) = body.as_statements_node() {
+                        for s in stmts.body().iter() {
+                            find_and_check_defs_in_node(&s, source, diagnostics, cop);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Recurse into control flow
+    if let Some(if_node) = node.as_if_node() {
+        if let Some(stmts) = if_node.statements() {
+            for s in stmts.body().iter() {
+                find_and_check_defs_in_node(&s, source, diagnostics, cop);
+            }
+        }
+        if let Some(subsequent) = if_node.subsequent() {
+            find_and_check_defs_in_node(&subsequent, source, diagnostics, cop);
+        }
+        return;
+    }
+
+    if let Some(begin_node) = node.as_begin_node() {
+        if let Some(stmts) = begin_node.statements() {
+            for s in stmts.body().iter() {
+                find_and_check_defs_in_node(&s, source, diagnostics, cop);
+            }
+        }
+    }
+}
+
+/// Check a single def node's body for variables that leak into example scopes.
+fn check_def_body_for_leaky_vars(
+    def_node: ruby_prism::DefNode<'_>,
+    source: &SourceFile,
+    diagnostics: &mut Vec<Diagnostic>,
+    cop: &LeakyLocalVariable,
+) {
+    let body = match def_node.body() {
+        Some(b) => b,
+        None => return,
+    };
+    let stmts = match body.as_statements_node() {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Collect assignments in the def body (stopping at describe blocks)
+    let mut assigns: Vec<VarAssign> = Vec::new();
+    for s in stmts.body().iter() {
+        collect_file_level_assignments(&s, &mut assigns, false);
+    }
+    if assigns.is_empty() {
+        return;
+    }
+
+    let live = filter_dead_file_level_assignments(&assigns, &stmts);
+    for assign in &live {
+        // Check if the variable is used in describe blocks within the def body
+        let mut used = false;
+        for s in stmts.body().iter() {
+            if check_var_used_in_describe_blocks(&s, &assign.name) {
+                used = true;
+                break;
+            }
+        }
+
+        // Also check for direct example scopes (it, before, let, subject)
+        // in the def body — handles cases like `def self.it_is_correct_for`
+        // where example scopes appear directly without a wrapping describe block.
+        if !used {
+            for s in stmts.body().iter() {
+                if check_var_used_in_example_scopes(&s, &assign.name) {
+                    used = true;
+                    break;
+                }
+            }
+        }
+
+        if used {
             let (line, column) = source.offset_to_line_col(assign.offset);
             diagnostics.push(
                 cop.diagnostic(
