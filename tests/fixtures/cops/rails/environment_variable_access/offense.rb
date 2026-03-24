@@ -27,3 +27,15 @@ ENV['COUNT'] += '1'
 ENV['A'], ENV['B'] = a, b
 ^^^ Rails/EnvironmentVariableAccess: Do not write to `ENV` directly post initialization.
           ^^^ Rails/EnvironmentVariableAccess: Do not write to `ENV` directly post initialization.
+ENV.fetch('KEY', DEFAULT_VALUE)
+^^^ Rails/EnvironmentVariableAccess: Do not read from `ENV` directly post initialization.
+                 ^^^^^^^^^^^^^ Rails/EnvironmentVariableAccess: Do not read from `ENV` directly post initialization.
+ENV.fetch(
+^^^ Rails/EnvironmentVariableAccess: Do not read from `ENV` directly post initialization.
+  "PG_EXTRAS_TABLE_CACHE_HIT_MIN_EXPECTED",
+  PG_EXTRAS_TABLE_CACHE_HIT_MIN_EXPECTED
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/EnvironmentVariableAccess: Do not read from `ENV` directly post initialization.
+).to_f
+ENV['FOO'] = SOME_CONST
+^^^ Rails/EnvironmentVariableAccess: Do not write to `ENV` directly post initialization.
+             ^^^^^^^^^^ Rails/EnvironmentVariableAccess: Do not write to `ENV` directly post initialization.

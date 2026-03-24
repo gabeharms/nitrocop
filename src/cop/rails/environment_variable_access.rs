@@ -48,6 +48,9 @@ use crate::parse::source::SourceFile;
 /// to check each target for ENV receiver.
 pub struct EnvironmentVariableAccess;
 
+const READ_MSG: &str = "Do not read from `ENV` directly post initialization.";
+const WRITE_MSG: &str = "Do not write to `ENV` directly post initialization.";
+
 impl Cop for EnvironmentVariableAccess {
     fn name(&self) -> &'static str {
         "Rails/EnvironmentVariableAccess"
@@ -97,7 +100,7 @@ impl Cop for EnvironmentVariableAccess {
                                 source,
                                 line,
                                 column,
-                                "Do not write to `ENV` directly post initialization.".to_string(),
+                                WRITE_MSG.to_string(),
                             ));
                         }
                     }
@@ -113,7 +116,7 @@ impl Cop for EnvironmentVariableAccess {
                                 source,
                                 line,
                                 column,
-                                "Do not write to `ENV` directly post initialization.".to_string(),
+                                WRITE_MSG.to_string(),
                             ));
                         }
                     }
@@ -136,12 +139,7 @@ impl Cop for EnvironmentVariableAccess {
             if !allow_writes && is_env_receiver(&recv) {
                 let loc = recv.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
-                    source,
-                    line,
-                    column,
-                    "Do not write to `ENV` directly post initialization.".to_string(),
-                ));
+                diagnostics.push(self.diagnostic(source, line, column, WRITE_MSG.to_string()));
             }
             return;
         }
@@ -168,22 +166,41 @@ impl Cop for EnvironmentVariableAccess {
             if !allow_writes {
                 let loc = recv.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
-                    source,
-                    line,
-                    column,
-                    "Do not write to `ENV` directly post initialization.".to_string(),
-                ));
+                diagnostics.push(self.diagnostic(source, line, column, WRITE_MSG.to_string()));
+                // RuboCop's on_const fires for every const child of the send node,
+                // including const arguments. Report write offenses for those too.
+                report_const_args(self, source, &call, WRITE_MSG, diagnostics);
             }
         } else if !allow_reads {
             let loc = recv.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
-                source,
-                line,
-                column,
-                "Do not read from `ENV` directly post initialization.".to_string(),
-            ));
+            diagnostics.push(self.diagnostic(source, line, column, READ_MSG.to_string()));
+            // RuboCop's on_const fires for every const child of the send node,
+            // including const arguments. Report read offenses for those too.
+            report_const_args(self, source, &call, READ_MSG, diagnostics);
+        }
+    }
+}
+
+/// Report offenses for any constant arguments inside a call to ENV.
+/// RuboCop's `on_const` fires on every const descendant of the send node,
+/// including constant arguments like `ENV.fetch("KEY", SOME_CONST)`.
+/// The `env_read?` / `env_write?` pattern matches those const args because
+/// their parent is the send node whose receiver is ENV.
+fn report_const_args(
+    cop: &EnvironmentVariableAccess,
+    source: &SourceFile,
+    call: &ruby_prism::CallNode<'_>,
+    msg: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(args) = call.arguments() {
+        for arg in args.arguments().iter() {
+            if arg.as_constant_read_node().is_some() || arg.as_constant_path_node().is_some() {
+                let loc = arg.location();
+                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                diagnostics.push(cop.diagnostic(source, line, column, msg.to_string()));
+            }
         }
     }
 }
