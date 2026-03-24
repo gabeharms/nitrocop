@@ -23,3 +23,32 @@ end
 x = <<SIMPLE
 no indent required
 SIMPLE
+
+# Heredoc argument aligned to outermost call
+include_examples :offense,
+                 <<-HEREDOC
+  bar
+HEREDOC
+
+# Heredoc argument with strip_indent aligned to outermost call
+include_examples :offense,
+                 <<-HEREDOC.strip_indent
+  bar
+HEREDOC
+
+# Heredoc in block body, properly aligned
+get '/foo' do
+  <<-EOHTML
+  <html></html>
+  EOHTML
+end
+
+# Chained call with heredoc argument aligned to outermost call
+expect($stdout.string)
+  .to eq(<<~RESULT)
+    content here
+RESULT
+
+# Empty heredoc content, aligned
+let(:source) { <<~HEREDOC }
+HEREDOC

@@ -25,7 +25,7 @@ impl Cop for ClosingHeredocIndentation {
             cop: self,
             source,
             diagnostics: Vec::new(),
-            call_indent_stack: Vec::new(),
+            argument_indent: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -36,8 +36,10 @@ struct HeredocVisitor<'a> {
     cop: &'a ClosingHeredocIndentation,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
-    /// Stack of indentation levels for enclosing CallNode lines.
-    call_indent_stack: Vec<usize>,
+    /// When a heredoc is a direct argument to a method call (or chained call),
+    /// this holds the indentation of the outermost call in the chain.
+    /// Mirrors RuboCop's `argument_indentation_correct?` + `find_node_used_heredoc_argument`.
+    argument_indent: Option<usize>,
 }
 
 impl HeredocVisitor<'_> {
@@ -71,11 +73,11 @@ impl HeredocVisitor<'_> {
             return;
         }
 
-        // If the heredoc is an argument or part of a chained call, check whether
-        // the closing indentation matches the indentation of any ancestor call
-        // in the parent chain (RuboCop argument_indentation_correct? logic).
-        for &parent_indent in &self.call_indent_stack {
-            if closing_line_indent == parent_indent {
+        // If the heredoc is a direct argument to a method call (or chained call),
+        // check whether the closing indentation matches the outermost call's
+        // indentation (RuboCop argument_indentation_correct? logic).
+        if let Some(arg_indent) = self.argument_indent {
+            if closing_line_indent == arg_indent {
                 return;
             }
         }
@@ -98,24 +100,54 @@ impl HeredocVisitor<'_> {
                 .count();
         let (close_line, close_col) = self.source.offset_to_line_col(close_content_offset);
 
-        self.diagnostics.push(self.cop.diagnostic(
-            self.source,
-            close_line,
-            close_col,
+        let message = if self.argument_indent.is_some() {
+            format!(
+                "`{}` is not aligned with `{}` or beginning of method definition.",
+                closing_trimmed, opening_trimmed
+            )
+        } else {
             format!(
                 "`{}` is not aligned with `{}`.",
                 closing_trimmed, opening_trimmed
-            ),
-        ));
+            )
+        };
+
+        self.diagnostics.push(
+            self.cop
+                .diagnostic(self.source, close_line, close_col, message),
+        );
     }
 }
 
 impl<'pr> Visit<'pr> for HeredocVisitor<'_> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
-        let indent = line_indent(self.source, node.location().start_offset());
-        self.call_indent_stack.push(indent);
-        ruby_prism::visit_call_node(self, node);
-        self.call_indent_stack.pop();
+        let saved = self.argument_indent;
+
+        // Visit the receiver (if any) with no argument context change —
+        // the receiver is not "an argument" of this call.
+        if let Some(receiver) = node.receiver() {
+            self.visit(&receiver);
+        }
+
+        // Visit arguments: set argument_indent to the outermost call's indent.
+        // If we're already inside an argument context (nested calls), keep the
+        // outer one. Otherwise, use this call's line indent.
+        if let Some(arguments) = node.arguments() {
+            let outer_indent = self
+                .argument_indent
+                .unwrap_or_else(|| line_indent(self.source, node.location().start_offset()));
+            self.argument_indent = Some(outer_indent);
+            self.visit(&arguments.as_node());
+            self.argument_indent = saved;
+        }
+
+        // Visit the block (if any) with argument context cleared —
+        // heredocs inside a block body are NOT arguments.
+        if let Some(block) = node.block() {
+            self.argument_indent = None;
+            self.visit(&block);
+            self.argument_indent = saved;
+        }
     }
 
     fn visit_string_node(&mut self, node: &ruby_prism::StringNode<'pr>) {
@@ -130,6 +162,19 @@ impl<'pr> Visit<'pr> for HeredocVisitor<'_> {
             self.check_heredoc(opening, closing);
         }
         ruby_prism::visit_interpolated_string_node(self, node);
+    }
+
+    fn visit_interpolated_x_string_node(
+        &mut self,
+        node: &ruby_prism::InterpolatedXStringNode<'pr>,
+    ) {
+        self.check_heredoc(node.opening_loc(), node.closing_loc());
+        ruby_prism::visit_interpolated_x_string_node(self, node);
+    }
+
+    fn visit_x_string_node(&mut self, node: &ruby_prism::XStringNode<'pr>) {
+        self.check_heredoc(node.opening_loc(), node.closing_loc());
+        ruby_prism::visit_x_string_node(self, node);
     }
 }
 
@@ -165,6 +210,68 @@ mod tests {
             diags.is_empty(),
             "Expected no offenses for heredoc argument aligned to outermost call, got: {:?}",
             diags,
+        );
+    }
+
+    #[test]
+    fn heredoc_in_block_body_flags_offense() {
+        let source = b"get '/foo' do\n    <<-EOHTML\n    <html></html>\nEOHTML\nend\n";
+        let diags = run_cop_full(&ClosingHeredocIndentation, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected offense for heredoc in block body with wrong closing indent, got: {:?}",
+            diags,
+        );
+    }
+
+    #[test]
+    fn heredoc_in_block_body_aligned_no_offense() {
+        let source = b"get '/foo' do\n  <<-EOHTML\n  <html></html>\n  EOHTML\nend\n";
+        let diags = run_cop_full(&ClosingHeredocIndentation, source);
+        assert!(
+            diags.is_empty(),
+            "Expected no offenses for heredoc in block body with correct closing indent, got: {:?}",
+            diags,
+        );
+    }
+
+    #[test]
+    fn heredoc_argument_aligned_to_method_call() {
+        // closing aligned with include_examples (indent 0), not with <<-EOS (indent 17)
+        let source = b"include_examples :offense,\n                 <<-EOS\n  bar\nEOS\n";
+        let diags = run_cop_full(&ClosingHeredocIndentation, source);
+        assert!(
+            diags.is_empty(),
+            "Expected no offenses for argument heredoc aligned to outermost call, got: {:?}",
+            diags,
+        );
+    }
+
+    #[test]
+    fn heredoc_argument_with_strip_indent() {
+        let source =
+            b"include_examples :offense,\n                 <<-EOS.strip_indent\n  bar\nEOS\n";
+        let diags = run_cop_full(&ClosingHeredocIndentation, source);
+        assert!(
+            diags.is_empty(),
+            "Expected no offenses for argument heredoc with .strip_indent, got: {:?}",
+            diags,
+        );
+    }
+
+    #[test]
+    fn heredoc_argument_msg_arg_format() {
+        // closing at indent 4 matches neither the opening (indent 17) nor the call (indent 0)
+        let source = b"include_examples :offense,\n                 <<-EOS\n  bar\n    EOS\n";
+        let diags = run_cop_full(&ClosingHeredocIndentation, source);
+        assert_eq!(diags.len(), 1);
+        assert!(
+            diags[0]
+                .message
+                .contains("or beginning of method definition"),
+            "Expected MSG_ARG format for argument heredoc, got: {}",
+            diags[0].message,
         );
     }
 }
