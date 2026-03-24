@@ -30,9 +30,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_DIR = PROJECT_ROOT / "vendor" / "corpus"
 
 
-def download_corpus_results(prefer: str = "standard") -> Path:
+def download_corpus_results() -> Path:
     """Download corpus-results.json from the latest successful CI run."""
-    path, _run_id, _sha = _download_corpus(prefer=prefer)
+    path, _run_id, _sha = _download_corpus()
     return path
 
 

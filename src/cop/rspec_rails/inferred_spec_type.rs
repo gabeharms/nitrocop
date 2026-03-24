@@ -4,15 +4,18 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
-/// ## Corpus investigation (2026-03-20)
+/// ## Corpus investigation (2026-03-24)
 ///
-/// Extended corpus oracle reported FP=14, FN=0.
+/// Unified corpus reported FP=1, FN=3.
 ///
-/// FP=14: All from `RSpec.describe type: :model do` (no described class).
-/// RuboCop's `describe_with_type` NodePattern requires at least one positional
-/// argument (class/string) before the `type:` hash. Without a described class,
-/// the `type:` keyword is the primary identifier and is not redundant.
-/// Fixed by requiring at least one non-hash positional argument before flagging.
+/// FN=3: All from `RSpec.describe type: :model, extra_key: true do` (no described
+/// class). RuboCop's `describe_with_type` NodePattern uses `...` which matches
+/// zero-or-more args before the hash, so it flags these. Removed the incorrect
+/// `has_positional_arg` early return that was skipping no-described-class patterns.
+///
+/// FP=1: Caused by `# rubocop:disable RSpec/Rails/InferredSpecType` not being
+/// recognized as `RSpecRails/InferredSpecType`. Fixed in directive processing by
+/// normalizing 3-part cop names (e.g. `RSpec/Rails/X` -> `RSpecRails/X`).
 pub struct InferredSpecType;
 
 /// Default directory-to-type inferences (matching RuboCop's defaults).
@@ -108,16 +111,7 @@ impl Cop for InferredSpecType {
             None => return,
         };
 
-        // RuboCop requires at least one positional argument (described class/string)
-        // before the hash containing `type:`. `RSpec.describe type: :model do` (no
-        // described class) is NOT flagged — the type is the primary identifier there.
         let arg_list: Vec<_> = args.arguments().iter().collect();
-        let has_positional_arg = arg_list
-            .iter()
-            .any(|a| a.as_hash_node().is_none() && a.as_keyword_hash_node().is_none());
-        if !has_positional_arg {
-            return;
-        }
 
         // Find a hash argument containing `type: :something`
         for arg in arg_list {

@@ -23,11 +23,31 @@ static DIRECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// `is_disabled` matches via the department check.
 fn normalize_directive_cop_name(name: &str) -> String {
     if let Some((dept, _cop)) = name.split_once("::") {
-        dept.to_string()
-    } else {
-        name.to_string()
+        return dept.to_string();
     }
+
+    // Normalize slash-separated names where the first two segments form a
+    // CamelCase department.  Users write `RSpec/Rails/InferredSpecType` in
+    // disable comments, but our canonical cop name is `RSpecRails/InferredSpecType`.
+    // Also handles department-level `RSpec/Rails` → `RSpecRails`.
+    let parts: Vec<&str> = name.split('/').collect();
+    if parts.len() >= 2 {
+        let combined = format!("{}{}", parts[0], parts[1]);
+        if THREE_PART_DEPARTMENTS.contains(&combined.as_str()) {
+            return if parts.len() == 2 {
+                combined
+            } else {
+                format!("{}/{}", combined, parts[2..].join("/"))
+            };
+        }
+    }
+
+    name.to_string()
 }
+
+/// Known CamelCase departments that users may write as two slash-separated
+/// segments in directive comments (e.g. `RSpec/Rails` → `RSpecRails`).
+const THREE_PART_DEPARTMENTS: &[&str] = &["RSpecRails"];
 
 /// Legacy directive aliases derived from obsoletion.yml.
 ///
@@ -543,6 +563,24 @@ mod tests {
         assert!(dr.is_disabled("Metrics/MethodLength", 2));
         assert!(dr.is_disabled("Metrics/MethodLength", 3));
         assert!(!dr.is_disabled("Metrics/MethodLength", 4));
+    }
+
+    #[test]
+    fn three_part_cop_name_disable() {
+        // `RSpec/Rails/InferredSpecType` should disable `RSpecRails/InferredSpecType`
+        let src = "# rubocop:disable RSpec/Rails/InferredSpecType\nx = 1\n# rubocop:enable RSpec/Rails/InferredSpecType\ny = 2\n";
+        let dr = disabled_ranges(src);
+        assert!(dr.is_disabled("RSpecRails/InferredSpecType", 2));
+        assert!(!dr.is_disabled("RSpecRails/InferredSpecType", 4));
+    }
+
+    #[test]
+    fn three_part_department_disable() {
+        // `RSpec/Rails` should disable all `RSpecRails/*` cops
+        let src = "# rubocop:disable RSpec/Rails\nx = 1\n# rubocop:enable RSpec/Rails\ny = 2\n";
+        let dr = disabled_ranges(src);
+        assert!(dr.is_disabled("RSpecRails/InferredSpecType", 2));
+        assert!(!dr.is_disabled("RSpecRails/InferredSpecType", 4));
     }
 
     #[test]

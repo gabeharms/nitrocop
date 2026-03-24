@@ -39,9 +39,9 @@ BASELINE_CONFIG = PROJECT_ROOT / "bench" / "corpus" / "baseline_rubocop.yml"
 LOCAL_CACHE_DIR = PROJECT_ROOT / ".check-cop-cache"
 
 
-def download_corpus_results(prefer: str = "standard") -> Path:
+def download_corpus_results() -> Path:
     """Download corpus-results.json from the latest successful CI run."""
-    path, _run_id, _sha = _download_corpus(prefer=prefer)
+    path, _run_id, _sha = _download_corpus()
     return path
 
 
