@@ -201,15 +201,6 @@ def test_select_backend_for_entry_retry_uses_claude():
     assert "retry" in result["reason"]
 
 
-def test_has_failed_attempt_ignores_open_prs():
-    prs = [
-        {"state": "OPEN", "mergedAt": None},
-        {"state": "MERGED", "mergedAt": "2026-03-22T00:00:00Z"},
-        {"state": "CLOSED", "mergedAt": None},
-    ]
-    assert gct.has_failed_attempt(prs) is True
-    assert gct.has_failed_attempt(prs[:2]) is False
-
 
 def test_select_backend_for_entry_uses_issue_difficulty_when_present():
     result = gct.select_backend_for_entry(
@@ -428,7 +419,7 @@ if __name__ == "__main__":
     test_format_with_diagnostics_omits_no_source_examples_when_diagnosed_exists()
     test_format_with_diagnostics_keeps_no_source_examples_when_they_are_all_we_have()
     test_select_backend_for_entry_retry_uses_claude()
-    test_has_failed_attempt_ignores_open_prs()
+
     test_select_backend_for_entry_uses_issue_difficulty_when_present()
     test_select_backend_for_entry_easy_cop_uses_codex_normal()
     test_build_start_here_section_uses_repo_hotspots_and_examples()

@@ -1243,9 +1243,6 @@ def should_consider_easy_candidate(
     return min_total <= total <= max_total and entry.get("matches", 0) >= min_matches
 
 
-def has_failed_attempt(prs: list[dict]) -> bool:
-    return any(pr.get("state") != "OPEN" and not pr.get("mergedAt") for pr in prs)
-
 
 def select_backend_for_entry(
     cop: str,
@@ -1284,9 +1281,6 @@ def select_backend_for_entry(
     # Retries and prior failures need fresh thinking, not more brute force
     if mode == "retry":
         return _result("claude-oauth-hard", "retry mode needs fresh investigation approach")
-
-    if has_failed_attempt(prior_prs):
-        return _result("claude-oauth-hard", "prior agent attempt failed; needs different approach")
 
     # Explicit issue difficulty labels
     if issue_difficulty:
@@ -1994,11 +1988,11 @@ def _main_checks_healthy(repo: str) -> tuple[bool, str]:
 def cmd_dispatch_issues(args: argparse.Namespace) -> int:
     repo = args.repo
 
-    healthy, health_reason = _main_checks_healthy(repo)
-    if not healthy and not args.dry_run:
-        print(f"ERROR: {health_reason}. Fix main before dispatching.", file=sys.stderr)
-        print("Use --dry-run to see what would be dispatched without this gate.", file=sys.stderr)
-        return 1
+    if not args.dry_run:
+        healthy, health_reason = _main_checks_healthy(repo)
+        if not healthy:
+            print(f"ERROR: {health_reason}. Fix main before dispatching.", file=sys.stderr)
+            return 1
 
     issues = list_tracker_issues(repo)
     dept_filter = args.department
