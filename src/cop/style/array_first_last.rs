@@ -23,6 +23,23 @@ use crate::parse::source::SourceFile;
 /// Fix: Added `visit_index_or_write_node`, `visit_index_and_write_node`, and
 /// `visit_index_operator_write_node` to (a) suppress `[]` calls in arguments
 /// and (b) check the node's own index for `0`/`-1` offenses.
+///
+/// Corpus investigation (2026-03-24):
+///
+/// FP=5: Remaining false positives were `arr[0]` used as the RECEIVER of
+/// index-write nodes, e.g. `remaining_fragments[0][:from_page] ||= val`
+/// or `values[0][1] += value`. The index-write node acts as `[]=`, so
+/// `[0]` is a child of a bracket operation and should be suppressed —
+/// matching RuboCop's `brace_method?(parent)` check.
+///
+/// Fix: Added `suppress_index_write_receiver()` to suppress the receiver
+/// of IndexOrWriteNode / IndexAndWriteNode / IndexOperatorWriteNode when
+/// it is a `[]` call.
+///
+/// FN=67: Could not reproduce with available patterns. All tested patterns
+/// (basic `arr[0]`, explicit `.[]()`, safe-nav `&.[]()`, space-syntax
+/// `.[] 0`, multiline, method args, method chains) are correctly detected.
+/// Remaining FNs likely involve project-specific edge cases in the corpus.
 pub struct ArrayFirstLast;
 
 impl Cop for ArrayFirstLast {
