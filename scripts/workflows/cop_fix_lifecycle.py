@@ -390,7 +390,7 @@ def _build_claim_body(
     ]
     if issue_number:
         lines += [
-            f"Closes #{issue_number}",
+            f"Refs #{issue_number}",
             "",
             f"<!-- nitrocop-cop-issue: number={issue_number} cop={cop} -->",
             "",
@@ -418,7 +418,7 @@ def _build_task_body(
     ]
     if issue_number:
         lines += [
-            f"Closes #{issue_number}",
+            f"Refs #{issue_number}",
             "",
             f"<!-- nitrocop-cop-issue: number={issue_number} cop={cop} -->",
             "",
@@ -933,6 +933,8 @@ def _build_final_pr_body(
     signed_sha: str,
     parent_sha: str,
     repo: str,
+    *,
+    docs_only: bool = False,
 ) -> str:
     agent_result_file = _env_path("AGENT_RESULT_FILE")
     task_file = _env_path("TASK_FILE")
@@ -965,8 +967,9 @@ def _build_final_pr_body(
         "",
     ]
     if issue_number:
+        link_keyword = "Refs" if docs_only else "Closes"
         lines += [
-            f"Closes #{issue_number}",
+            f"{link_keyword} #{issue_number}",
             "",
             f"<!-- nitrocop-cop-issue: number={issue_number} cop={cop} -->",
             "",
@@ -1165,6 +1168,7 @@ def cmd_finalize(args: list[str]) -> int:
         opts.cop, opts.mode, opts.backend_label, opts.model_label,
         opts.run_url, opts.run_number, opts.issue_number, opts.tokens,
         signed_sha, parent_sha, opts.repo,
+        docs_only=docs_only,
     )
     write_and_read(pr_body_file, body)
     _run(["gh", "pr", "edit", opts.pr_url, "--body-file", str(pr_body_file)])

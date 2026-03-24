@@ -29,7 +29,7 @@ def test_agent_cop_fix_supports_issue_linking_and_auto_backend():
     # Logic now lives in cop_fix_lifecycle.py
     assert "dispatch_cops.py" in py
     assert "offense_fixtures_have_no_unannotated_blocks" in py
-    assert "Closes #{" in py
+    assert "Refs #{" in py
     assert "nitrocop-cop-issue" in py
     assert '"gh", "issue", "comment"' in py
     assert "docs/agent-ci.md" in py
