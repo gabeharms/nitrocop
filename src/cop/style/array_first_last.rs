@@ -358,12 +358,20 @@ mod tests {
 
     #[test]
     fn detects_multiline_bracket() {
-        assert_eq!(run(b"arr[\n  0\n]\n").len(), 1, "Should detect multiline arr[0]");
+        assert_eq!(
+            run(b"arr[\n  0\n]\n").len(),
+            1,
+            "Should detect multiline arr[0]"
+        );
     }
 
     #[test]
     fn detects_in_method_argument() {
-        assert_eq!(run(b"foo(arr[0])\n").len(), 1, "Should detect arr[0] in method arg");
+        assert_eq!(
+            run(b"foo(arr[0])\n").len(),
+            1,
+            "Should detect arr[0] in method arg"
+        );
     }
 
     #[test]
@@ -374,12 +382,20 @@ mod tests {
     #[test]
     fn no_offense_receiver_of_index_or_write() {
         let d = run(b"arr[0][:key] ||= val\n");
-        assert!(d.is_empty(), "Should not flag arr[0] as receiver of ||= index-write: {:?}", d);
+        assert!(
+            d.is_empty(),
+            "Should not flag arr[0] as receiver of ||= index-write: {:?}",
+            d
+        );
     }
 
     #[test]
     fn no_offense_receiver_of_index_operator_write() {
         let d = run(b"values[0][1] += value\n");
-        assert!(d.is_empty(), "Should not flag values[0] as receiver of += index-write: {:?}", d);
+        assert!(
+            d.is_empty(),
+            "Should not flag values[0] as receiver of += index-write: {:?}",
+            d
+        );
     }
 }
