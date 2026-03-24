@@ -754,6 +754,78 @@ fn is_semantic_parse_error(message: &str) -> bool {
         || message.starts_with("Invalid return in class/module body")
 }
 
+/// Emit Lint/Syntax diagnostics for structural parse errors.
+/// RuboCop reports parser errors as Lint/Syntax offenses. We emit one diagnostic
+/// per structural parse error, skipping semantic-only errors (break/next/retry/yield
+/// outside proper context) which Prism reports but the Parser gem does not.
+#[allow(clippy::too_many_arguments)]
+fn emit_syntax_diagnostics(
+    source: &SourceFile,
+    parse_result: &ruby_prism::ParseResult<'_>,
+    registry: &CopRegistry,
+    cop_filters: &CopFilterSet,
+    has_dir_overrides: bool,
+    config: &ResolvedConfig,
+    tier_map: &TierMap,
+    args: &Args,
+) -> Vec<Diagnostic> {
+    const SYNTAX_COP: &str = "Lint/Syntax";
+
+    // Check if Lint/Syntax is enabled for this file
+    let cops = registry.cops();
+    let syntax_idx = cops.iter().position(|c| c.name() == SYNTAX_COP);
+    let syntax_idx = match syntax_idx {
+        Some(idx) => idx,
+        None => return Vec::new(),
+    };
+
+    // Apply per-file config overrides if needed
+    let effective_config = if has_dir_overrides {
+        config.effective_config_for_file(&source.path)
+    } else {
+        None
+    };
+    let owned_filters;
+    let active_filters = if let Some(ref file_config) = effective_config {
+        owned_filters = file_config.build_cop_filters(registry, tier_map, args.preview);
+        &owned_filters
+    } else {
+        cop_filters
+    };
+
+    let filter = active_filters.cop_filter(syntax_idx);
+    if !filter.is_enabled() {
+        return Vec::new();
+    }
+    if active_filters.is_cop_excluded(syntax_idx, &source.path) {
+        return Vec::new();
+    }
+    if !args.only.is_empty() && !args.only.iter().any(|o| o == SYNTAX_COP) {
+        return Vec::new();
+    }
+    if args.except.iter().any(|e| e == SYNTAX_COP) {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    for err in parse_result.errors() {
+        if is_semantic_parse_error(err.message()) {
+            continue;
+        }
+        let loc = err.location();
+        let (line, column) = source.offset_to_line_col(loc.start_offset());
+        diagnostics.push(Diagnostic {
+            path: source.path.display().to_string(),
+            location: Location { line, column },
+            severity: Severity::Fatal,
+            cop_name: SYNTAX_COP.to_string(),
+            message: err.message().to_string(),
+            corrected: false,
+        });
+    }
+    diagnostics
+}
+
 /// Run all enabled cops once on a source file. Returns (diagnostics, corrections).
 #[allow(clippy::too_many_arguments)] // internal lint pipeline threading shared state
 fn lint_source_once(
@@ -792,7 +864,20 @@ fn lint_source_once(
         if let Some(t) = timers {
             t.codemap_ns.fetch_add(0, Ordering::Relaxed);
         }
-        return (Vec::new(), Vec::new());
+
+        // Emit Lint/Syntax diagnostics for each structural parse error,
+        // matching RuboCop which reports parser errors as Lint/Syntax offenses.
+        let syntax_diagnostics = emit_syntax_diagnostics(
+            source,
+            &parse_result,
+            registry,
+            cop_filters,
+            has_dir_overrides,
+            config,
+            tier_map,
+            args,
+        );
+        return (syntax_diagnostics, Vec::new());
     }
 
     // Non-UTF-8 files with encoding magic comments (e.g., `# encoding: iso-8859-7`)

@@ -3,9 +3,19 @@ use crate::diagnostic::Severity;
 
 /// Checks for syntax errors.
 ///
-/// This is a stub cop. Prism handles syntax error reporting during parsing,
-/// and the nitrocop pipeline reports parse errors separately. This cop exists
-/// so the cop name is registered and can be referenced in configuration.
+/// This cop is a registration stub — the actual detection logic lives in
+/// `emit_syntax_diagnostics()` in `src/linter.rs`. When a file has structural
+/// parse errors (detected by Prism), each error is emitted as a Lint/Syntax
+/// offense with Fatal severity, matching RuboCop's behavior of repacking
+/// parser diagnostics into Lint/Syntax offenses.
+///
+/// ## Corpus investigation (2026-03-24)
+///
+/// FN=4708: nitrocop silently skipped files with parse errors (returning empty
+/// diagnostics). RuboCop's Lint/Syntax reports each parser error/fatal diagnostic
+/// as a separate offense. Fixed by adding `emit_syntax_diagnostics()` to the
+/// linter pipeline that emits one Lint/Syntax diagnostic per structural Prism
+/// error when the cop is enabled.
 pub struct Syntax;
 
 impl Cop for Syntax {
