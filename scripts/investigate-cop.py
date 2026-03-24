@@ -103,8 +103,6 @@ def main():
                         help="Show only false negatives")
     parser.add_argument("--limit", type=int, default=0,
                         help="Limit number of examples shown (0 = all)")
-    parser.add_argument("--extended", action="store_true",
-                        help="Use extended corpus (5k+ repos) instead of standard (1k repos)")
     args = parser.parse_args()
 
     if args.fp_only and args.fn_only:
@@ -115,8 +113,7 @@ def main():
     if args.input:
         input_path = args.input
     else:
-        prefer = "extended" if args.extended else "standard"
-        input_path = download_corpus_results(prefer=prefer)
+        input_path = download_corpus_results()
 
     data = json.loads(input_path.read_text())
     by_cop = data["by_cop"]

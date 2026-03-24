@@ -58,8 +58,7 @@ def build_paths_from_root(workflow: str, root: Path) -> dict[str, str]:
                 "FINAL_PR_DIFF_STAT_FILE": str(root / "repair" / "final-pr-diff.stat"),
                 "FINAL_PR_DIFF_FILE": str(root / "repair" / "final-pr.diff"),
                 "REPAIR_COP_CHECK_PACKET_FILE": str(root / "repair" / "cop-check-packet.md"),
-                "REPAIR_CORPUS_STANDARD_FILE": str(root / "repair" / "corpus-standard.json"),
-                "REPAIR_CORPUS_EXTENDED_FILE": str(root / "repair" / "corpus-extended.json"),
+                "REPAIR_CORPUS_FILE": str(root / "repair" / "corpus.json"),
                 "REPAIR_CHANGED_COPS_FILE": str(root / "repair" / "changed-cops.txt"),
             }
         )

@@ -5,7 +5,7 @@ Fast Ruby linter in Rust targeting RuboCop compatibility. Uses Prism for parsing
 ## Mental Model
 
 - A **cop** is one RuboCop-compatible rule implemented in Rust under `src/cop/`.
-- The **corpus** is the real-world repo set used to compare nitrocop against RuboCop. `standard` is the normal corpus; `extended` is the larger, slower one.
+- The **corpus** is the real-world repo set (~5,500 repos) used to compare nitrocop against RuboCop.
 - The **corpus oracle** is the CI workflow that produces baseline `corpus-results.json` artifacts consumed by the Python investigation and regression tools.
 - `bench/` contains benchmark and corpus tooling. In practice, `bench/corpus/` is where the Ruby bundle and corpus helpers live, while `bench_nitrocop` is the full benchmark/conformance driver.
 - Most cop work follows this loop: add or update fixtures, make the cop pass targeted tests, then run per-cop corpus checks to confirm no regression.

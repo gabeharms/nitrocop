@@ -7,15 +7,7 @@ permissions:
   pull-requests: read
 
 on:
-  workflow_dispatch:
-    inputs:
-      corpus:
-        description: "Corpus artifact to sync from"
-        type: choice
-        options:
-          - extended
-          - standard
-        default: extended
+  workflow_dispatch: {}
 
 jobs:
   sync:
@@ -47,11 +39,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          ARGS=()
-          if [ "${{ github.event.inputs.corpus }}" = "extended" ]; then
-            ARGS+=(--extended)
-          fi
           python3 scripts/dispatch-cops.py issues-sync \
             --repo "${{ github.repository }}" \
-            --binary target/debug/nitrocop \
-            "${ARGS[@]}"
+            --binary target/debug/nitrocop

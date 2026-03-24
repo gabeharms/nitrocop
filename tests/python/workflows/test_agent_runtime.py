@@ -49,8 +49,7 @@ def test_current_paths_uses_centralized_runtime_defaults():
         else:
             os.environ["AGENT_RUNTIME_ROOT"] = original_root
 
-    assert paths["REPAIR_CORPUS_STANDARD_FILE"].endswith("/agent-pr-repair/repair/corpus-standard.json")
-    assert paths["REPAIR_CORPUS_EXTENDED_FILE"].endswith("/agent-pr-repair/repair/corpus-extended.json")
+    assert paths["REPAIR_CORPUS_FILE"].endswith("/agent-pr-repair/repair/corpus.json")
 
 
 def test_cli_emits_env_assignments_and_creates_directories():

@@ -17,34 +17,26 @@ class Artifact:
     detail: str
 
 
-STANDARD_ARTIFACTS = (
+ARTIFACTS = (
     Artifact(
         "src/resources/tiers.json",
         "tiers.json",
-        "Stable and preview tiers regenerated from the latest standard corpus results.",
+        "Stable and preview tiers regenerated from the latest corpus results.",
     ),
     Artifact(
         "README.md",
         "README",
-        "Top-level conformance summary refreshed from the latest standard corpus results.",
+        "Top-level conformance summary refreshed from the latest corpus results.",
     ),
     Artifact(
         "docs/corpus.md",
-        "standard corpus report",
-        "Full standard corpus report regenerated.",
-    ),
-)
-
-EXTENDED_ARTIFACTS = (
-    Artifact(
-        "docs/corpus_extended.md",
-        "extended corpus report",
-        "Full extended corpus report regenerated.",
+        "corpus report",
+        "Full corpus report regenerated.",
     ),
     Artifact(
         "docs/cop_coverage.md",
         "cop coverage report",
-        "Cop coverage summary refreshed from the latest extended corpus results.",
+        "Cop coverage summary refreshed from the latest corpus results.",
     ),
 )
 
@@ -75,18 +67,9 @@ def human_join(items: list[str]) -> str:
     return f"{', '.join(items[:-1])}, and {items[-1]}"
 
 
-def catalog_for(corpus_size: str) -> tuple[Artifact, ...]:
-    if corpus_size == "standard":
-        return STANDARD_ARTIFACTS
-    if corpus_size == "extended":
-        return EXTENDED_ARTIFACTS
-    raise ValueError(f"Unsupported corpus size: {corpus_size}")
-
-
-def select_artifacts(corpus_size: str, changed_files: list[str]) -> list[Artifact]:
-    catalog = catalog_for(corpus_size)
-    known = {artifact.path: artifact for artifact in catalog}
-    selected = [artifact for artifact in catalog if artifact.path in changed_files]
+def select_artifacts(changed_files: list[str]) -> list[Artifact]:
+    known = {artifact.path: artifact for artifact in ARTIFACTS}
+    selected = [artifact for artifact in ARTIFACTS if artifact.path in changed_files]
 
     for path in changed_files:
         if path in known:
@@ -103,21 +86,20 @@ def select_artifacts(corpus_size: str, changed_files: list[str]) -> list[Artifac
 
 def build_metadata(
     *,
-    corpus_size: str,
     repo_filter: str,
     run_number: str,
     run_url: str,
     changed_files: list[str],
 ) -> dict[str, str]:
-    artifacts = select_artifacts(corpus_size, changed_files)
+    artifacts = select_artifacts(changed_files)
     if artifacts:
         artifact_summary = human_join([artifact.label for artifact in artifacts])
         changed_artifacts_cell = human_join([f"`{artifact.label}`" for artifact in artifacts])
     else:
-        artifact_summary = f"{corpus_size} corpus artifacts"
+        artifact_summary = "corpus artifacts"
         changed_artifacts_cell = f"`{artifact_summary}`"
 
-    subject = f"Corpus oracle ({corpus_size}): refresh {artifact_summary}"
+    subject = f"Corpus oracle: refresh {artifact_summary}"
     scope = "all repos" if repo_filter == "all" else repo_filter
 
     lines = [
@@ -127,7 +109,6 @@ def build_metadata(
         "",
         "| | |",
         "|---|---|",
-        f"| **Corpus** | `{corpus_size}` |",
         f"| **Scope** | `{scope}` |",
         f"| **Changed artifacts** | {changed_artifacts_cell} |",
         "| **CI** | intentionally skipped via `[skip ci]` |",
@@ -157,14 +138,12 @@ def build_metadata(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Render metadata for corpus-oracle PRs")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
-    parser.add_argument("--corpus-size", choices=["standard", "extended"], required=True)
     parser.add_argument("--repo-filter", default="all")
     parser.add_argument("--run-number", required=True)
     parser.add_argument("--run-url", required=True)
     args = parser.parse_args()
 
     metadata = build_metadata(
-        corpus_size=args.corpus_size,
         repo_filter=args.repo_filter,
         run_number=args.run_number,
         run_url=args.run_url,

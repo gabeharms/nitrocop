@@ -279,22 +279,7 @@ def _run_one_repo(args: tuple[str, str]) -> tuple[str, int]:
 
 
 def load_manifest() -> dict[str, dict]:
-    """Load repo info from all manifests, keyed by repo ID."""
-    repos = {}
-    for path in [MANIFEST_PATH, PROJECT_ROOT / "bench" / "corpus" / "manifest_extended.jsonl"]:
-        if not path.exists():
-            continue
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    entry = json.loads(line)
-                    repos[entry["id"]] = entry
-    return repos
-
-
-def load_standard_manifest() -> dict[str, dict]:
-    """Load repo info from the standard manifest, keyed by repo ID."""
+    """Load repo info from manifest.jsonl, keyed by repo ID."""
     repos = {}
     if not MANIFEST_PATH.exists():
         return repos
@@ -404,13 +389,13 @@ def clone_repos_for_cop(cop_name: str, data: dict):
     print(f"  Cloned {ok}/{len(to_clone)} repos", file=sys.stderr)
 
 
-def validate_corpus(include_extended: bool = False):
+def validate_corpus():
     """Check that local corpus matches manifest.jsonl.
 
     Fails fast on missing or extra repos so local reruns use the exact
     same corpus checkout as CI.
     """
-    manifest = load_manifest() if include_extended else load_standard_manifest()
+    manifest = load_manifest()
     if not manifest:
         return
 
@@ -442,8 +427,7 @@ def validate_corpus(include_extended: bool = False):
         if len(wrong_sha) > 20:
             print(f"  ... and {len(wrong_sha) - 20} more", file=sys.stderr)
     if extra or missing or wrong_sha:
-        manifest_msg = "manifest.jsonl + manifest_extended.jsonl" if include_extended else "manifest.jsonl"
-        print(f"Corpus checkout does not match bench/corpus/{manifest_msg}. "
+        print("Corpus checkout does not match bench/corpus/manifest.jsonl. "
               "Run bench/corpus/clone_repos.sh to sync repos.", file=sys.stderr)
         if wrong_sha or len(missing) > 5:
             sys.exit(1)
@@ -562,16 +546,13 @@ def main():
                         help="Only run repos with baseline activity (faster, may miss new FPs on zero-baseline repos)")
     parser.add_argument("--clone", action="store_true",
                         help="Auto-clone needed corpus repos from manifest (for CI use with --rerun --quick)")
-    parser.add_argument("--extended", action="store_true",
-                        help="Use extended corpus (5k+ repos) instead of standard (1k repos)")
     args = parser.parse_args()
 
     # Load corpus results
     if args.input:
         input_path = args.input
     else:
-        prefer = "extended" if args.extended else "standard"
-        input_path = download_corpus_results(prefer=prefer)
+        input_path = download_corpus_results()
 
     data = json.loads(input_path.read_text())
     by_cop = data["by_cop"]
@@ -599,7 +580,7 @@ def main():
             # Auto-clone needed repos instead of requiring full corpus checkout
             clone_repos_for_cop(args.cop, data)
         else:
-            validate_corpus(args.extended)
+            validate_corpus()
         check_corpus_bundle()
 
     print(f"Checking {args.cop} against corpus")

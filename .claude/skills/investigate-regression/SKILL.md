@@ -1,6 +1,6 @@
 ---
 name: investigate-regression
-description: Investigate a standard or extended corpus regression between two corpus-oracle runs, reopen the linked cop issue, and determine whether to dispatch a repair or surface a strong revert candidate.
+description: Investigate a corpus regression between two corpus-oracle runs, reopen the linked cop issue, and determine whether to dispatch a repair or surface a strong revert candidate.
 allowed-tools: Bash(*), Read, Grep, Glob, AskUserQuestion
 ---
 
@@ -28,13 +28,13 @@ lists regressed cops, links them to tracker issues, and surfaces:
 Reopen/comment linked issues for regressed cops:
 
 ```bash
-python3 scripts/investigate-regression.py --repo 6/nitrocop --corpus extended --action reopen
+python3 scripts/investigate-regression.py --repo 6/nitrocop --action reopen
 ```
 
 Reopen issues and dispatch simple regressions back into `agent-cop-fix`:
 
 ```bash
-python3 scripts/investigate-regression.py --repo 6/nitrocop --corpus standard --action dispatch-simple
+python3 scripts/investigate-regression.py --repo 6/nitrocop --action dispatch-simple
 ```
 
 ## Workflow entrypoint

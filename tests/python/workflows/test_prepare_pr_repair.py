@@ -109,8 +109,7 @@ def test_prompt_includes_route_and_failed_packet():
         diff_text="diff --git a/a b/a\n+change\n",
         extra_context="Keep the patch narrow.",
         corpus_context={
-            "standard": {"path": "/tmp/repair-corpus-standard.json", "run_id": "123", "head_sha": "abc"},
-            "extended": {"path": "/tmp/repair-corpus-extended.json", "run_id": "456", "head_sha": "def"},
+            "path": "/tmp/repair-corpus.json", "run_id": "123", "head_sha": "abc",
         },
     )
     assert "PR #130" in prompt
@@ -120,8 +119,7 @@ def test_prompt_includes_route_and_failed_packet():
     assert "Before making changes, read `docs/agent-ci.md`." in prompt
     assert "Do not repair this PR by reverting it back to `origin/main`" in prompt
     assert "empty PR is treated as a failed repair" in prompt
-    assert "/tmp/repair-corpus-standard.json" in prompt
-    assert "/tmp/repair-corpus-extended.json" in prompt
+    assert "/tmp/repair-corpus.json" in prompt
     assert "read-only token is available in `GH_TOKEN`" in prompt
     assert prompt.index("## Local Corpus Context") < prompt.index("## Failed Checks Packet")
 
@@ -150,18 +148,15 @@ def test_normalize_log_strips_actions_prefix_and_cleanup_noise():
 
 
 def test_prefetch_corpus_context_uses_runtime_env_paths():
-    original_standard = os.environ.get("REPAIR_CORPUS_STANDARD_FILE")
-    original_extended = os.environ.get("REPAIR_CORPUS_EXTENDED_FILE")
+    original_corpus = os.environ.get("REPAIR_CORPUS_FILE")
     tmpdir = Path(tempfile.mkdtemp())
-    standard_target = tmpdir / "repair" / "corpus-standard.json"
-    extended_target = tmpdir / "repair" / "corpus-extended.json"
-    os.environ["REPAIR_CORPUS_STANDARD_FILE"] = str(standard_target)
-    os.environ["REPAIR_CORPUS_EXTENDED_FILE"] = str(extended_target)
+    corpus_target = tmpdir / "repair" / "corpus.json"
+    os.environ["REPAIR_CORPUS_FILE"] = str(corpus_target)
 
     copied = []
 
-    def fake_download(prefer: str):
-        return (Path(f"/source/{prefer}.json"), f"{prefer}-run", f"{prefer}-sha")
+    def fake_download():
+        return (Path("/source/corpus.json"), "run-123", "sha-abc")
 
     def fake_copy2(source, target):
         copied.append((str(source), str(target)))
@@ -173,26 +168,20 @@ def test_prefetch_corpus_context_uses_runtime_env_paths():
     prepare_pr_repair._download_corpus = fake_download
     prepare_pr_repair.shutil.copy2 = fake_copy2
     try:
-        contexts = prepare_pr_repair.prefetch_corpus_context("hard")
+        context = prepare_pr_repair.prefetch_corpus_context("hard")
     finally:
         prepare_pr_repair._download_corpus = original_download
         prepare_pr_repair.shutil.copy2 = original_copy2
-        if original_standard is None:
-            os.environ.pop("REPAIR_CORPUS_STANDARD_FILE", None)
+        if original_corpus is None:
+            os.environ.pop("REPAIR_CORPUS_FILE", None)
         else:
-            os.environ["REPAIR_CORPUS_STANDARD_FILE"] = original_standard
-        if original_extended is None:
-            os.environ.pop("REPAIR_CORPUS_EXTENDED_FILE", None)
-        else:
-            os.environ["REPAIR_CORPUS_EXTENDED_FILE"] = original_extended
+            os.environ["REPAIR_CORPUS_FILE"] = original_corpus
         if tmpdir.exists():
             shutil.rmtree(tmpdir)
 
-    assert contexts["standard"]["path"] == str(standard_target)
-    assert contexts["extended"]["path"] == str(extended_target)
+    assert context["path"] == str(corpus_target)
     assert copied == [
-        ("/source/standard.json", str(standard_target)),
-        ("/source/extended.json", str(extended_target)),
+        ("/source/corpus.json", str(corpus_target)),
     ]
 
 

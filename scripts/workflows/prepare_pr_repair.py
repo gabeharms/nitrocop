@@ -302,25 +302,19 @@ def excerpt_diff(diff_text: str, max_lines: int = 220) -> str:
     return "\n".join(lines)
 
 
-def prefetch_corpus_context(route: str) -> dict[str, dict[str, str]]:
+def prefetch_corpus_context(route: str) -> dict[str, str]:
     if route != "hard":
         return {}
 
     runtime_paths = agent_runtime.current_paths("agent-pr-repair")
-    contexts: dict[str, dict[str, str]] = {}
-    for prefer, path_key in (
-        ("standard", "REPAIR_CORPUS_STANDARD_FILE"),
-        ("extended", "REPAIR_CORPUS_EXTENDED_FILE"),
-    ):
-        source_path, run_id, head_sha = _download_corpus(prefer=prefer)
-        target_path = Path(runtime_paths[path_key])
-        shutil.copy2(source_path, target_path)
-        contexts[prefer] = {
-            "path": str(target_path),
-            "run_id": str(run_id),
-            "head_sha": head_sha,
-        }
-    return contexts
+    source_path, run_id, head_sha = _download_corpus()
+    target_path = Path(runtime_paths["REPAIR_CORPUS_FILE"])
+    shutil.copy2(source_path, target_path)
+    return {
+        "path": str(target_path),
+        "run_id": str(run_id),
+        "head_sha": head_sha,
+    }
 
 
 def build_prompt(
@@ -402,17 +396,11 @@ def build_prompt(
             "If you still need GitHub metadata for debugging, a read-only token is available in `GH_TOKEN`.",
             "",
         ])
-        standard = corpus_context.get("standard")
-        if standard:
+        corpus_path = corpus_context.get("path")
+        if corpus_path:
             lines.append(
-                f"- Standard corpus JSON (matches the PR `cop-check` gate): `{standard['path']}` "
-                f"(corpus oracle run #{standard['run_id']})"
-            )
-        extended = corpus_context.get("extended")
-        if extended:
-            lines.append(
-                f"- Extended corpus JSON (broader diagnosis): `{extended['path']}` "
-                f"(corpus oracle run #{extended['run_id']})"
+                f"- Corpus JSON (matches the PR `cop-check` gate): `{corpus_path}` "
+                f"(corpus oracle run #{corpus_context['run_id']})"
             )
         lines.extend([
             "",
@@ -420,16 +408,12 @@ def build_prompt(
             "",
             "```bash",
         ])
-        if standard:
+        if corpus_path:
             lines.append(
-                f"python3 scripts/investigate-cop.py Department/CopName --input {standard['path']} --context"
+                f"python3 scripts/investigate-cop.py Department/CopName --input {corpus_path} --context"
             )
             lines.append(
-                f"python3 scripts/check-cop.py Department/CopName --input {standard['path']} --verbose --rerun --quick --clone"
-            )
-        elif extended:
-            lines.append(
-                f"python3 scripts/investigate-cop.py Department/CopName --input {extended['path']} --context"
+                f"python3 scripts/check-cop.py Department/CopName --input {corpus_path} --verbose --rerun --quick --clone"
             )
         lines.extend([
             "```",
@@ -556,10 +540,8 @@ def main() -> None:
     print(f"cop_check_failure={'true' if classification['cop_check_failure'] else 'false'}")
     print(f"reason={classification['reason']}")
     print(f"failed_jobs={len(classification['jobs'])}")
-    if "standard" in corpus_context:
-        print(f"standard_corpus={corpus_context['standard']['path']}")
-    if "extended" in corpus_context:
-        print(f"extended_corpus={corpus_context['extended']['path']}")
+    if "path" in corpus_context:
+        print(f"corpus={corpus_context['path']}")
 
 
 if __name__ == "__main__":

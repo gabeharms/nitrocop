@@ -48,7 +48,7 @@ If `bundle info rubocop` fails, config resolution falls back to defaults and cou
 Issue-backed cop dispatch:
 
 ```bash
-python3 scripts/dispatch-cops.py issues-sync --extended --binary target/debug/nitrocop
+python3 scripts/dispatch-cops.py issues-sync --binary target/debug/nitrocop
 python3 scripts/dispatch-cops.py dispatch-issues --max-active 5
 python3 scripts/dispatch-cops.py backend --cop Department/CopName --binary target/debug/nitrocop
 ```
@@ -56,7 +56,7 @@ python3 scripts/dispatch-cops.py backend --cop Department/CopName --binary targe
 Regression triage:
 
 ```bash
-python3 scripts/investigate-regression.py --corpus standard --action report
+python3 scripts/investigate-regression.py --action report
 ```
 
 ## Bench And Conformance

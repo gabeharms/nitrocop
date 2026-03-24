@@ -140,7 +140,6 @@ jobs:
         run: |
           python3 scripts/dispatch-cops.py task \
             "${{ github.event.inputs.cop }}" \
-            --extended \
             --binary target/debug/nitrocop \
             --output "$TASK_FILE"
           echo "=== Task prompt stats ==="

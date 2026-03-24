@@ -22,12 +22,6 @@ Final stop condition:
 - The target shows 100.0% / 0 FP / 0 FN in the generated corpus reports
   (`README.md`, `docs/corpus.md`, and related artifacts), never via manual edits.
 - Linux CI/corpus oracle agrees with the local result.
-- **When `--extended` is passed:** the acceptance target is the extended corpus
-  (~5k repos), not just the standard corpus (~1k repos). Fix ALL divergences
-  shown by `gem_progress.py --extended`, even if the standard corpus already
-  shows 100%. The extended corpus reveals real bugs in edge-case repos that the
-  standard corpus misses.
-
 Per-cop `check-cop.py --rerun` results are intermediate count-based gates only.
 They are necessary, but they are NOT sufficient to end `/fix-department`.
 When the corpus oracle has concrete FP/FN examples for a cop, use
@@ -104,14 +98,6 @@ On macOS or devcontainers, committing directly to main is acceptable.
    ```bash
    python3 .claude/skills/fix-department/scripts/gem_progress.py --summary
    ```
-   If the user passed `--extended`, add `--extended` to all `gem_progress.py` invocations
-   **and** to all `investigate-cop.py`, `investigate-repo.py`, `check-cop.py`, and
-   `verify-cop-locations.py` invocations throughout the entire workflow:
-   ```bash
-   python3 .claude/skills/fix-department/scripts/gem_progress.py --summary --extended
-   ```
-   The default uses the **standard corpus** (~1k repos, matches README/docs scorecard).
-   `--extended` uses the extended corpus (~5k repos) for more granular FP/FN data.
    The script automatically detects cops fixed since the last corpus oracle run by
    scanning git commit messages, and shows them as "Fixed (pending corpus confirmation)"
    so the scoreboard reflects reality between corpus runs.
@@ -544,7 +530,6 @@ Do not leave retained progress only in a feature branch.
 - `/fix-department rubocop-performance` — target rubocop-performance directly
 - `/fix-department rubocop-rspec` — target rubocop-rspec directly
 - `/fix-department --input /path/to/corpus-results.json` — use local corpus file
-- `/fix-department Rails --extended` — use extended corpus (5k+ repos) instead of standard (1k repos)
 
 ## How to Choose the Next Gem
 

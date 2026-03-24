@@ -10,7 +10,6 @@ real-world validation from the corpus.
 Usage:
     python3 scripts/cop-coverage.py --input results.json                    # single corpus
     python3 scripts/cop-coverage.py --input results.json --synthetic s.json # + synthetic
-    python3 scripts/cop-coverage.py --input results.json --extended e.json  # + extended corpus
     python3 scripts/cop-coverage.py --zero-only                             # only zero-hit cops
     python3 scripts/cop-coverage.py --department Style                      # filter by department
     python3 scripts/cop-coverage.py --format csv                            # CSV output
@@ -39,7 +38,7 @@ def load_corpus_results(input_path: str | None) -> dict:
     if input_path:
         return json.loads(Path(input_path).read_text())
 
-    path, run_id, _ = download_corpus_results(prefer="extended")
+    path, run_id, _ = download_corpus_results()
     print(f"Using corpus results from CI run {run_id}", file=sys.stderr)
     return json.loads(path.read_text())
 

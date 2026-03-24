@@ -252,8 +252,6 @@ def main():
                         help="(deprecated, use git-based detection) File with cop names to exclude")
     parser.add_argument("--no-git-exclude", action="store_true",
                         help="Disable automatic git-based exclusion of already-fixed cops")
-    parser.add_argument("--extended", action="store_true",
-                        help="Use extended corpus (5k+ repos) instead of standard (1k repos)")
     args = parser.parse_args()
 
     if not args.repo and not args.list:
@@ -267,8 +265,7 @@ def main():
     if args.input:
         input_path = args.input
     else:
-        prefer = "extended" if args.extended else "standard"
-        input_path, oracle_sha = download_corpus_results(prefer=prefer)
+        input_path, oracle_sha = download_corpus_results()
 
     # Detect cops fixed since the corpus oracle run via git history
     exclude_cops: set[str] = set()

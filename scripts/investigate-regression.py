@@ -3,9 +3,9 @@ from __future__ import annotations
 
 """Investigate regressions between two corpus oracle runs.
 
-Compares two corpus runs (standard or extended), identifies cops whose FP/FN
-counts regressed, links them back to tracker issues, and surfaces likely
-candidate commits / merged bot PRs in the commit range.
+Compares two corpus runs, identifies cops whose FP/FN counts regressed,
+links them back to tracker issues, and surfaces likely candidate commits /
+merged bot PRs in the commit range.
 
 Optional actions:
 - `report` (default): print a markdown report only
@@ -51,8 +51,8 @@ def run_gh(args: list[str], *, check: bool = True) -> str:
     return run(["gh", *args], check=check)
 
 
-def artifact_name(corpus: str) -> str:
-    return "corpus-report-extended" if corpus == "extended" else "corpus-report"
+def artifact_name() -> str:
+    return "corpus-report"
 
 
 def pascal_to_snake(name: str) -> str:
@@ -143,14 +143,14 @@ def list_corpus_runs(repo: str) -> list[dict]:
     ]
 
 
-def download_run_corpus(repo: str, run_id: int, corpus: str) -> Path | None:
+def download_run_corpus(repo: str, run_id: int) -> Path | None:
     tmpdir = tempfile.mkdtemp(prefix=f"regression-{run_id}-")
     result = subprocess.run(
         [
             "gh", "run", "download",
             "--repo", repo,
             str(run_id),
-            f"--name={artifact_name(corpus)}",
+            f"--name={artifact_name()}",
             f"--dir={tmpdir}",
         ],
         capture_output=True,
@@ -169,7 +169,6 @@ def download_run_corpus(repo: str, run_id: int, corpus: str) -> Path | None:
 
 def resolve_run_pair(
     repo: str,
-    corpus: str,
     *,
     before_run: int | None,
     after_run: int | None,
@@ -182,14 +181,14 @@ def resolve_run_pair(
     explicit = [after_run, before_run]
     if after_run is not None:
         meta = next((run for run in runs if run["id"] == after_run), {"id": after_run, "head_sha": "", "created_at": "", "html_url": f"https://github.com/{repo}/actions/runs/{after_run}"})
-        path = download_run_corpus(repo, after_run, corpus)
+        path = download_run_corpus(repo, after_run)
         if path is None:
-            raise SystemExit(f"Could not download {corpus} corpus artifact from run {after_run}")
+            raise SystemExit(f"Could not download corpus artifact from run {after_run}")
         chosen.append((meta, path))
     for run in runs:
         if run["id"] in explicit:
             continue
-        path = download_run_corpus(repo, run["id"], corpus)
+        path = download_run_corpus(repo, run["id"])
         if path is None:
             continue
         chosen.append((run, path))
@@ -197,16 +196,16 @@ def resolve_run_pair(
             break
     if before_run is not None:
         meta = next((run for run in runs if run["id"] == before_run), {"id": before_run, "head_sha": "", "created_at": "", "html_url": f"https://github.com/{repo}/actions/runs/{before_run}"})
-        path = download_run_corpus(repo, before_run, corpus)
+        path = download_run_corpus(repo, before_run)
         if path is None:
-            raise SystemExit(f"Could not download {corpus} corpus artifact from run {before_run}")
+            raise SystemExit(f"Could not download corpus artifact from run {before_run}")
         if chosen:
             after_meta, after_path = chosen[0]
         else:
             raise SystemExit("Missing after run")
         return meta, after_meta, path, after_path
     if len(chosen) < 2:
-        raise SystemExit(f"Need two successful {corpus} corpus runs with downloadable artifacts")
+        raise SystemExit("Need two successful corpus runs with downloadable artifacts")
     after_meta, after_path = chosen[0]
     before_meta, before_path = chosen[1]
     return before_meta, after_meta, before_path, after_path
@@ -323,9 +322,9 @@ def recommended_action(regression: dict) -> str:
     return "manual_investigation"
 
 
-def build_comment(regression: dict, before_meta: dict, after_meta: dict, corpus: str) -> str:
+def build_comment(regression: dict, before_meta: dict, after_meta: dict) -> str:
     lines = [
-        f"Regression detected for `{regression['cop']}` in the latest {corpus} corpus comparison.",
+        f"Regression detected for `{regression['cop']}` in the latest corpus comparison.",
         "",
         f"- Before run: [#{before_meta['id']}]({before_meta['html_url']})",
         f"- After run: [#{after_meta['id']}]({after_meta['html_url']})",
@@ -373,10 +372,10 @@ def reopen_and_comment_issue(repo: str, issue: dict, comment: str) -> None:
     )
 
 
-def dispatch_simple_repair(repo: str, issue: dict, regression: dict, corpus: str) -> None:
+def dispatch_simple_repair(repo: str, issue: dict, regression: dict) -> None:
     extra_context = (
         f"Main regressed for {regression['cop']} between corpus runs {regression['before_run_id']} "
-        f"and {regression['after_run_id']} on the {corpus} corpus. "
+        f"and {regression['after_run_id']}. "
         "Investigate the regression introduced after merge and keep the fix narrow."
     )
     subprocess.run(
@@ -395,9 +394,9 @@ def dispatch_simple_repair(repo: str, issue: dict, regression: dict, corpus: str
     )
 
 
-def render_report(corpus: str, before_meta: dict, after_meta: dict, regressions: list[dict]) -> str:
+def render_report(before_meta: dict, after_meta: dict, regressions: list[dict]) -> str:
     lines = [
-        f"# Regression Investigation ({corpus})",
+        "# Regression Investigation",
         "",
         f"- Before run: [#{before_meta['id']}]({before_meta['html_url']}) `{before_meta['head_sha']}`",
         f"- After run: [#{after_meta['id']}]({after_meta['html_url']}) `{after_meta['head_sha']}`",
@@ -433,7 +432,6 @@ def render_report(corpus: str, before_meta: dict, after_meta: dict, regressions:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Investigate regressions between corpus oracle runs")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""), help="GitHub repo owner/name")
-    parser.add_argument("--corpus", choices=["standard", "extended"], default="standard")
     parser.add_argument("--before-run", type=int, help="Older corpus-oracle run ID")
     parser.add_argument("--after-run", type=int, help="Newer corpus-oracle run ID")
     parser.add_argument("--action", choices=["report", "reopen", "dispatch-simple"], default="report")
@@ -446,7 +444,6 @@ def main() -> int:
 
     before_meta, after_meta, before_path, after_path = resolve_run_pair(
         args.repo,
-        args.corpus,
         before_run=args.before_run,
         after_run=args.after_run,
     )
@@ -474,12 +471,12 @@ def main() -> int:
             reopen_and_comment_issue(
                 args.repo,
                 issue,
-                build_comment(regression, before_meta, after_meta, args.corpus),
+                build_comment(regression, before_meta, after_meta),
             )
             if args.action == "dispatch-simple" and regression["action"] == "dispatch_repair":
-                dispatch_simple_repair(args.repo, issue, regression, args.corpus)
+                dispatch_simple_repair(args.repo, issue, regression)
 
-    report = render_report(args.corpus, before_meta, after_meta, regressions)
+    report = render_report(before_meta, after_meta, regressions)
     if args.output:
         args.output.write_text(report)
     else:
@@ -489,7 +486,6 @@ def main() -> int:
         args.json_output.write_text(
             json.dumps(
                 {
-                    "corpus": args.corpus,
                     "before_run": before_meta,
                     "after_run": after_meta,
                     "regressions": regressions,

@@ -37,7 +37,7 @@ Inspect the current dispatchable set and sync the tracker issues:
 
 ```bash
 python3 scripts/dispatch-cops.py rank
-gh workflow run cop-issue-sync.yml -f corpus=extended
+gh workflow run cop-issue-sync.yml
 ```
 
 This runs pre-diagnostic on every cop's FP/FN examples to classify them as
@@ -53,8 +53,8 @@ python3 scripts/dispatch-cops.py rank --min-bugs 2 --max-total 10
 For harder cops or overview by tier:
 
 ```bash
-python3 scripts/dispatch-cops.py tiers --extended --tier 1   # simple FP+FN count view
-python3 scripts/investigate-cop.py Department/CopName --extended --context  # deep dive
+python3 scripts/dispatch-cops.py tiers --tier 1   # simple FP+FN count view
+python3 scripts/investigate-cop.py Department/CopName --context  # deep dive
 ```
 
 **Skip cops with 0 code bugs** — they're all config issues and the workflow
@@ -140,13 +140,13 @@ gh workflow run agent-cop-fix.yml \
 After merging a batch (~20-50 PRs), run the full corpus oracle:
 
 ```bash
-gh workflow run corpus-oracle.yml -f corpus_size=extended
+gh workflow run corpus-oracle.yml
 ```
 
 Wait ~90 min, then check results:
 
 ```bash
-python3 scripts/dispatch-cops.py tiers --extended
+python3 scripts/dispatch-cops.py tiers
 ```
 
 ## Arguments

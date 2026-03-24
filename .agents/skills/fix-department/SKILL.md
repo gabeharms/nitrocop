@@ -22,12 +22,6 @@ Final stop condition:
 - The target shows 100.0% / 0 FP / 0 FN in the generated corpus reports
   (`README.md`, `docs/corpus.md`, and related artifacts), never via manual edits.
 - Linux CI/corpus oracle agrees with the local result.
-- **When `--extended` is passed:** the acceptance target is the extended corpus
-  (~5k repos), not just the standard corpus (~1k repos). Fix ALL divergences
-  shown by `gem_progress.py --extended`, even if the standard corpus already
-  shows 100%. The extended corpus reveals real bugs in edge-case repos that the
-  standard corpus misses.
-
 Per-cop `check-cop.py --rerun` results are intermediate count-based gates only.
 They are necessary, but they are NOT sufficient to end `/fix-department`.
 When the corpus oracle has concrete FP/FN examples for a cop, use
@@ -78,14 +72,6 @@ treated as a standing task across the thread.
    ```bash
    python3 .agents/skills/fix-department/scripts/gem_progress.py --summary
    ```
-   If the user passed `--extended`, add `--extended` to all `gem_progress.py` invocations
-   **and** to all `investigate-cop.py`, `investigate-repo.py`, `check-cop.py`, and
-   `verify-cop-locations.py` invocations throughout the entire workflow:
-   ```bash
-   python3 .agents/skills/fix-department/scripts/gem_progress.py --summary --extended
-   ```
-   The default uses the **standard corpus** (~1k repos, matches README/docs scorecard).
-   `--extended` uses the extended corpus (~5k repos) for more granular FP/FN data.
    The summary treats cops covered by the synthetic benchmark as covered, but
    synthetic-only divergence is called out in the gem deep-dive rather than the
    summary row alone.
@@ -400,4 +386,3 @@ Do not leave retained progress only in a worktree branch.
 - `$fix-department rubocop-rspec` — focus that gem
 - `$fix-department rubocop-rails` — focus that gem
 - `$fix-department --input /path/to/corpus-results.json` — use local corpus data
-- `$fix-department Metrics --extended` — use extended corpus (5k+ repos) instead of standard (1k repos)

@@ -320,7 +320,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
-    standard_corpus = os.environ.get("REPAIR_CORPUS_STANDARD_FILE")
+    standard_corpus = os.environ.get("REPAIR_CORPUS_FILE")
     standard_corpus_path = Path(standard_corpus) if standard_corpus else None
     oracle_by_cop, oracle_repo_breakdown = load_oracle_context(standard_corpus_path)
     changed_result = run_capture(

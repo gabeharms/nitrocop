@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Validate corpus manifests for duplicates and structural issues.
-
-Checks manifest.jsonl and manifest_extended.jsonl (if present), including
-cross-file duplicate detection.
+"""Validate corpus manifest for duplicates and structural issues.
 
 Usage:
     python3 bench/corpus/validate_manifest.py
@@ -14,7 +11,6 @@ from pathlib import Path
 CORPUS_DIR = Path(__file__).parent
 MANIFESTS = [
     CORPUS_DIR / "manifest.jsonl",
-    CORPUS_DIR / "manifest_extended.jsonl",
 ]
 
 

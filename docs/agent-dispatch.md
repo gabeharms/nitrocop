@@ -1,6 +1,6 @@
 # Agent Dispatch for Corpus Conformance (Codex)
 
-Automated system for fixing corpus conformance gaps by dispatching Codex agents to fix one cop at a time. The current flow is issue-backed: sync one tracker issue per diverging cop from the extended corpus, then fill a bounded queue of those issues into `agent-cop-fix`. Each cop runs in a GitHub Actions runner with Codex CLI, which edits the code, validates with `cargo test`, and opens a PR.
+Automated system for fixing corpus conformance gaps by dispatching Codex agents to fix one cop at a time. The current flow is issue-backed: sync one tracker issue per diverging cop from the corpus, then fill a bounded queue of those issues into `agent-cop-fix`. Each cop runs in a GitHub Actions runner with Codex CLI, which edits the code, validates with `cargo test`, and opens a PR.
 
 The recommended workflow is Codex-first:
 - `gpt-5.3-codex` with `high` for `difficulty:simple` initial cop-fix issues
@@ -12,7 +12,7 @@ The recommended workflow is Codex-first:
 ```
 You (any machine with gh CLI)
   │
-  │  gh workflow run cop-issue-sync.yml -f corpus=extended
+  │  gh workflow run cop-issue-sync.yml
   │  gh workflow run cop-issue-dispatch.yml -f max_active=5
   ▼
 GitHub Actions (agent-cop-fix.yml)
@@ -25,7 +25,7 @@ GitHub Actions (agent-cop-fix.yml)
   ▼
 GitHub CI (on the PR)
   │  checks.yml: clippy, full test suite, corpus smoke test
-  │  agent-cop-check.yml: per-cop count check vs extended corpus baseline
+  │  agent-cop-check.yml: per-cop count check vs corpus baseline
   ▼
 You review + merge
 ```
@@ -80,8 +80,8 @@ Go to **Settings > Rules > Rulesets > New ruleset**:
 ### Phase 1: Triage / Issue Sync (5 min)
 
 ```bash
-python3 scripts/dispatch-cops.py tiers --extended
-gh workflow run cop-issue-sync.yml -f corpus=extended
+python3 scripts/dispatch-cops.py tiers
+gh workflow run cop-issue-sync.yml
 ```
 
 ### Phase 2: Dispatch
@@ -124,7 +124,7 @@ Retry mode auto-discovers all prior failed PRs, includes their diffs and CI fail
 After merging ~20-50 PRs:
 
 ```bash
-gh workflow run corpus-oracle.yml -f corpus_size=extended
+gh workflow run corpus-oracle.yml
 ```
 
 ## How It Works
@@ -152,7 +152,7 @@ If validation fails, no PR is created and the workflow fails visibly.
 
 On the PR, two additional workflows run:
 - **checks.yml**: clippy, full test suite, corpus smoke test
-- **agent-cop-check.yml**: per-cop count check against extended corpus baseline
+- **agent-cop-check.yml**: per-cop count check against corpus baseline
 
 ### Cop Tiers
 

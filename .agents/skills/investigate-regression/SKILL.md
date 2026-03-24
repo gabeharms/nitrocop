@@ -1,6 +1,6 @@
 ---
 name: investigate-regression
-description: Investigate a standard or extended corpus regression between two corpus-oracle runs, reopen the linked cop issue, and determine whether to dispatch a repair or surface a strong revert candidate.
+description: Investigate a corpus regression between two corpus-oracle runs, reopen the linked cop issue, and determine whether to dispatch a repair or surface a strong revert candidate.
 ---
 
 # Investigate Regression
@@ -8,8 +8,7 @@ description: Investigate a standard or extended corpus regression between two co
 Start with the deterministic script, not ad hoc browsing:
 
 ```bash
-python3 scripts/investigate-regression.py --repo 6/nitrocop --corpus standard
-```
+python3 scripts/investigate-regression.py --repo 6/nitrocop```
 
 If mutation is desired:
 

@@ -5,23 +5,16 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: corpus-${{ github.ref }}-${{ github.event.inputs.corpus_size || 'standard' }}
+  group: corpus-${{ github.ref }}
   cancel-in-progress: true
 
 on:
-  # Manual trigger only — corpus oracle runs against hundreds of repos
+  # Manual trigger only — corpus oracle runs against thousands of repos
   workflow_dispatch:
     inputs:
       repo_filter:
         description: "Run only this repo ID (e.g. 'multi_json__multi_json__c5fa9fc'), or 'all'"
         default: "all"
-      corpus_size:
-        description: "Corpus size: 'standard' (~1000 repos) or 'extended' (~5000 repos)"
-        type: choice
-        options:
-          - standard
-          - extended
-        default: "standard"
 
 env:
   CARGO_TERM_COLOR: always
@@ -64,8 +57,7 @@ jobs:
           python3 << 'PYEOF'
           import json, os, sys, hashlib
 
-          corpus_size = os.environ.get('CORPUS_SIZE', 'standard')
-          BATCH_SIZE = 25 if corpus_size == 'extended' else 10
+          BATCH_SIZE = 25
 
           repos = []
           with open('bench/corpus/manifest.jsonl') as f:
@@ -73,16 +65,6 @@ jobs:
                   line = line.strip()
                   if line:
                       repos.append(json.loads(line))
-
-          if corpus_size == 'extended':
-              extended_path = 'bench/corpus/manifest_extended.jsonl'
-              if os.path.exists(extended_path):
-                  with open(extended_path) as f:
-                      for line in f:
-                          line = line.strip()
-                          if line:
-                              repos.append(json.loads(line))
-                  print(f'Loaded extended manifest ({extended_path})', file=sys.stderr)
 
           repo_filter = os.environ.get('REPO_FILTER', 'all')
           if repo_filter != 'all':
@@ -112,7 +94,7 @@ jobs:
                   'num_batches': str(num_batches),
               })
 
-          print(f'{len(repos)} repos in {len(batches)} batches (batch_size={BATCH_SIZE}, corpus={corpus_size})', file=sys.stderr)
+          print(f'{len(repos)} repos in {len(batches)} batches (batch_size={BATCH_SIZE})', file=sys.stderr)
           if len(batches) > 256:
               print(f'ERROR: {len(batches)} batches exceeds GitHub Actions matrix limit of 256. Increase BATCH_SIZE.', file=sys.stderr)
               sys.exit(1)
@@ -122,13 +104,12 @@ jobs:
           PYEOF
         env:
           REPO_FILTER: ${{ github.event.inputs.repo_filter || 'all' }}
-          CORPUS_SIZE: ${{ github.event.inputs.corpus_size || 'standard' }}
 
   # ── Run oracle on each batch of repos ────────────────────────────
   oracle-repo:
     needs: [build-nitrocop, compute-matrix]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ github.event.inputs.corpus_size == 'extended' && 90 || 30 }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.compute-matrix.outputs.matrix) }}
@@ -201,13 +182,11 @@ jobs:
         env:
           BATCH_ID: ${{ matrix.batch_id }}
           NUM_BATCHES: ${{ matrix.num_batches }}
-          CORPUS_SIZE: ${{ github.event.inputs.corpus_size || 'standard' }}
           REPO_FILTER: ${{ github.event.inputs.repo_filter || 'all' }}
         run: |
           python3 << 'PYEOF'
           import json, os
 
-          corpus_size = os.environ.get('CORPUS_SIZE', 'standard')
           batch_id = int(os.environ['BATCH_ID'])
           num_batches = int(os.environ['NUM_BATCHES'])
 
@@ -217,15 +196,6 @@ jobs:
                   line = line.strip()
                   if line:
                       repos.append(json.loads(line))
-
-          if corpus_size == 'extended':
-              extended_path = 'bench/corpus/manifest_extended.jsonl'
-              if os.path.exists(extended_path):
-                  with open(extended_path) as f:
-                      for line in f:
-                          line = line.strip()
-                          if line:
-                              repos.append(json.loads(line))
 
           repo_filter = os.environ.get('REPO_FILTER', 'all')
           if repo_filter != 'all':
@@ -243,8 +213,6 @@ jobs:
           PYEOF
 
       - name: Run batch
-        env:
-          CORPUS_SIZE: ${{ github.event.inputs.corpus_size || 'standard' }}
         run: |
           mkdir -p results/nitrocop results/rubocop rubocop-cache
 
@@ -429,7 +397,7 @@ jobs:
     needs: [oracle-repo, run-synthetic]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ github.event.inputs.corpus_size == 'extended' && 20 || 10 }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -477,7 +445,6 @@ jobs:
             --output tiers.json
 
       - name: Update README conformance
-        if: github.event.inputs.corpus_size != 'extended'
         run: |
           python3 bench/corpus/update_readme.py \
             --input corpus-results.json \
@@ -492,15 +459,9 @@ jobs:
           head -c 128000 corpus-results.md >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Update corpus report
-        run: |
-          if [ "${{ github.event.inputs.corpus_size }}" = "extended" ]; then
-            cp corpus-results.md docs/corpus_extended.md
-          else
-            cp corpus-results.md docs/corpus.md
-          fi
+        run: cp corpus-results.md docs/corpus.md
 
       - name: Generate cop coverage report
-        if: github.event.inputs.corpus_size == 'extended'
         run: |
           SYNTH_ARG=""
           if [ -f bench/synthetic/synthetic-results.json ]; then
@@ -509,7 +470,6 @@ jobs:
           python3 scripts/cop-coverage.py --input corpus-results.json $SYNTH_ARG > docs/cop_coverage.md
 
       - name: Upload report
-        if: github.event.inputs.corpus_size != 'extended'
         uses: actions/upload-artifact@v4
         with:
           name: corpus-report
@@ -519,19 +479,6 @@ jobs:
             tiers.json
             bench/synthetic/synthetic-results.json
             docs/corpus.md
-          retention-days: 30
-
-      - name: Upload extended report
-        if: github.event.inputs.corpus_size == 'extended'
-        uses: actions/upload-artifact@v4
-        with:
-          name: corpus-report-extended
-          path: |
-            corpus-results.json
-            corpus-results.md
-            tiers.json
-            bench/synthetic/synthetic-results.json
-            docs/corpus_extended.md
             docs/cop_coverage.md
           retention-days: 30
 
@@ -545,34 +492,21 @@ jobs:
       - name: Open PR if tiers, README, or corpus report changed
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          CORPUS_SIZE: ${{ github.event.inputs.corpus_size || 'standard' }}
         run: |
           CHANGED=false
-          IS_EXTENDED=false
-          if [ "$CORPUS_SIZE" = "extended" ]; then
-            IS_EXTENDED=true
-          fi
 
-          if [ "$IS_EXTENDED" = false ]; then
-            if ! diff -q tiers.json src/resources/tiers.json >/dev/null 2>&1; then
-              CHANGED=true
-            fi
-            if ! git diff --quiet README.md; then
-              CHANGED=true
-            fi
-            if ! git diff --quiet docs/corpus.md; then
-              CHANGED=true
-            fi
-          else
-            # Changed or new file
-            if ! git diff --quiet docs/corpus_extended.md 2>/dev/null || \
-               ! git ls-files --error-unmatch docs/corpus_extended.md >/dev/null 2>&1; then
-              CHANGED=true
-            fi
-            if ! git diff --quiet docs/cop_coverage.md 2>/dev/null || \
-               ! git ls-files --error-unmatch docs/cop_coverage.md >/dev/null 2>&1; then
-              CHANGED=true
-            fi
+          if ! diff -q tiers.json src/resources/tiers.json >/dev/null 2>&1; then
+            CHANGED=true
+          fi
+          if ! git diff --quiet README.md; then
+            CHANGED=true
+          fi
+          if ! git diff --quiet docs/corpus.md; then
+            CHANGED=true
+          fi
+          if ! git diff --quiet docs/cop_coverage.md 2>/dev/null || \
+             ! git ls-files --error-unmatch docs/cop_coverage.md >/dev/null 2>&1; then
+            CHANGED=true
           fi
 
           if [ "$CHANGED" = false ]; then
@@ -586,20 +520,15 @@ jobs:
             --unset-extraheader
           git checkout -B "$BRANCH"
 
-          if [ "$IS_EXTENDED" = false ]; then
-            if ! diff -q tiers.json src/resources/tiers.json >/dev/null 2>&1; then
-              cp tiers.json src/resources/tiers.json
-              git add src/resources/tiers.json
-            fi
-            git add -f README.md docs/corpus.md
-          else
-            git add -f docs/corpus_extended.md docs/cop_coverage.md
+          if ! diff -q tiers.json src/resources/tiers.json >/dev/null 2>&1; then
+            cp tiers.json src/resources/tiers.json
+            git add src/resources/tiers.json
           fi
+          git add -f README.md docs/corpus.md docs/cop_coverage.md
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           PR_META=$(python3 scripts/workflows/render_corpus_oracle_pr.py \
             --repo-root . \
-            --corpus-size "${{ github.event.inputs.corpus_size || 'standard' }}" \
             --repo-filter "${{ github.event.inputs.repo_filter || 'all' }}" \
             --run-number "${{ github.run_number }}" \
             --run-url "$RUN_URL")

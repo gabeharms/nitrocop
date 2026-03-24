@@ -167,8 +167,6 @@ def main():
     parser.add_argument("--fp-only", action="store_true", help="Only check FPs")
     parser.add_argument("--fn-only", action="store_true", help="Only check FNs")
     parser.add_argument("--input", type=Path, help="Path to corpus-results.json")
-    parser.add_argument("--extended", action="store_true",
-                        help="Use extended corpus (5k+ repos) instead of standard (1k repos)")
     args = parser.parse_args()
 
     project_root = find_project_root()
@@ -210,8 +208,7 @@ def main():
     if args.input:
         input_path = args.input
     else:
-        prefer = "extended" if args.extended else "standard"
-        input_path, run_id, _ = download_corpus_results(prefer=prefer)
+        input_path, run_id, _ = download_corpus_results()
         print(f"Using corpus oracle run {run_id}", file=sys.stderr)
 
     with open(input_path) as f:

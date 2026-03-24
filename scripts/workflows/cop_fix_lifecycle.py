@@ -206,7 +206,6 @@ def cmd_select_backend(args: list[str]) -> int:
             "--repo", opts.repo,
             "--cop", opts.cop,
             "--mode", opts.mode,
-            "--extended",
             "--binary", opts.binary,
         ]
         if issue_difficulty:
@@ -238,25 +237,6 @@ def cmd_select_backend(args: list[str]) -> int:
         _output("code_bugs", "0")
         _output("config_issues", "0")
         _output("easy", "false")
-
-        # Get risk outputs from dispatch-cops.py backend
-        risk_cmd = [
-            sys.executable, str(SCRIPTS_DIR.parent / "dispatch-cops.py"), "backend",
-            "--repo", opts.repo,
-            "--cop", opts.cop,
-            "--mode", opts.mode,
-            "--extended",
-            "--binary", opts.binary,
-        ]
-        if issue_difficulty:
-            risk_cmd += ["--issue-difficulty", issue_difficulty]
-        risk_result = _run(risk_cmd)
-        for line in risk_result.stdout.strip().splitlines():
-            line = line.strip()
-            if "=" in line:
-                key, _, val = line.partition("=")
-                if key in ("requires_standard_quick_gate", "extended_only_edge_case", "risk_class"):
-                    _output(key, val)
 
     return 0
 

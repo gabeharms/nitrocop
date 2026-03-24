@@ -10,17 +10,17 @@ Public subcommands:
 - `rank` finds cops that look fixable by agents
 - `prior-attempts` collects failed PR attempts for a cop
 - `backend` selects a recommended backend for a cop
-- `issues-sync` syncs one tracker issue per diverging extended-corpus cop
+- `issues-sync` syncs one tracker issue per diverging cop
 - `dispatch-issues` fills the bounded active queue by dispatching tracker issues
 
 Usage:
     python3 scripts/dispatch-cops.py task Style/NegatedWhile
     python3 scripts/dispatch-cops.py changed --base origin/main --head HEAD
-    python3 scripts/dispatch-cops.py tiers --extended --tier 1 --names
+    python3 scripts/dispatch-cops.py tiers --tier 1 --names
     python3 scripts/dispatch-cops.py rank --json
     python3 scripts/dispatch-cops.py prior-attempts --cop Style/NegatedWhile
     python3 scripts/dispatch-cops.py backend --cop Style/NegatedWhile --binary target/debug/nitrocop
-    python3 scripts/dispatch-cops.py issues-sync --extended --binary target/debug/nitrocop
+    python3 scripts/dispatch-cops.py issues-sync --binary target/debug/nitrocop
     python3 scripts/dispatch-cops.py dispatch-issues --max-active 5
 """
 
@@ -268,14 +268,13 @@ def find_fixtures(dept: str, snake: str) -> tuple[str | None, str | None]:
     return offense, no_offense
 
 
-def get_corpus_data(cop: str, input_path: Path | None, extended: bool) -> dict:
+def get_corpus_data(cop: str, input_path: Path | None) -> dict:
     """Get FP/FN data from corpus-results.json.
 
     Returns dict with counts and raw example lists."""
     if input_path is None:
         try:
-            prefer = "extended" if extended else "standard"
-            input_path, _, _ = _download_corpus(prefer=prefer)
+            input_path, _, _ = _download_corpus()
         except Exception as e:
             print(f"Warning: could not download corpus data: {e}", file=sys.stderr)
             return {
@@ -329,12 +328,11 @@ def safe_get_corpus_data(
     cop: str,
     *,
     input_path: Path | None = None,
-    extended: bool = False,
 ) -> dict | None:
     try:
-        return get_corpus_data(cop, input_path, extended)
+        return get_corpus_data(cop, input_path)
     except Exception as exc:
-        print(f"Warning: could not load {'extended' if extended else 'standard'} corpus data: {exc}", file=sys.stderr)
+        print(f"Warning: could not load corpus data: {exc}", file=sys.stderr)
         return None
 
 
@@ -463,108 +461,6 @@ def affected_repo_count(corpus: dict | None) -> int:
         if counts.get("fp", 0) > 0 or counts.get("fn", 0) > 0
     )
 
-
-def assess_cross_corpus_risk(
-    primary_corpus: dict,
-    *,
-    extended: bool,
-    standard_corpus: dict | None,
-) -> dict[str, object]:
-    primary_total = corpus_total(primary_corpus)
-    primary_repos = affected_repo_count(primary_corpus)
-
-    standard_available = bool(standard_corpus and standard_corpus.get("available", True))
-    standard_matches = (
-        0 if not standard_available else int(standard_corpus.get("matches", 0))
-    )
-    standard_total = None if not standard_available else corpus_total(standard_corpus)
-    standard_perfect = bool(
-        standard_total is not None and standard_matches > 0 and standard_total == 0
-    )
-    extended_only_edge_case = bool(extended and primary_total > 0 and standard_perfect)
-    concentrated = primary_repos <= 3 if primary_repos else False
-
-    if extended_only_edge_case:
-        reason = (
-            "extended corpus diverges while the standard corpus baseline is already perfect"
-        )
-        if primary_repos:
-            reason += f" ({primary_repos} affected repo{'s' if primary_repos != 1 else ''})"
-        risk_class = "extended_only_edge_case"
-    else:
-        reason = "no special cross-corpus risk detected"
-        risk_class = "normal"
-
-    return {
-        "risk_class": risk_class,
-        "extended_only_edge_case": extended_only_edge_case,
-        "requires_standard_quick_gate": extended_only_edge_case,
-        "standard_total": standard_total,
-        "standard_available": standard_available,
-        "standard_matches": standard_matches,
-        "standard_perfect": standard_perfect,
-        "affected_repos": primary_repos,
-        "concentrated": concentrated,
-        "reason": reason,
-    }
-
-
-def build_cross_corpus_risk_section(
-    primary_corpus: dict,
-    *,
-    extended: bool,
-    standard_corpus: dict | None,
-    risk: dict[str, object],
-) -> str:
-    if not extended:
-        return ""
-
-    standard_label = "(unavailable)"
-    if standard_corpus is not None and standard_corpus.get("available", True):
-        standard_label = (
-            f"{standard_corpus.get('matches', 0):,} matches, "
-            f"{standard_corpus.get('fp', 0)} FP, {standard_corpus.get('fn', 0)} FN"
-        )
-
-    primary_repos = int(risk.get("affected_repos", 0) or 0)
-    lines = [
-        "## Cross-Corpus Risk",
-        "",
-        f"- Standard corpus: {standard_label}",
-        (
-            f"- Extended corpus: {primary_corpus.get('matches', 0):,} matches, "
-            f"{primary_corpus.get('fp', 0)} FP, {primary_corpus.get('fn', 0)} FN"
-        ),
-    ]
-    if primary_repos:
-        lines.append(
-            f"- Extended divergence currently touches {primary_repos} repo{'s' if primary_repos != 1 else ''}"
-        )
-
-    if risk.get("extended_only_edge_case"):
-        lines.extend(
-            [
-                "",
-                "**Risk class:** extended-only edge case against a standard-perfect baseline.",
-                "",
-                "Treat the extended examples as a narrow edge case, not proof that the broad pattern is safe.",
-                "Any carve-out that reduces the extended FP/FN count but regresses the standard corpus is a bad fix.",
-                "Prefer the smallest context-specific change you can justify from RuboCop behavior and the vendor spec.",
-            ]
-        )
-        if risk.get("concentrated"):
-            lines.append(
-                "This is concentrated in only a few repos, which increases the risk of overfitting to one local shape."
-            )
-    else:
-        lines.extend(
-            [
-                "",
-                "Use the extended examples to guide the fix, but still avoid broad carve-outs that change the cop's general semantics.",
-            ]
-        )
-
-    return "\n".join(lines).rstrip() + "\n"
 
 
 def _extract_source_lines(src: list[str]) -> tuple[list[str], str | None, int | None]:
@@ -1012,7 +908,6 @@ def detect_prism_pitfalls(rust_source: str) -> list[str]:
 def generate_task(
     cop: str,
     input_path: Path | None = None,
-    extended: bool = False,
     binary_path: Path | None = None,
 ) -> str:
     """Generate the full task markdown for a cop."""
@@ -1034,13 +929,7 @@ def generate_task(
     spec_excerpts = extract_spec_excerpts(spec_source) if spec_source else None
 
     offense_fixture, no_offense_fixture = find_fixtures(dept, snake)
-    corpus = get_corpus_data(cop, input_path, extended)
-    standard_corpus = safe_get_corpus_data(cop, extended=False) if extended else None
-    cross_corpus_risk = assess_cross_corpus_risk(
-        corpus,
-        extended=extended,
-        standard_corpus=standard_corpus,
-    )
+    corpus = get_corpus_data(cop, input_path)
 
     # Run pre-diagnostic if binary is available
     diagnostics = None
@@ -1077,15 +966,6 @@ def generate_task(
 
     # Header
     parts.append(f"# Fix {cop} — {corpus['fp']} FP, {corpus['fn']} FN\n")
-
-    cross_corpus_section = build_cross_corpus_risk_section(
-        corpus,
-        extended=extended,
-        standard_corpus=standard_corpus,
-        risk=cross_corpus_risk,
-    )
-    if cross_corpus_section:
-        parts.append(cross_corpus_section)
 
     # Instructions
     focus = "FP" if corpus["fp"] > corpus["fn"] else "FN" if corpus["fn"] > corpus["fp"] else "both FP and FN"
@@ -1289,11 +1169,10 @@ def detect_cops(base: str, head: str) -> list[str]:
     return sorted(cops)
 
 
-def load_dispatch_corpus(input_path: Path | None, extended: bool) -> dict:
+def load_dispatch_corpus(input_path: Path | None) -> dict:
     if input_path:
         return json.loads(input_path.read_text())
-    prefer = "extended" if extended else "standard"
-    path, _, _ = _download_corpus(prefer=prefer)
+    path, _, _ = _download_corpus()
     return json.loads(path.read_text())
 
 
@@ -1372,8 +1251,6 @@ def select_backend_for_entry(
     *,
     mode: str,
     binary: Path | None,
-    extended: bool = False,
-    standard_entry: dict | None = None,
     prior_prs: list[dict] | None = None,
     issue_difficulty: str | None = None,
     min_total: int = 3,
@@ -1384,25 +1261,6 @@ def select_backend_for_entry(
     prior_prs = prior_prs or []
     total = total_for_entry(entry or {})
     tier = tier_for_total(total) if total else 3
-    primary_corpus = {
-        "fp": (entry or {}).get("fp", 0),
-        "fn": (entry or {}).get("fn", 0),
-        "matches": (entry or {}).get("matches", 0),
-        "repo_breakdown": (entry or {}).get("repo_breakdown", {}),
-    }
-    standard_corpus = None
-    if standard_entry is not None:
-        standard_corpus = {
-            "fp": standard_entry.get("fp", 0),
-            "fn": standard_entry.get("fn", 0),
-            "matches": standard_entry.get("matches", 0),
-            "repo_breakdown": standard_entry.get("repo_breakdown", {}),
-        }
-    risk = assess_cross_corpus_risk(
-        primary_corpus,
-        extended=extended,
-        standard_corpus=standard_corpus,
-    )
 
     def _result(backend: str, reason: str, code_bugs: int = 0,
                 config_issues: int = 0, easy: bool = False) -> dict[str, object]:
@@ -1413,16 +1271,13 @@ def select_backend_for_entry(
             "code_bugs": code_bugs,
             "config_issues": config_issues,
             "easy": easy,
-            "risk_class": risk["risk_class"],
-            "requires_standard_quick_gate": risk["requires_standard_quick_gate"],
-            "extended_only_edge_case": risk["extended_only_edge_case"],
         }
 
     # Routing strategy:
     # - codex-normal:        easy mechanical fixes with confirmed code bugs (fast, cheap)
     # - codex-hard:          complex cops with many divergences, or medium difficulty
     # - claude-oauth-normal: config/parser-only issues needing investigation judgment
-    # - claude-oauth-hard:   retries, prior failures, extended-only edge cases
+    # - claude-oauth-hard:   retries, prior failures
 
     # Retries and prior failures need fresh thinking, not more brute force
     if mode == "retry":
@@ -1430,15 +1285,6 @@ def select_backend_for_entry(
 
     if has_failed_attempt(prior_prs):
         return _result("claude-oauth-hard", "prior agent attempt failed; needs different approach")
-
-    # Extended-only edge cases are subtle — need judgment about whether to
-    # fix the cop or document as a known parser/config difference
-    if risk["extended_only_edge_case"]:
-        return _result(
-            "claude-oauth-hard",
-            "extended-only edge case against a standard-perfect baseline; "
-            "needs judgment on whether to fix or document",
-        )
 
     # Explicit issue difficulty labels
     if issue_difficulty:
@@ -1501,8 +1347,6 @@ def select_backend_for_entry(
 
 
 def classify_issue_difficulty(entry: dict, recommendation: dict[str, object]) -> str:
-    if recommendation.get("extended_only_edge_case"):
-        return "complex"
     if recommendation.get("easy"):
         return "simple"
     if tier_for_total(total_for_entry(entry)) >= 3:
@@ -1951,30 +1795,17 @@ def reopen_tracker_issue(repo: str, issue_number: int) -> None:
     )
 
 
-def fetch_corpus_for_sync(input_path: Path | None, extended: bool) -> tuple[dict, str | None, str | None]:
+def fetch_corpus_for_sync(input_path: Path | None) -> tuple[dict, str | None, str | None]:
     if input_path:
         return json.loads(input_path.read_text()), None, None
-    prefer = "extended" if extended else "standard"
-    path, run_id, head_sha = _download_corpus(prefer=prefer)
+    path, run_id, head_sha = _download_corpus()
     return json.loads(path.read_text()), str(run_id), head_sha
 
 
-def try_load_standard_dispatch_data() -> dict | None:
-    try:
-        return load_dispatch_corpus(None, False)
-    except Exception as exc:
-        print(f"Warning: could not load standard corpus data for cross-corpus risk checks: {exc}", file=sys.stderr)
-        return None
-
 
 def cmd_backend(args: argparse.Namespace) -> int:
-    data = load_dispatch_corpus(args.input, args.extended)
+    data = load_dispatch_corpus(args.input)
     entry = build_entry_index(data).get(args.cop)
-    standard_entry = None
-    if args.extended:
-        standard_data = try_load_standard_dispatch_data()
-        if standard_data is not None:
-            standard_entry = build_entry_index(standard_data).get(args.cop)
     prior_prs = index_prs_by_cop(list_agent_fix_prs(args.repo, state="all")).get(args.cop, [])
     binary = args.binary.resolve() if args.binary else None
     recommendation = select_backend_for_entry(
@@ -1982,8 +1813,6 @@ def cmd_backend(args: argparse.Namespace) -> int:
         entry,
         mode=args.mode,
         binary=binary,
-        extended=args.extended,
-        standard_entry=standard_entry,
         prior_prs=prior_prs,
         issue_difficulty=args.issue_difficulty,
     )
@@ -1996,23 +1825,14 @@ def cmd_backend(args: argparse.Namespace) -> int:
     print(f"code_bugs={recommendation['code_bugs']}")
     print(f"config_issues={recommendation['config_issues']}")
     print(f"easy={'true' if recommendation['easy'] else 'false'}")
-    print(
-        "requires_standard_quick_gate="
-        f"{'true' if recommendation['requires_standard_quick_gate'] else 'false'}"
-    )
-    print(
-        "extended_only_edge_case="
-        f"{'true' if recommendation['extended_only_edge_case'] else 'false'}"
-    )
-    print(f"risk_class={recommendation['risk_class']}")
     return 0
 
 
 def cmd_issues_sync(args: argparse.Namespace) -> int:
     repo = args.repo
     ensure_labels(repo)
-    data, run_id, head_sha = fetch_corpus_for_sync(args.input, args.extended)
-    corpus_kind = "extended" if args.extended or not args.input else "custom"
+    data, run_id, head_sha = fetch_corpus_for_sync(args.input)
+    corpus_kind = "corpus" if not args.input else "custom"
     entries = build_entry_index(data)
     issues = list_tracker_issues(repo)
     issues_by_cop = index_issues_by_cop(issues)
@@ -2022,11 +1842,6 @@ def cmd_issues_sync(args: argparse.Namespace) -> int:
         for cop, prs in prs_by_cop.items()
     }
     binary = args.binary.resolve() if args.binary else None
-    standard_entries = {}
-    if args.extended:
-        standard_data = try_load_standard_dispatch_data()
-        if standard_data is not None:
-            standard_entries = build_entry_index(standard_data)
     diverging_cops = {cop for cop, entry in entries.items() if total_for_entry(entry) > 0}
 
     created = updated = reopened = closed = 0
@@ -2039,8 +1854,6 @@ def cmd_issues_sync(args: argparse.Namespace) -> int:
             entry,
             mode="fix",
             binary=binary,
-            extended=args.extended,
-            standard_entry=standard_entries.get(cop),
             prior_prs=prior_prs,
         )
         difficulty = classify_issue_difficulty(entry, recommendation)
@@ -2211,7 +2024,6 @@ def main():
     task_parser.add_argument("cop", help="Cop name (e.g., Style/NegatedWhile)")
     task_parser.add_argument("--output", "-o", type=Path, help="Output file path (default: stdout)")
     task_parser.add_argument("--input", type=Path, help="Path to corpus-results.json")
-    task_parser.add_argument("--extended", action="store_true", help="Use extended corpus (5k+ repos)")
     task_parser.add_argument("--binary", type=Path, help="Path to nitrocop binary for pre-diagnostic classification")
 
     changed_parser = subparsers.add_parser("changed", help="Detect cops changed between two refs")
@@ -2220,7 +2032,6 @@ def main():
 
     tiers_parser = subparsers.add_parser("tiers", help="Classify diverging cops into tiers")
     tiers_parser.add_argument("--input", type=Path, help="Path to corpus-results.json")
-    tiers_parser.add_argument("--extended", action="store_true", help="Use extended corpus")
     tiers_parser.add_argument("--tier", type=int, choices=[1, 2, 3], help="Show only one tier")
     tiers_parser.add_argument("--names", action="store_true", help="Output just cop names")
 
@@ -2241,7 +2052,6 @@ def main():
     backend_parser.add_argument("--mode", choices=["fix", "retry"], default="fix")
     backend_parser.add_argument("--binary", type=Path, help="Path to nitrocop binary")
     backend_parser.add_argument("--input", type=Path, help="Path to corpus-results.json")
-    backend_parser.add_argument("--extended", action="store_true", help="Use extended corpus")
     backend_parser.add_argument(
         "--issue-difficulty",
         choices=["simple", "medium", "complex"],
@@ -2255,7 +2065,6 @@ def main():
 
     issues_sync = subparsers.add_parser("issues-sync", help="Sync one tracker issue per diverging cop")
     issues_sync.add_argument("--input", type=Path, help="Path to corpus-results.json")
-    issues_sync.add_argument("--extended", action="store_true", help="Use extended corpus")
     issues_sync.add_argument("--binary", type=Path, help="Path to nitrocop binary for backend routing")
     issues_sync.add_argument(
         "--repo",
@@ -2286,7 +2095,7 @@ def main():
 
     if args.command == "task":
         binary = args.binary.resolve() if args.binary else None
-        task = generate_task(args.cop, args.input, args.extended, binary)
+        task = generate_task(args.cop, args.input, binary)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(task)
@@ -2301,7 +2110,7 @@ def main():
         return
 
     if args.command == "tiers":
-        data = load_dispatch_corpus(args.input, args.extended)
+        data = load_dispatch_corpus(args.input)
         cops, tiers = tier_cops(data)
         if args.names:
             target = tiers[args.tier] if args.tier else cops
@@ -2346,7 +2155,7 @@ def main():
             raise SystemExit(1)
 
         print(f"Using binary: {binary}", file=sys.stderr)
-        path, _, _ = _download_corpus(prefer="extended")
+        path, _, _ = _download_corpus()
         data = json.loads(path.read_text())
         results = []
         for entry in sorted(data["by_cop"], key=lambda item: item.get("fp", 0) + item.get("fn", 0)):

@@ -9,13 +9,6 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      corpus:
-        description: "Corpus variant to compare"
-        type: choice
-        options:
-          - standard
-          - extended
-        default: standard
       before_run:
         description: "Older corpus-oracle run ID (optional; defaults to previous successful run)"
         required: false
@@ -56,7 +49,6 @@ jobs:
         run: |
           ARGS=(
             --repo "${{ github.repository }}"
-            --corpus "${{ github.event.inputs.corpus }}"
             --action "${{ github.event.inputs.action }}"
             --output regression-report.md
             --json-output regression-report.json
