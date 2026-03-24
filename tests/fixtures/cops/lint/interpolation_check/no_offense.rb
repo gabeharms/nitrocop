@@ -73,3 +73,14 @@ body = '
  Support Team
  Email: hot@example.com
 --'
+
+# Single-quoted string inside heredoc interpolation — RuboCop's heredoc?(node)
+# walks up parent chain and skips these. The '#{part_id}' is a single-quoted
+# string literal inside #{} interpolation of the heredoc, not a standalone string.
+result = <<~RUBY
+  #{dump(overrides: {id: '#{part_id}'})}
+RUBY
+
+# %q string with ' as delimiter — RuboCop's gsub replaces trailing ' with ",
+# producing a broken string that fails valid_syntax? check.
+step %q'the client successfully sets option "#{option}"'

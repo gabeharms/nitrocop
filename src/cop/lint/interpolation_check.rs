@@ -1,6 +1,6 @@
-use crate::cop::node_type::STRING_NODE;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
+use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
 
 /// Checks for interpolation in a single quoted string.
@@ -89,6 +89,22 @@ use crate::parse::source::SourceFile;
 /// is always valid. Multiline `%q` strings are naturally skipped by the new
 /// multiline check. Fix: remove the `%q` blanket skip, handle `%q` in
 /// `valid_syntax_as_double_quoted` by returning true (since gsub is a no-op).
+///
+/// Round 7 (7 FP, 0 FN):
+///
+/// FP causes:
+/// - Heredoc-nested strings (6 FP, hitobito): Single-quoted strings like
+///   `'#{part_id}'` inside heredoc interpolation (`<<~RUBY ... #{...} ... RUBY`).
+///   RuboCop's `heredoc?(node)` walks up the parent chain and skips any string
+///   nested inside a heredoc. Prism has no parent pointers, so we use CodeMap's
+///   `is_heredoc()` to detect this. Fix: moved from `check_node` to `check_source`
+///   (which has CodeMap access) and skip strings whose opening offset falls within
+///   a heredoc range.
+/// - `%q` with `'` delimiter (1 FP, ftpd): `%q'text "#{option}"'` uses `'` as
+///   the delimiter. RuboCop's `gsub(/\A'|'\z/, '"')` replaces the trailing `'`
+///   with `"`, breaking the string and making `valid_syntax?` return false.
+///   Previously we returned true for all `%q` strings. Fix: return false for
+///   `%q` strings that end with `'` (the gsub modifies them).
 pub struct InterpolationCheck;
 
 impl Cop for InterpolationCheck {
@@ -100,26 +116,35 @@ impl Cop for InterpolationCheck {
         Severity::Warning
     }
 
-    fn interested_node_types(&self) -> &'static [u8] {
-        &[STRING_NODE]
-    }
-
-    fn check_node(
+    fn check_source(
         &self,
         source: &SourceFile,
-        node: &ruby_prism::Node<'_>,
-        _parse_result: &ruby_prism::ParseResult<'_>,
+        parse_result: &ruby_prism::ParseResult<'_>,
+        code_map: &CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        let string_node = match node.as_string_node() {
-            Some(s) => s,
-            None => return,
+        let mut visitor = InterpolationVisitor {
+            cop: self,
+            source,
+            code_map,
+            diagnostics,
         };
+        ruby_prism::Visit::visit(&mut visitor, &parse_result.node());
+    }
+}
 
+struct InterpolationVisitor<'a> {
+    cop: &'a InterpolationCheck,
+    source: &'a SourceFile,
+    code_map: &'a CodeMap,
+    diagnostics: &'a mut Vec<Diagnostic>,
+}
+
+impl InterpolationVisitor<'_> {
+    fn check_string_node(&mut self, string_node: &ruby_prism::StringNode<'_>) {
         // Only check single-quoted strings.
-        // opening_loc gives us the quote character (', ", %q{, etc.)
         let opening = match string_node.opening_loc() {
             Some(loc) => loc,
             None => return, // bare string (heredoc body, %w element, etc.)
@@ -133,28 +158,33 @@ impl Cop for InterpolationCheck {
             return;
         }
 
-        // Get the full source span of the string node (including quotes)
         let node_start = opening.start_offset();
+
+        // Skip strings inside heredocs. RuboCop's heredoc?(node) walks up the
+        // parent chain and skips any node nested inside a heredoc. We use the
+        // CodeMap's heredoc ranges to achieve the same effect.
+        if self.code_map.is_heredoc(node_start) {
+            return;
+        }
+
         let closing = match string_node.closing_loc() {
             Some(loc) => loc,
             None => return,
         };
         let node_end = closing.end_offset();
-        let node_source = &source.as_bytes()[node_start..node_end];
+        let node_source = &self.source.as_bytes()[node_start..node_end];
 
         // Skip multiline strings. The Parser gem represents multiline single-quoted
         // strings as dstr nodes with str children that have no loc.begin/loc.end,
-        // causing RuboCop to skip them. We match this by checking if the content
-        // between the opening and closing delimiters contains newlines.
+        // causing RuboCop to skip them.
         let content_start = opening.end_offset();
         let content_end = closing.start_offset();
-        let content_bytes = &source.as_bytes()[content_start..content_end];
+        let content_bytes = &self.source.as_bytes()[content_start..content_end];
         if content_bytes.contains(&b'\n') {
             return;
         }
 
         // Match RuboCop's regex: /(?<!\\)#\{.*\}/
-        // Look for #{ not preceded by backslash in the source text
         if !has_unescaped_interpolation(node_source) {
             return;
         }
@@ -164,14 +194,21 @@ impl Cop for InterpolationCheck {
             return;
         }
 
-        // Report at the string node's opening quote (matching RuboCop)
-        let (line, column) = source.offset_to_line_col(node_start);
-        diagnostics.push(self.diagnostic(
-            source,
+        let (line, column) = self.source.offset_to_line_col(node_start);
+        self.diagnostics.push(self.cop.diagnostic(
+            self.source,
             line,
             column,
             "Interpolation in single quoted string detected. Use double quoted strings if you need interpolation.".to_string(),
         ));
+    }
+}
+
+impl ruby_prism::Visit<'_> for InterpolationVisitor<'_> {
+    fn visit_leaf_node_enter(&mut self, node: ruby_prism::Node<'_>) {
+        if let Some(sn) = node.as_string_node() {
+            self.check_string_node(&sn);
+        }
     }
 }
 
@@ -213,9 +250,10 @@ fn has_unescaped_interpolation(source: &[u8]) -> bool {
 /// while the Parser gem treats these as valid syntax. We filter out known semantic
 /// errors to match RuboCop behavior.
 ///
-/// For `%q` strings, RuboCop's `gsub(/\A'|'\z/, '"')` doesn't modify the source
-/// (no leading/trailing `'`), so parsing the original `%q{...}` always succeeds.
-/// We match this by always returning true for `%q` strings.
+/// For `%q` strings with non-quote delimiters, RuboCop's `gsub(/\A'|'\z/, '"')`
+/// doesn't modify the source (no leading/trailing `'`), so parsing the original
+/// `%q{...}` always succeeds. For `%q` with `'` delimiter, the gsub replaces the
+/// trailing `'` with `"`, breaking the string.
 fn valid_syntax_as_double_quoted(source: &[u8]) -> bool {
     // source is the full string including quotes, e.g. b"'foo #{bar}'"
     let source_str = match std::str::from_utf8(source) {
@@ -223,11 +261,13 @@ fn valid_syntax_as_double_quoted(source: &[u8]) -> bool {
         Err(_) => return false,
     };
 
-    // For %q strings, RuboCop's gsub(/\A'|'\z/, '"') doesn't modify the source
-    // (no leading/trailing '), so it parses the original %q{...} which is always
-    // valid Ruby. Return true immediately.
+    // For %q strings with non-quote delimiters (e.g., %q{...}, %q[...], %q|...|),
+    // RuboCop's gsub(/\A'|'\z/, '"') doesn't modify the source (no leading/trailing '),
+    // so parsing the original is always valid. Return true immediately.
+    // For %q strings with ' delimiter (e.g., %q'...'), the trailing ' IS replaced
+    // by gsub, producing a broken string that fails to parse. Return false.
     if source_str.starts_with("%q") {
-        return true;
+        return !source_str.ends_with('\'');
     }
 
     let double_quoted = if source_str.starts_with('\'') && source_str.ends_with('\'') {
@@ -326,12 +366,17 @@ mod tests {
 
     #[test]
     fn test_pctq_valid_syntax() {
-        // For %q strings, RuboCop's gsub doesn't modify them (no leading/trailing '),
-        // so parsing the original %q{...} always succeeds. valid_syntax should return true.
+        // For %q strings with non-quote delimiters, gsub doesn't modify them,
+        // so parsing the original always succeeds. valid_syntax should return true.
         assert!(valid_syntax_as_double_quoted(b"%q{text \"#{name}\"}"));
         assert!(valid_syntax_as_double_quoted(b"%q(#{foo})"));
         assert!(valid_syntax_as_double_quoted(b"%q[#{bar}]"));
         assert!(valid_syntax_as_double_quoted(b"%q|#{baz}|"));
+        // %q with ' delimiter: gsub replaces trailing ' with ", breaking the
+        // string. valid_syntax should return false.
+        assert!(!valid_syntax_as_double_quoted(
+            b"%q'the client sets option \"#{option}\"'"
+        ));
     }
 
     #[test]
