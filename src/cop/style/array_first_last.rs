@@ -328,5 +328,64 @@ impl ArrayFirstLastVisitor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::run_cop;
     crate::cop_fixture_tests!(ArrayFirstLast, "cops/style/array_first_last");
+
+    #[test]
+    fn detects_explicit_bracket_no_parens() {
+        // arr.[] 0 — explicit method call without parens
+        let d = run_cop(&ArrayFirstLast, b"arr.[] 0\n");
+        assert_eq!(d.len(), 1, "Should detect arr.[] 0: {:?}", d);
+    }
+
+    #[test]
+    fn detects_explicit_bracket_negative_no_parens() {
+        // arr.[] -1 — explicit method call with negative arg without parens
+        let d = run_cop(&ArrayFirstLast, b"arr.[] -1\n");
+        assert_eq!(d.len(), 1, "Should detect arr.[] -1: {:?}", d);
+    }
+
+    #[test]
+    fn detects_safe_nav_bracket_no_parens() {
+        let d = run_cop(&ArrayFirstLast, b"arr&.[] 0\n");
+        assert_eq!(d.len(), 1, "Should detect arr&.[] 0: {:?}", d);
+    }
+
+    #[test]
+    fn detects_safe_nav_bracket_negative_no_parens() {
+        let d = run_cop(&ArrayFirstLast, b"arr&.[] -1\n");
+        assert_eq!(d.len(), 1, "Should detect arr&.[] -1: {:?}", d);
+    }
+
+    #[test]
+    fn detects_multiline_bracket() {
+        let d = run_cop(&ArrayFirstLast, b"arr[\n  0\n]\n");
+        assert_eq!(d.len(), 1, "Should detect multiline arr[\\n0\\n]: {:?}", d);
+    }
+
+    #[test]
+    fn detects_in_method_argument() {
+        let d = run_cop(&ArrayFirstLast, b"foo(arr[0])\n");
+        assert_eq!(d.len(), 1, "Should detect arr[0] in method arg: {:?}", d);
+    }
+
+    #[test]
+    fn detects_with_method_chain() {
+        let d = run_cop(&ArrayFirstLast, b"arr[0].to_s\n");
+        assert_eq!(d.len(), 1, "Should detect arr[0].to_s: {:?}", d);
+    }
+
+    #[test]
+    fn no_offense_receiver_of_index_or_write() {
+        // arr[0][:key] ||= val — [0] is receiver of IndexOrWriteNode
+        let d = run_cop(&ArrayFirstLast, b"arr[0][:key] ||= val\n");
+        assert!(d.is_empty(), "Should not flag arr[0] when receiver of ||= index-write: {:?}", d);
+    }
+
+    #[test]
+    fn no_offense_receiver_of_index_operator_write() {
+        // values[0][1] += value — [0] is receiver of IndexOperatorWriteNode
+        let d = run_cop(&ArrayFirstLast, b"values[0][1] += value\n");
+        assert!(d.is_empty(), "Should not flag values[0] when receiver of += index-write: {:?}", d);
+    }
 }
