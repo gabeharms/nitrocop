@@ -102,8 +102,9 @@ jobs:
   # --rerun: actually runs the new binary (not just cached results)
   # --quick: only repos with baseline activity for the cop (3-10x faster)
   cop-check:
+    # Scanning 1,291 repos takes ~17min; allow headroom for build + clone
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
