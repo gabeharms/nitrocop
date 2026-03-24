@@ -143,7 +143,7 @@ BUNDLE_PATH=vendor/bundle bundle install
 - Commit early and often on shared branches.
 - Ignore unrelated working-tree changes unless asked to handle them.
 - Never copy code or identifiers from private repos into this repo.
-- Document cop investigation findings as `///` doc comments on the cop struct.
+- Document cop investigation findings as `///` doc comments on the cop struct. This includes failed fix attempts: document what was tried, why it regressed (with FP/FN numbers), the commit SHA that was reverted, and what a correct fix would need. This prevents future agents from repeating the same failed approach.
 - When editing a skill, check related skills that share conventions or workflows.
 
 ## Notes
