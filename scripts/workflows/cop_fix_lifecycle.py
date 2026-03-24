@@ -1172,7 +1172,7 @@ def cmd_finalize(args: list[str]) -> int:
                  f'NITROCOP_BIN="$PWD/target/release/nitrocop" '
                  f'python3 scripts/check-cop.py "{opts.cop}" '
                  f'--verbose --rerun --quick --clone '
-                 f'2>&1 | tee "{standard_log_file}"'],
+                 f'2>&1 | tee "{standard_log_file}" >&2'],
                 text=True, check=True,
             )
         except subprocess.CalledProcessError:
