@@ -68,18 +68,21 @@ fn is_literal_array(node: &ruby_prism::Node<'_>) -> bool {
 /// Check if a node is a hash where all keys and values are constant portions
 /// (matching RuboCop's recursive `literal?` check for hashes).
 fn is_literal_hash(node: &ruby_prism::Node<'_>) -> bool {
-    if let Some(hash) = node.as_hash_node() {
-        hash.elements().iter().all(|el| {
-            if let Some(assoc) = el.as_assoc_node() {
-                is_constant_portion(&assoc.key()) && is_constant_portion(&assoc.value())
-            } else {
-                // AssocSplatNode (**foo) is not constant
-                false
-            }
-        })
+    let elements = if let Some(hash) = node.as_hash_node() {
+        hash.elements()
+    } else if let Some(kw_hash) = node.as_keyword_hash_node() {
+        kw_hash.elements()
     } else {
-        false
-    }
+        return false;
+    };
+    elements.iter().all(|el| {
+        if let Some(assoc) = el.as_assoc_node() {
+            is_constant_portion(&assoc.key()) && is_constant_portion(&assoc.value())
+        } else {
+            // AssocSplatNode (**foo) is not constant
+            false
+        }
+    })
 }
 
 /// Check if a node is an interpolated string (dstr) or interpolated regexp,
