@@ -52,3 +52,29 @@ w = x * (
 
 # Single-line grouped expression (no hanging paren)
 result = (a + b)
+
+# No-args call with correctly aligned `)` at line indentation
+some_method(
+)
+
+# No-args call with `)` aligned with `(`
+some_method(
+           )
+
+# Def with no params: `)` correctly aligned
+def some_method(
+)
+end
+
+# Def first param on same line: `)` correctly aligned with `(`
+def some_method(a
+               )
+end
+
+# Scenario 2: first arg on same line, all aligned: `)` at `(` column
+some_method(a
+           )
+
+# Grouped expression: first element on same line: `)` aligned with `(`
+w = x * (y + z
+        )

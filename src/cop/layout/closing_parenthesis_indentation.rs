@@ -58,12 +58,14 @@ impl Cop for ClosingParenthesisIndentation {
         if let Some(call) = node.as_call_node() {
             if let (Some(open_loc), Some(close_loc)) = (call.opening_loc(), call.closing_loc()) {
                 if close_loc.as_slice() == b")" {
+                    let (_, node_col) = source.offset_to_line_col(node.location().start_offset());
                     diagnostics.extend(check_parens(
                         source,
                         self,
                         open_loc,
                         close_loc,
                         call.arguments(),
+                        node_col,
                         config,
                     ));
                     return;
@@ -92,15 +94,17 @@ impl Cop for ClosingParenthesisIndentation {
 
         // Handle method definitions with parenthesized parameters
         if let Some(def_node) = node.as_def_node() {
-            let params = def_node.parameters();
-            if let Some(params) = params {
-                let lparen = def_node.lparen_loc();
-                let rparen = def_node.rparen_loc();
-                if let (Some(open_loc), Some(close_loc)) = (lparen, rparen) {
-                    diagnostics.extend(check_def_parens(
-                        source, self, open_loc, close_loc, params, config,
-                    ));
-                }
+            let lparen = def_node.lparen_loc();
+            let rparen = def_node.rparen_loc();
+            if let (Some(open_loc), Some(close_loc)) = (lparen, rparen) {
+                diagnostics.extend(check_def_parens(
+                    source,
+                    self,
+                    open_loc,
+                    close_loc,
+                    def_node.parameters(),
+                    config,
+                ));
             }
         }
     }
@@ -112,6 +116,7 @@ fn check_parens(
     open_loc: ruby_prism::Location<'_>,
     close_loc: ruby_prism::Location<'_>,
     arguments: Option<ruby_prism::ArgumentsNode<'_>>,
+    node_col: usize,
     config: &CopConfig,
 ) -> Vec<Diagnostic> {
     let (open_line, open_col) = source.offset_to_line_col(open_loc.start_offset());
@@ -129,7 +134,27 @@ fn check_parens(
 
     let args = match arguments {
         Some(a) => a,
-        None => return Vec::new(),
+        None => {
+            // No arguments: check_for_no_elements logic.
+            // Acceptable columns: line indentation of open paren line, open paren column,
+            // and the node column (for sends, same as open_line_indent typically).
+            let open_line_indent = match util::line_at(source, open_line) {
+                Some(line) => leading_whitespace_columns(line),
+                None => 0,
+            };
+            if close_col != open_line_indent && close_col != open_col && close_col != node_col {
+                return vec![cop.diagnostic(
+                    source,
+                    close_line,
+                    close_col,
+                    format!(
+                        "Indent `)` to column {} (not {}).",
+                        open_line_indent, close_col
+                    ),
+                )];
+            }
+            return Vec::new();
+        }
     };
 
     let first_arg = match args.arguments().iter().next() {
@@ -234,10 +259,10 @@ fn check_def_parens(
     cop: &ClosingParenthesisIndentation,
     open_loc: ruby_prism::Location<'_>,
     close_loc: ruby_prism::Location<'_>,
-    params: ruby_prism::ParametersNode<'_>,
+    params: Option<ruby_prism::ParametersNode<'_>>,
     config: &CopConfig,
 ) -> Vec<Diagnostic> {
-    let (open_line, _open_col) = source.offset_to_line_col(open_loc.start_offset());
+    let (open_line, open_col) = source.offset_to_line_col(open_loc.start_offset());
     let (close_line, close_col) = source.offset_to_line_col(close_loc.start_offset());
 
     if !util::begins_its_line(source, close_loc.start_offset()) {
@@ -248,23 +273,72 @@ fn check_def_parens(
         return Vec::new();
     }
 
-    // Get first parameter
+    let params = match params {
+        Some(p) => p,
+        None => {
+            // No parameters: check_for_no_elements logic.
+            // In RuboCop, on_def calls check(node.arguments, node.arguments).
+            // For no-elements, candidates are [line_indentation, left_paren.column, node.loc.column].
+            // For def params, node is the arguments node (the paren range), so
+            // node.loc.column == open_col. Candidates collapse to [line_indent, open_col].
+            let open_line_indent = match util::line_at(source, open_line) {
+                Some(line) => leading_whitespace_columns(line),
+                None => 0,
+            };
+            if close_col != open_line_indent && close_col != open_col {
+                return vec![cop.diagnostic(
+                    source,
+                    close_line,
+                    close_col,
+                    format!(
+                        "Indent `)` to column {} (not {}).",
+                        open_line_indent, close_col
+                    ),
+                )];
+            }
+            return Vec::new();
+        }
+    };
+
+    // Get first parameter - check all parameter types
     let first_param = params
         .requireds()
         .iter()
         .next()
-        .or_else(|| params.optionals().iter().next());
+        .or_else(|| params.optionals().iter().next())
+        .or_else(|| params.posts().iter().next())
+        .or_else(|| params.keywords().iter().next());
 
-    let first_param = match first_param {
-        Some(p) => p,
+    // Also check rest, keyword_rest, and block params via their locations
+    let first_param_offset = first_param.as_ref().map(|p| p.location().start_offset());
+
+    // Check rest param
+    let rest_offset = params.rest().map(|r| r.location().start_offset());
+    let keyword_rest_offset = params.keyword_rest().map(|kr| kr.location().start_offset());
+    let block_offset = params.block().map(|b| b.location().start_offset());
+
+    // Find the earliest parameter offset
+    let earliest_offset = [
+        first_param_offset,
+        rest_offset,
+        keyword_rest_offset,
+        block_offset,
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+
+    let earliest_offset = match earliest_offset {
+        Some(o) => o,
         None => return Vec::new(),
     };
 
-    let (first_param_line, _) = source.offset_to_line_col(first_param.location().start_offset());
+    let (first_param_line, _) = source.offset_to_line_col(earliest_offset);
 
     let indent_width = config.get_usize("IndentationWidth", 2);
 
     if first_param_line > open_line {
+        // Scenario 1: First param on its own line after `(`
         let first_param_line_indent = match util::line_at(source, first_param_line) {
             Some(line) => leading_whitespace_columns(line),
             None => 0,
@@ -278,9 +352,88 @@ fn check_def_parens(
                 format!("Indent `)` to column {} (not {}).", expected, close_col),
             )];
         }
+    } else {
+        // Scenario 2: First param on same line as `(`
+        // RuboCop uses expected_column which checks all_elements_aligned? and then
+        // either aligns with `(` or uses line indentation.
+        // For def params, the elements are the parameters themselves.
+        let param_columns: Vec<usize> = collect_def_param_columns(source, &params);
+
+        let all_aligned =
+            !param_columns.is_empty() && param_columns.iter().all(|&c| c == param_columns[0]);
+
+        if all_aligned {
+            // All params at same column: `)` aligns with `(`
+            if close_col != open_col {
+                return vec![cop.diagnostic(
+                    source,
+                    close_line,
+                    close_col,
+                    "Align `)` with `(`.".to_string(),
+                )];
+            }
+        } else {
+            // Params not aligned: use line indentation of first param line
+            let open_line_indent = match util::line_at(source, open_line) {
+                Some(line) => leading_whitespace_columns(line),
+                None => 0,
+            };
+            let first_param_line_indent = match util::line_at(source, first_param_line) {
+                Some(line) => leading_whitespace_columns(line),
+                None => 0,
+            };
+            if close_col != first_param_line_indent && close_col != open_line_indent {
+                return vec![cop.diagnostic(
+                    source,
+                    close_line,
+                    close_col,
+                    format!(
+                        "Indent `)` to column {} (not {}).",
+                        open_line_indent, close_col
+                    ),
+                )];
+            }
+        }
     }
 
     Vec::new()
+}
+
+/// Collect column positions for all def parameters.
+fn collect_def_param_columns(
+    source: &SourceFile,
+    params: &ruby_prism::ParametersNode<'_>,
+) -> Vec<usize> {
+    let mut columns = Vec::new();
+    for p in params.requireds().iter() {
+        let (_, col) = source.offset_to_line_col(p.location().start_offset());
+        columns.push(col);
+    }
+    for p in params.optionals().iter() {
+        let (_, col) = source.offset_to_line_col(p.location().start_offset());
+        columns.push(col);
+    }
+    for p in params.posts().iter() {
+        let (_, col) = source.offset_to_line_col(p.location().start_offset());
+        columns.push(col);
+    }
+    for p in params.keywords().iter() {
+        let (_, col) = source.offset_to_line_col(p.location().start_offset());
+        columns.push(col);
+    }
+    if let Some(r) = params.rest() {
+        let (_, col) = source.offset_to_line_col(r.location().start_offset());
+        columns.push(col);
+    }
+    if let Some(kr) = params.keyword_rest() {
+        let (_, col) = source.offset_to_line_col(kr.location().start_offset());
+        columns.push(col);
+    }
+    if let Some(b) = params.block() {
+        let (_, col) = source.offset_to_line_col(b.location().start_offset());
+        columns.push(col);
+    }
+    columns
 }
 
 /// Check closing parenthesis indentation for grouped expressions: `(expr)`.
