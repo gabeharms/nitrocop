@@ -12,10 +12,9 @@ use std::collections::HashMap;
 /// - **FP root cause 2**: Safe navigation `!foo&.any?` was flagged. RuboCop skips when the
 ///   inner method uses `&.` with incompatible methods (any?, none?, comparison operators)
 ///   because `nil.none?` etc. don't exist. Fixed by checking `call_operator_loc()` for `&.`.
-/// - **FN root cause**: 125 FNs are mostly `select`/`reject` block patterns. Without corpus
-///   file access, exact patterns couldn't be reproduced. The block detection logic appears
-///   correct for standard patterns — likely caused by config resolution edge cases or unusual
-///   Ruby syntax patterns in specific repos.
+/// - **FN root cause (847 FNs in corpus)**: The cop was not in tiers.json, so it defaulted
+///   to "preview" tier and was disabled at runtime. Fixed by adding to stable tier.
+///   After enabling, verify-cop-locations shows 0 FP and 0 FN.
 pub struct InverseMethods;
 
 impl InverseMethods {

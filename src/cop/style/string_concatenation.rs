@@ -42,6 +42,11 @@ impl StringConcatenation {
         // is not flagged when neither side is a plain string literal.
         // Also exclude percent literals (%[...], %{...}, %(...), %Q[...], %q[...]) — in Prism
         // these are StringNode but in Parser they're dstr (not str_type?).
+        // Also exclude multi-line string literals — in Parser, a string spanning multiple
+        // source lines is parsed as dstr (not str), so str_type? returns false. In Prism
+        // these are still StringNode, so we must check if the node's source spans multiple
+        // lines. We check if the raw source bytes between opening and closing contain a
+        // newline (the source itself, not escaped \n in content).
         if let Some(s) = node.as_string_node() {
             if let Some(opening) = s.opening_loc() {
                 let slice = opening.as_slice();
@@ -49,6 +54,14 @@ impl StringConcatenation {
                 if slice.starts_with(b"<<") || slice.starts_with(b"%") {
                     return false;
                 }
+            }
+            // Exclude multi-line string literals: in Parser these are dstr, not str.
+            // Check if the node location spans multiple lines by looking for newlines
+            // in the raw source between start and end of the node.
+            let loc = s.location();
+            let source_bytes = loc.as_slice();
+            if source_bytes.contains(&b'\n') {
+                return false;
             }
             return true;
         }
