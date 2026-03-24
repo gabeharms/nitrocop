@@ -19,6 +19,20 @@ use crate::parse::source::SourceFile;
 ///
 /// Fix: Added visitors for all write node types. Changed splat/kwsplat/block_pass visitors to
 /// only skip direct lvar children (matching RuboCop's immediate-parent check).
+///
+/// FP=10, FN=71 investigation (2026-03-24): Two issues found:
+///
+/// 1. **Missing yield handling**: `SendClassifier` only visited `CallNode` and `SuperNode`,
+///    missing `YieldNode`. Forwarding via `yield(*args)` was not detected.
+///    Fix: Added `visit_yield_node` to `SendClassifier`.
+///
+/// 2. **Missing block-ancestor check for anonymous forwarding**: For Ruby < 3.4, anonymous
+///    forwarding (`*`, `**`, `&`) inside a block is a syntax error (Ruby 3.3.0 bug). RuboCop's
+///    `all_forwarding_offenses_correctable?` suppresses all anonymous forwarding if ANY send
+///    node is inside a block. Our cop didn't track block nesting depth.
+///    Fix: Added `block_depth` tracking to `SendClassifier` and `inside_block` flag to
+///    `SendClassification`. Skip anonymous forwarding when any send is inside a block
+///    for Ruby < 3.4.
 pub struct ArgumentsForwarding;
 
 const FORWARDING_MSG: &str = "Use shorthand syntax `...` for arguments forwarding.";
