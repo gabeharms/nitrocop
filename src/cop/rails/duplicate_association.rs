@@ -90,23 +90,7 @@ impl Cop for DuplicateAssociation {
             return;
         }
 
-        let mut calls = class_body_calls(&class);
-
-        // Also collect association calls from if/unless branches at the class body level.
-        // RuboCop uses Parser AST where `each_child_node(:send)` on an IfNode finds
-        // sends in the if-body and else-body, but NOT sends inside a nested IfNode
-        // (which represents elsif). So we only go one level deep: if-body + else-body.
-        if let Some(body) = class.body() {
-            if let Some(stmts) = body.as_statements_node() {
-                for node in stmts.body().iter() {
-                    if let Some(if_node) = node.as_if_node() {
-                        collect_calls_from_if_else(&if_node, &mut calls);
-                    } else if let Some(unless_node) = node.as_unless_node() {
-                        collect_calls_from_unless(&unless_node, &mut calls);
-                    }
-                }
-            }
-        }
+        let calls = class_body_calls(&class);
 
         // --- Pass 1: Duplicate association names ---
         // Group calls by name, then flag ALL occurrences in groups with >1 member.
@@ -240,66 +224,6 @@ fn extract_sole_class_name(
     let start = value.location().start_offset();
     let end = value.location().end_offset();
     Some(source.as_bytes()[start..end].to_vec())
-}
-
-/// Collect association calls from an `if`/`else` node at class body level.
-///
-/// In Parser AST, `each_child_node(:send)` on an `if` node finds sends in the
-/// if-body and else-body, but NOT sends inside a nested `IfNode` (which represents
-/// `elsif`). So we only collect from the if-body and, if the subsequent is an
-/// `ElseNode`, from the else-body. We do NOT recurse into `elsif` chains.
-fn collect_calls_from_if_else<'a>(
-    if_node: &ruby_prism::IfNode<'a>,
-    calls: &mut Vec<ruby_prism::CallNode<'a>>,
-) {
-    // Collect from the if-body (statements)
-    if let Some(stmts) = if_node.statements() {
-        for node in stmts.body().iter() {
-            if let Some(call) = node.as_call_node() {
-                calls.push(call);
-            }
-        }
-    }
-    // Collect from else-body only (not elsif which is another IfNode)
-    if let Some(subsequent) = if_node.subsequent() {
-        if let Some(else_node) = subsequent.as_else_node() {
-            if let Some(stmts) = else_node.statements() {
-                for node in stmts.body().iter() {
-                    if let Some(call) = node.as_call_node() {
-                        calls.push(call);
-                    }
-                }
-            }
-        }
-        // If subsequent is another IfNode (elsif), do NOT recurse — matches Parser behavior.
-    }
-}
-
-/// Collect association calls from an `unless`/`else` node at class body level.
-///
-/// Same logic as `collect_calls_from_if_else` but for `UnlessNode`.
-fn collect_calls_from_unless<'a>(
-    unless_node: &ruby_prism::UnlessNode<'a>,
-    calls: &mut Vec<ruby_prism::CallNode<'a>>,
-) {
-    // Collect from the unless-body (statements)
-    if let Some(stmts) = unless_node.statements() {
-        for node in stmts.body().iter() {
-            if let Some(call) = node.as_call_node() {
-                calls.push(call);
-            }
-        }
-    }
-    // Collect from else-body
-    if let Some(else_node) = unless_node.else_clause() {
-        if let Some(stmts) = else_node.statements() {
-            for node in stmts.body().iter() {
-                if let Some(call) = node.as_call_node() {
-                    calls.push(call);
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

@@ -50,14 +50,3 @@ class Profile < ApplicationRecord
   has_one :qux, class_name: 'Bar'
   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/DuplicateAssociation: Association `class_name: 'Bar'` is defined multiple times. Don't repeat associations.
 end
-
-# Duplicate associations inside if/else branches
-class Thing < ActiveRecord::Base
-  if condition
-    belongs_to :owner, optional: true
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/DuplicateAssociation: Association `owner` is defined multiple times. Don't repeat associations.
-  else
-    belongs_to :owner
-    ^^^^^^^^^^^^^^^^^ Rails/DuplicateAssociation: Association `owner` is defined multiple times. Don't repeat associations.
-  end
-end

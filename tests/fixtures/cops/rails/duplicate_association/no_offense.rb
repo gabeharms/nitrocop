@@ -29,21 +29,3 @@ class Report < ApplicationRecord
   has_one :baz, -> { condition }, class_name: 'Bar'
   has_one :qux, -> { some_condition }, class_name: 'Bar'
 end
-
-# elsif branches should NOT be collected (matching Parser AST behavior)
-class Widget < ApplicationRecord
-  if condition_a
-    belongs_to :owner, optional: true
-  elsif condition_b
-    belongs_to :owner
-  end
-end
-
-# unless with else — both branches collected, but no duplicate here
-class Gadget < ApplicationRecord
-  unless condition
-    belongs_to :creator
-  else
-    belongs_to :updater
-  end
-end
