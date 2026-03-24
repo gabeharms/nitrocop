@@ -833,18 +833,6 @@ fn lint_source_once(
     let has_only = !args.only.is_empty();
 
     // Pass 1: Universal cops
-    // DEBUG: check if InverseMethods is in universal or pattern lists
-    for (idx, cop) in cops.iter().enumerate() {
-        if cop.name() == "Style/InverseMethods" {
-            let filter = active_filters.cop_filter(idx);
-            let is_uni = active_filters.universal_cop_indices().contains(&idx);
-            let is_pat = active_filters.pattern_cop_indices().contains(&idx);
-            eprintln!(
-                "DEBUG: InverseMethods idx={idx} enabled={} universal={is_uni} pattern={is_pat}",
-                filter.is_enabled()
-            );
-        }
-    }
     for &i in active_filters.universal_cop_indices() {
         let cop = &cops[i];
         let name = cop.name();

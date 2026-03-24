@@ -2619,10 +2619,6 @@ impl ResolvedConfig {
                     EnabledState::True => true,
                 };
 
-                if name == "Style/InverseMethods" {
-                    eprintln!("DEBUG filter EARLY: enabled={enabled} default_enabled={}", cop.default_enabled());
-                }
-
                 // Plugin department awareness: cops from plugin departments should
                 // only run if the corresponding gem was loaded via require:/plugins:.
                 if enabled
@@ -2683,21 +2679,6 @@ impl ResolvedConfig {
                     enabled = false;
                 }
 
-                if name == "Style/InverseMethods" {
-                    let es = match enabled_state {
-                        EnabledState::False => "F",
-                        EnabledState::Pending => "P",
-                        EnabledState::Unset => "U",
-                        EnabledState::True => "T",
-                    };
-                    eprintln!("DEBUG filter: InverseMethods enabled={enabled} enabled_state={es} cop_enabled_state={:?} dept_enabled_state={:?} disabled_by_default={} rubocop_known_cops_empty={} rubocop_known_cops_contains={}",
-                        config.map(|c| c.enabled),
-                        dept_config.map(|dc| dc.enabled),
-                        self.disabled_by_default,
-                        self.rubocop_known_cops.is_empty(),
-                        self.rubocop_known_cops.contains(name),
-                    );
-                }
                 if !enabled {
                     return CopFilter {
                         enabled: false,
