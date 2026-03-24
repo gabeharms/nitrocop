@@ -39,6 +39,17 @@ use crate::parse::source::SourceFile;
 /// **Root cause of the last FP:** `===` was still treated as a setter because the
 /// helper only excluded `==`, `!=`, `<=`, and `>=`. RuboCop's `setter_method?`
 /// predicate does not match case equality, so `===` must be excluded too.
+///
+/// ## Investigation findings (2026-03-24)
+///
+/// **Root cause of 12 FPs:** `.new` calls with a block (e.g., `Thread.new { ... }`,
+/// `Class.new(Base) { ... }`) were incorrectly treated as local constructors. In
+/// RuboCop's Parser AST, a block call is wrapped in a separate `(block ...)` node,
+/// so `constructor?` (which checks `send_type?`) naturally returns `false` for them.
+/// In Prism, the block is part of the `CallNode` itself, so we must explicitly check
+/// `call.block().is_none()` before treating a `.new` call as a local constructor.
+/// Objects created via `.new` with a block may be externally referenced (threads run
+/// in the background, classes registered globally via `const_set`, etc.).
 pub struct UselessSetterCall;
 
 impl Cop for UselessSetterCall {
@@ -233,9 +244,14 @@ fn is_constructor(node: &ruby_prism::Node<'_>) -> bool {
         return true;
     }
 
-    // `.new` call — creates a new local object
+    // `.new` call WITHOUT a block — creates a new local object.
+    // When `.new` has a block (e.g., `Thread.new { ... }`, `Class.new(Base) { ... }`),
+    // the object may be externally referenced (thread runs in background, class registered
+    // globally, etc.), so it's not purely local. RuboCop's Parser AST wraps block calls in
+    // a separate `block` node, so `constructor?` naturally returns false for them. In Prism,
+    // the block is part of the CallNode, so we must check explicitly.
     if let Some(call) = node.as_call_node() {
-        if call.name().as_slice() == b"new" {
+        if call.name().as_slice() == b"new" && call.block().is_none() {
             return true;
         }
     }

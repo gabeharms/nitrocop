@@ -143,3 +143,38 @@ rescue StandardError
 else
   do_something
 end
+
+# Constructor with block — object is not purely local (e.g., Thread.new { ... })
+# The block may cause the object to be externally referenced (thread runs in background)
+def thread_with_bracket_setter
+  t = Thread.new {
+    begin
+      do_something
+    rescue => e
+      handle_error
+    ensure
+      cleanup
+    end
+  }
+  t[:name] = __method__
+end
+
+# Thread.new with do..end block and attribute setter
+def thread_with_attr_setter
+  thread = Thread.new do
+    send_email
+  rescue => error
+    log_error(error)
+  end
+  thread.priority = -2
+end
+
+# Class.new with block — object registered globally via const_set
+def class_new_with_block
+  klass = Class.new(Base) do
+    def to_s
+      'hello'
+    end
+  end
+  klass.html_tag = 'code'
+end
