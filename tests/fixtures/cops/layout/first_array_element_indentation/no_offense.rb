@@ -236,3 +236,10 @@ expect(client.search body: [
   { index: 'foo', query: { match_all: {} } },
   { index: 'bar', query: { match: { foo: 'bar' } } }
 ])
+
+# Empty arrays
+a = []
+
+# Empty array with closing bracket on next line at correct indent
+a << [
+]

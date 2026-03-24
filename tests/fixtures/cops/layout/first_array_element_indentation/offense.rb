@@ -54,3 +54,7 @@ assert_equal({ "c" => [
   { "v" => 2, "f" => "2" },
 ] }, data["hits_over_time"]["rows"][1])
 ^ Layout/FirstArrayElementIndentation: Indent the right bracket the same as the first position after the preceding left parenthesis.
+# FN fix: Empty array with wrong closing bracket indent
+a << [
+  ]
+  ^ Layout/FirstArrayElementIndentation: Indent the right bracket the same as the start of the line where the left bracket is.

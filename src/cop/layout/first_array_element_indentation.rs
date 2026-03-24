@@ -131,6 +131,25 @@ fn byte_col_to_char_col(line_bytes: &[u8], byte_col: usize) -> usize {
 ///    indicator. Fix: reset `has_binary_op` when `,` at depth 0 is encountered
 ///    during backward scan, since operators before commas are part of preceding
 ///    argument expressions. Fixed 2 FPs (antiwork/gumroad).
+///
+/// **FP/FN root cause #8 (2026-03-24):** Three sub-causes:
+/// a) Empty arrays skipped entirely: `elements.is_empty()` returned early, skipping
+///    the closing bracket check. RuboCop still checks closing brackets for empty
+///    arrays (e.g., `a << [\n  ]` should flag `]`). Fix: removed early return.
+/// b) Hash-key-relative not primary: RuboCop's `indent_base` checks `parent_hash_key`
+///    BEFORE style-specific checks (paren-relative or line-relative). Nitrocop used
+///    hash-key-relative only as a secondary acceptance fallback. Fix: added
+///    `ParentHashKey` as a proper `IndentBaseType` variant and check it first when
+///    the array is a hash pair value with a right sibling on a subsequent line.
+///    This matches RuboCop's `right_sibling_begins_on_subsequent_line?` check.
+/// c) Backward multi-pair check too permissive: `is_multi_pair_hash` backward scan
+///    detected preceding hash pairs, applying hash-key-relative even for last pairs.
+///    RuboCop only uses hash-key-relative when the pair has a RIGHT sibling (forward),
+///    not a left sibling. Fix: backward check now requires `has_right_sibling_any_line`
+///    to also be true.
+/// d) `consistent` style missing hash-key-relative: RuboCop applies hash-key-relative
+///    for ALL styles (except `align_brackets`), not just `special_inside_parentheses`.
+///    Fix: moved hash-key-relative check before style-specific dispatch.
 pub struct FirstArrayElementIndentation;
 
 /// Describes what the expected indentation is relative to.
@@ -142,6 +161,8 @@ enum IndentBaseType {
     FirstColumnAfterLeftParenthesis,
     /// Default: relative to the start of the line where `[` appears
     StartOfLine,
+    /// Hash-key-relative: relative to the parent hash key (multi-pair hashes)
+    ParentHashKey,
 }
 
 /// Result of scanning backwards from `[` to find an enclosing `(`.
@@ -529,72 +550,121 @@ fn is_direct_argument(source_bytes: &[u8], closing_end_offset: usize, inside_has
     }
 }
 
-/// Check if the array is a value in a hash literal with multiple key-value pairs.
-/// RuboCop only accepts hash-key-relative indentation for multi-pair hashes; single-pair
-/// hashes use the normal indent mode (line-relative or paren-relative).
+/// Check if the array is a value in a hash literal with multiple key-value pairs,
+/// specifically whether the pair has a RIGHT SIBLING that begins on a SUBSEQUENT LINE.
+///
+/// This matches RuboCop's `right_sibling_begins_on_subsequent_line?` check:
+/// hash-key-relative indentation only applies when there is a next pair in the hash
+/// AND that next pair starts on a line after the current pair ends.
 ///
 /// Checks by scanning forward from the array's closing bracket position in the source:
-/// if `]` is followed (possibly on the next line) by `,` and then another hash key
-/// pattern (e.g. `key:` or `key =>`), it's a multi-pair hash.
+/// if `]` is followed by `,` and then another hash key pattern on a SUBSEQUENT line,
+/// the right sibling condition is met.
 ///
-/// Also checks backward from the array's opening `[` on its line: if there's a `,`
-/// before the hash key (indicating a preceding pair), it's multi-pair.
+/// Also checks backward from the array's opening `[` on its line for a preceding pair,
+/// but ONLY to detect the "first pair with right sibling" case. The backward check
+/// requires a forward right-sibling to also exist (checked separately).
 fn is_multi_pair_hash(
     source_bytes: &[u8],
     closing_end_offset: usize,
     open_line_bytes: &[u8],
     hash_key_col: usize,
 ) -> bool {
-    // Check forward from `]`: look for `, key:` or `, key =>`
-    let len = source_bytes.len();
-    let mut i = closing_end_offset;
-    // Skip whitespace after `]`
-    while i < len && (source_bytes[i] == b' ' || source_bytes[i] == b'\t') {
-        i += 1;
-    }
-    // After `]`, check for `,` or `}`
-    if i < len && source_bytes[i] == b',' {
-        // There's a comma after `]`. If followed by another hash key, it's multi-pair.
-        i += 1;
-        // Skip whitespace and newlines to find next token
-        while i < len && matches!(source_bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
-            i += 1;
-        }
-        if i < len
-            && (source_bytes[i].is_ascii_alphanumeric()
-                || source_bytes[i] == b'_'
-                || source_bytes[i] == b':'
-                || source_bytes[i] == b'"'
-                || source_bytes[i] == b'\'')
-        {
-            return true;
-        }
+    // Primary check: forward from `]` for right sibling on subsequent line
+    if has_right_sibling_on_subsequent_line(source_bytes, closing_end_offset) {
+        return true;
     }
 
-    // Check backward on the opening line: if there's a `,` before the hash key
-    // (after skipping whitespace), it means there's a preceding pair — but only if
-    // the preceding token is also a hash value (not a positional argument).
-    // We verify by scanning past the preceding value to find another hash key
-    // pattern (ends with `:` for symbol keys, or `=>` for hash-rocket keys).
+    // Secondary check: backward for preceding pair, BUT only if there's also
+    // a right sibling (on same or subsequent line). This handles patterns like
+    // `{ x: 1,\n  y: [\n    :a\n  ],\n  z: 3 }` where we need to check y's
+    // right sibling exists at all.
     if hash_key_col > 0 {
         let mut j = hash_key_col;
         while j > 0 && (open_line_bytes[j - 1] == b' ' || open_line_bytes[j - 1] == b'\t') {
             j -= 1;
         }
         if j > 0 && open_line_bytes[j - 1] == b',' {
-            // Found a comma. Scan backward past the preceding value to check
-            // if it's part of a hash key-value pair (not just a positional arg).
-            j -= 1; // skip the comma
+            j -= 1;
             while j > 0 && (open_line_bytes[j - 1] == b' ' || open_line_bytes[j - 1] == b'\t') {
                 j -= 1;
             }
             let has_preceding_key = has_hash_key_pattern_before(open_line_bytes, j);
             if has_preceding_key {
-                return true;
+                // Only count as multi-pair if there's also a right sibling
+                // (on same or subsequent line). Without a right sibling,
+                // RuboCop doesn't use hash-key-relative for the last pair.
+                if has_right_sibling_any_line(source_bytes, closing_end_offset) {
+                    return true;
+                }
             }
         }
     }
 
+    false
+}
+
+/// Check if there's a right sibling (next hash pair) that begins on a SUBSEQUENT line.
+/// This matches RuboCop's `pair.last_line < pair.right_sibling.first_line`.
+fn has_right_sibling_on_subsequent_line(source_bytes: &[u8], closing_end_offset: usize) -> bool {
+    let len = source_bytes.len();
+    let mut i = closing_end_offset;
+    // Skip whitespace (not newlines) after `]`
+    while i < len && (source_bytes[i] == b' ' || source_bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i >= len || source_bytes[i] != b',' {
+        return false;
+    }
+    i += 1; // skip comma
+    // Check if there's a newline before the next token
+    let mut crossed_newline = false;
+    while i < len && matches!(source_bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+        if source_bytes[i] == b'\n' {
+            crossed_newline = true;
+        }
+        i += 1;
+    }
+    if !crossed_newline {
+        return false;
+    }
+    // Check if next token looks like a hash key
+    if i < len
+        && (source_bytes[i].is_ascii_alphanumeric()
+            || source_bytes[i] == b'_'
+            || source_bytes[i] == b':'
+            || source_bytes[i] == b'"'
+            || source_bytes[i] == b'\'')
+    {
+        return true;
+    }
+    false
+}
+
+/// Check if there's a right sibling (next hash pair) on ANY line (same or subsequent).
+/// Used to validate backward-detected multi-pair hashes.
+fn has_right_sibling_any_line(source_bytes: &[u8], closing_end_offset: usize) -> bool {
+    let len = source_bytes.len();
+    let mut i = closing_end_offset;
+    while i < len && (source_bytes[i] == b' ' || source_bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i >= len || source_bytes[i] != b',' {
+        return false;
+    }
+    i += 1;
+    while i < len && matches!(source_bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+        i += 1;
+    }
+    if i < len
+        && (source_bytes[i].is_ascii_alphanumeric()
+            || source_bytes[i] == b'_'
+            || source_bytes[i] == b':'
+            || source_bytes[i] == b'"'
+            || source_bytes[i] == b'\'')
+    {
+        return true;
+    }
     false
 }
 
@@ -652,9 +722,6 @@ impl Cop for FirstArrayElementIndentation {
         };
 
         let elements: Vec<_> = array_node.elements().iter().collect();
-        if elements.is_empty() {
-            return;
-        }
 
         let (open_line, _) = source.offset_to_line_col(opening_loc.start_offset());
 
@@ -684,20 +751,45 @@ impl Cop for FirstArrayElementIndentation {
             .unwrap_or(0);
 
         // Compute the indent base column (before adding width) and its type.
+        // Priority order matches RuboCop's `indent_base`:
+        // 1. align_brackets -> bracket-relative
+        // 2. parent_hash_key (if multi-pair hash with right sibling on subsequent line)
+        // 3. special_inside_parentheses -> paren-relative
+        // 4. Default -> line-relative
         let (indent_base, base_type) = {
-            match style {
-                "consistent" => (open_line_indent, IndentBaseType::StartOfLine),
-                "align_brackets" => (open_col, IndentBaseType::LeftBracket),
-                _ => {
+            if style == "align_brackets" {
+                (open_col, IndentBaseType::LeftBracket)
+            } else {
+                // Check hash-key-relative BEFORE style-specific checks.
+                // RuboCop uses `parent_hash_key` when: array is hash pair value,
+                // key and value on same line, and right sibling on subsequent line.
+                // Only apply when elements exist (RuboCop's `hash_pair_where_value_beginning_with`
+                // returns nil when first_elem is nil).
+                let use_hash_key = !elements.is_empty()
+                    && hash_key_col.is_some()
+                    && hash_key_byte_col.is_some_and(|key_bc| {
+                        has_right_sibling_on_subsequent_line(source.as_bytes(), closing_end_offset)
+                            || {
+                                // Also check if preceding pair exists AND there's a right
+                                // sibling on any line (for first-pair-in-middle case).
+                                is_multi_pair_hash(
+                                    source.as_bytes(),
+                                    closing_end_offset,
+                                    open_line_bytes,
+                                    key_bc,
+                                )
+                            }
+                    });
+
+                if use_hash_key {
+                    (hash_key_col.unwrap(), IndentBaseType::ParentHashKey)
+                } else if style == "consistent" {
+                    (open_line_indent, IndentBaseType::StartOfLine)
+                } else {
                     // "special_inside_parentheses" (default):
                     let paren_scan = find_left_paren_on_line(open_line_bytes, open_byte_col);
                     if let Some(paren_byte_col) = paren_scan.paren_col {
                         let paren_col = byte_col_to_char_col(open_line_bytes, paren_byte_col);
-                        // When there's a hash key before `[` and a method call
-                        // (`.`) at depth 0 between the `(` and the hash key, the
-                        // paren belongs to an outer call (e.g., `expect(client.search
-                        // body: [...])`). The array is not a direct argument of the
-                        // paren-bearing method, so use line-relative indent.
                         let intermediate_method_call = hash_key_byte_col.is_some_and(|hk| {
                             has_method_call_between(open_line_bytes, paren_byte_col + 1, hk)
                         });
@@ -742,40 +834,25 @@ impl Cop for FirstArrayElementIndentation {
             let expected_elem = indent_base + width;
 
             if elem_col != expected_elem {
-                // Check if indentation matches hash-key-relative style.
-                // RuboCop accepts elements indented relative to the parent
-                // hash key when the array is a hash value in a multi-pair hash.
-                let matches_hash_key = hash_key_col.is_some_and(|key_col| {
-                    elem_col == key_col + width
-                        && hash_key_byte_col.is_some_and(|key_bc| {
-                            is_multi_pair_hash(
-                                source.as_bytes(),
-                                closing_end_offset,
-                                open_line_bytes,
-                                key_bc,
-                            )
-                        })
-                });
-                if !matches_hash_key {
-                    let base_description = match base_type {
-                        IndentBaseType::LeftBracket => "the position of the opening bracket",
-                        IndentBaseType::FirstColumnAfterLeftParenthesis => {
-                            "the first position after the preceding left parenthesis"
-                        }
-                        IndentBaseType::StartOfLine => {
-                            "the start of the line where the left square bracket is"
-                        }
-                    };
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        elem_line,
-                        elem_col,
-                        format!(
-                            "Use {} spaces for indentation in an array, relative to {}.",
-                            width, base_description
-                        ),
-                    ));
-                }
+                let base_description = match base_type {
+                    IndentBaseType::LeftBracket => "the position of the opening bracket",
+                    IndentBaseType::FirstColumnAfterLeftParenthesis => {
+                        "the first position after the preceding left parenthesis"
+                    }
+                    IndentBaseType::ParentHashKey => "the parent hash key",
+                    IndentBaseType::StartOfLine => {
+                        "the start of the line where the left square bracket is"
+                    }
+                };
+                diagnostics.push(self.diagnostic(
+                    source,
+                    elem_line,
+                    elem_col,
+                    format!(
+                        "Use {} spaces for indentation in an array, relative to {}.",
+                        width, base_description
+                    ),
+                ));
             }
         }
 
@@ -809,17 +886,6 @@ impl Cop for FirstArrayElementIndentation {
             };
 
             if effective_close_col != indent_base {
-                // For single-pair hash value arrays, accept closing bracket at
-                // line-indent level. RuboCop doesn't flag closing brackets for
-                // arrays that are single-pair hash values.
-                let is_multi_pair = hash_key_byte_col.is_some_and(|key_bc| {
-                    is_multi_pair_hash(
-                        source.as_bytes(),
-                        closing_end_offset,
-                        open_line_bytes,
-                        key_bc,
-                    )
-                });
                 // For single-pair hash value arrays with line-relative indent,
                 // accept closing bracket at line-indent level. RuboCop doesn't
                 // flag closing brackets for arrays that are single-pair hash
@@ -827,42 +893,30 @@ impl Cop for FirstArrayElementIndentation {
                 // In paren-relative mode, closing bracket must match indent_base.
                 if matches!(base_type, IndentBaseType::StartOfLine)
                     && hash_key_col.is_some()
-                    && !is_multi_pair
+                    && !matches!(base_type, IndentBaseType::ParentHashKey)
                     && effective_close_col == open_line_indent
                 {
                     return;
                 }
-                // Check if closing bracket matches hash-key-relative style
-                // (only for multi-pair hashes).
-                let matches_hash_key = hash_key_col.is_some_and(|key_col| {
-                    effective_close_col == key_col
-                        && hash_key_byte_col.is_some_and(|key_bc| {
-                            is_multi_pair_hash(
-                                source.as_bytes(),
-                                closing_end_offset,
-                                open_line_bytes,
-                                key_bc,
-                            )
-                        })
-                });
-                if !matches_hash_key {
-                    let msg = match base_type {
-                        IndentBaseType::LeftBracket => {
-                            "Indent the right bracket the same as the left bracket.".to_string()
-                        }
-                        IndentBaseType::FirstColumnAfterLeftParenthesis => {
-                            "Indent the right bracket the same as the first position \
-                             after the preceding left parenthesis."
-                                .to_string()
-                        }
-                        IndentBaseType::StartOfLine => {
-                            "Indent the right bracket the same as the start of the line \
-                             where the left bracket is."
-                                .to_string()
-                        }
-                    };
-                    diagnostics.push(self.diagnostic(source, close_line, close_col, msg));
-                }
+                let msg = match base_type {
+                    IndentBaseType::LeftBracket => {
+                        "Indent the right bracket the same as the left bracket.".to_string()
+                    }
+                    IndentBaseType::FirstColumnAfterLeftParenthesis => {
+                        "Indent the right bracket the same as the first position \
+                         after the preceding left parenthesis."
+                            .to_string()
+                    }
+                    IndentBaseType::ParentHashKey => {
+                        "Indent the right bracket the same as the parent hash key.".to_string()
+                    }
+                    IndentBaseType::StartOfLine => {
+                        "Indent the right bracket the same as the start of the line \
+                         where the left bracket is."
+                            .to_string()
+                    }
+                };
+                diagnostics.push(self.diagnostic(source, close_line, close_col, msg));
             }
         }
     }
@@ -1142,6 +1196,120 @@ mod tests {
             diags[0].message.contains("right bracket"),
             "should be a bracket message: {}",
             diags[0].message
+        );
+    }
+
+    #[test]
+    fn empty_array_wrong_closing_bracket_indent() {
+        // RuboCop flags `a << [\n  ]` — closing bracket should be at line indent (col 0)
+        let src = b"a << [\n  ]\n";
+        let diags = run_cop_full(&FirstArrayElementIndentation, src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "empty array with wrong closing bracket indent should be flagged: {:?}",
+            diags
+        );
+        assert!(
+            diags[0].message.contains("right bracket"),
+            "should be a bracket message: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn empty_array_correct_closing_bracket_indent() {
+        // `a << [\n]` — closing bracket at line indent (col 0) is correct
+        let src = b"a << [\n]\n";
+        let diags = run_cop_full(&FirstArrayElementIndentation, src);
+        assert!(
+            diags.is_empty(),
+            "empty array with correct closing bracket should not be flagged: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn empty_array_same_line_not_flagged() {
+        // `a = []` — single-line empty array should never be flagged
+        let src = b"a = []\n";
+        let diags = run_cop_full(&FirstArrayElementIndentation, src);
+        assert!(
+            diags.is_empty(),
+            "single-line empty array should not be flagged: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn multi_pair_hash_right_sibling_subsequent_line_uses_hash_key_relative() {
+        // RuboCop uses hash-key-relative when pair has right sibling on subsequent line
+        // func(x: [\n  :a\n],\n     y: 1)
+        // x: at col 5, elements should be at 5+2=7, closing at 5
+        let src = b"func(x: [\n       :a\n     ],\n     y: 1)\n";
+        let diags = run_cop_full(&FirstArrayElementIndentation, src);
+        assert!(
+            diags.is_empty(),
+            "multi-pair hash with right sibling on subsequent line should use hash-key-relative: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn multi_pair_hash_right_sibling_same_line_uses_paren_relative() {
+        // When right sibling is on same line as `]`, hash-key-relative doesn't apply
+        // func(:x, y: [\n       :a\n     ], z: 1)
+        // Paren-relative: paren_col+1=5, expected=7. Elements at 7, closing at 5.
+        let src = b"func(:x, y: [\n       :a\n     ], z: 1)\n";
+        let diags = run_cop_full(&FirstArrayElementIndentation, src);
+        assert!(
+            diags.is_empty(),
+            "multi-pair hash with right sibling on same line should use paren-relative: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn multi_pair_hash_wrong_element_indent_flags_parent_hash_key() {
+        // Elements at wrong indent for hash-key-relative should get "parent hash key" message
+        let src = b"func(x: [\n  :a,\n  :b\n],\n     y: 1)\n";
+        let diags = run_cop_full(&FirstArrayElementIndentation, src);
+        assert!(
+            !diags.is_empty(),
+            "wrong indent in multi-pair hash should be flagged: {:?}",
+            diags
+        );
+        let elem_diag = diags
+            .iter()
+            .find(|d| d.message.contains("indentation"))
+            .unwrap();
+        assert!(
+            elem_diag.message.contains("parent hash key"),
+            "should reference parent hash key: {}",
+            elem_diag.message
+        );
+    }
+
+    #[test]
+    fn consistent_style_multi_pair_hash_uses_hash_key_relative() {
+        use crate::testutil::run_cop_full_with_config;
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([(
+                "EnforcedStyle".into(),
+                serde_yml::Value::String("consistent".into()),
+            )]),
+            ..CopConfig::default()
+        };
+        // In consistent style, multi-pair hash arrays still use hash-key-relative
+        // func(x: [\n       :a\n     ],\n     y: 1)
+        let src = b"func(x: [\n       :a\n     ],\n     y: 1)\n";
+        let diags = run_cop_full_with_config(&FirstArrayElementIndentation, src, config.clone());
+        assert!(
+            diags.is_empty(),
+            "consistent style + multi-pair hash should accept hash-key-relative: {:?}",
+            diags
         );
     }
 }
