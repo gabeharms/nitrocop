@@ -30,15 +30,19 @@ use crate::parse::source::SourceFile;
 /// Restored block_pass recognition (2026-03-20) to fix FN=2 on rubocop-rspec's
 /// `weird_rspec_spec.rb` where `let(:foo, &bar)` was not counted as a let declaration.
 ///
-/// ## Corpus investigation (2026-03-21) — FP=1
+/// ## Corpus investigation (2026-03-24) — FP=1
 ///
-/// FP=1: que-rb/que `spec/que/connection_spec.rb:19`. The que repo uses minitest
-/// (not RSpec) but has `describe`/`let`/`around` DSL from minitest-hooks that
-/// looks like RSpec. The repo does NOT have rubocop-rspec in its Gemfile, so
-/// RuboCop cannot load rubocop-rspec and skips all RSpec cops. nitrocop has them
-/// compiled in and runs them regardless, causing the asymmetry. This is an
-/// infrastructure-level issue (plugin detection), not a cop logic bug. nitrocop's
-/// detection is correct for actual RSpec files.
+/// FP=1: Infrastructure issue (plugin detection). que-rb uses minitest, not RSpec.
+/// No cop logic fix needed.
+///
+/// que-rb/que `spec/que/connection_spec.rb:19`: `let :fresh_connection, &NEW_PG_CONNECTION`
+/// flagged as scattered let. The que repo uses minitest (not RSpec) but has
+/// `describe`/`let`/`around` DSL from minitest-hooks that looks like RSpec.
+/// The repo does NOT have rubocop-rspec in its Gemfile, so RuboCop cannot load
+/// rubocop-rspec and skips all RSpec cops. nitrocop has them compiled in and
+/// runs them regardless, causing the asymmetry. This is an infrastructure-level
+/// issue (plugin detection), not a cop logic bug. nitrocop's detection is correct
+/// for actual RSpec files.
 pub struct ScatteredLet;
 
 impl Cop for ScatteredLet {
