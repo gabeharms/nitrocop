@@ -854,40 +854,6 @@ def _is_docs_only_change(signed_sha: str, repo: str) -> bool:
 
 # ── finalize ────────────────────────────────────────────────────────────
 
-def _close_pr_no_real_fix(
-    pr_url: str,
-    cop: str,
-    backend_label: str,
-    model_label: str,
-    mode: str,
-    run_url: str,
-    issue_number: str,
-    repo: str,
-) -> None:
-    """Close PR and mark issue blocked when agent only produced documentation."""
-    if issue_number:
-        body = (
-            f"Agent investigated `{cop}` but only produced documentation — "
-            f"no cop logic was changed.\n\n"
-            f"- Backend: `{backend_label}`\n"
-            f"- Model: `{model_label}`\n"
-            f"- Mode: `{mode}`\n"
-            f"- Run: {run_url}\n\n"
-            f"The FP/FN gap is likely caused by file-discovery or config differences, "
-            f"not a cop detection bug. Marking as blocked for manual investigation.\n"
-        )
-        claim_body = _env_path("CLAIM_BODY_FILE")
-        write_and_read(claim_body, body)
-        _run_ok(["gh", "issue", "comment", issue_number, "--repo", repo, "--body-file", str(claim_body)])
-        _run_ok([
-            "gh", "issue", "edit", issue_number, "--repo", repo,
-            "--remove-label", "state:pr-open,state:dispatched,state:backlog",
-            "--add-label", "state:blocked",
-        ])
-    _run_ok(["gh", "pr", "close", pr_url, "--comment",
-             "Docs-only change — no cop logic fix. Marking issue as blocked.", "--delete-branch"])
-
-
 def _close_pr_no_changes(
     pr_url: str,
     cop: str,
@@ -1190,15 +1156,9 @@ def cmd_finalize(args: list[str]) -> int:
         return 0
 
     # 8b. Detect docs-only changes (no real cop logic fix)
-    if _is_docs_only_change(signed_sha, opts.repo):
-        _log("Docs-only change detected — no cop logic modified")
-        _close_pr_no_real_fix(
-            opts.pr_url, opts.cop, opts.backend_label, opts.model_label,
-            opts.mode, opts.run_url, opts.issue_number, opts.repo,
-        )
-        _output("result", "docs_only")
-        _output("has_pr", "false")
-        return 0
+    docs_only = _is_docs_only_change(signed_sha, opts.repo)
+    if docs_only:
+        _log("Docs-only change — will merge documentation but keep issue open as blocked")
 
     # 9. Build and update PR body
     body = _build_final_pr_body(
@@ -1214,7 +1174,30 @@ def cmd_finalize(args: list[str]) -> int:
     _log(f"PR ready: {opts.pr_url}")
     _run(["gh", "pr", "merge", opts.pr_url, "--auto", "--squash", "--delete-branch"])
 
-    _output("result", "success")
+    # 11. If docs-only, mark issue blocked (don't close it — the gap is still open)
+    if docs_only and opts.issue_number:
+        body = (
+            f"Agent investigated `{opts.cop}` and documented findings, "
+            f"but no cop logic was changed.\n\n"
+            f"- Backend: `{opts.backend_label}`\n"
+            f"- Model: `{opts.model_label}`\n"
+            f"- Mode: `{opts.mode}`\n"
+            f"- Run: {opts.run_url}\n\n"
+            f"The FP/FN gap is likely caused by file-discovery or config differences, "
+            f"not a cop detection bug. Documentation PR was merged. "
+            f"Marking as blocked for manual investigation.\n"
+        )
+        claim_body = _env_path("CLAIM_BODY_FILE")
+        write_and_read(claim_body, body)
+        _run_ok(["gh", "issue", "comment", opts.issue_number, "--repo", opts.repo,
+                 "--body-file", str(claim_body)])
+        _run_ok([
+            "gh", "issue", "edit", opts.issue_number, "--repo", opts.repo,
+            "--remove-label", "state:pr-open,state:dispatched,state:backlog",
+            "--add-label", "state:blocked",
+        ])
+
+    _output("result", "docs_only" if docs_only else "success")
     _output("has_pr", "true")
     _output("pr_url", opts.pr_url)
     return 0
