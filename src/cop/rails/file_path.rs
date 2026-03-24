@@ -103,10 +103,17 @@ use crate::parse::source::SourceFile;
 /// guard (added 2026-03-23) blanket-skipped ALL `[...].flatten` arguments to `File.join`. RuboCop's
 /// `valid_arguments_for_file_join_with_rails_root?` checks top-level args for `variable?`,
 /// `const_type?`, and multi-slash strings — a CallNode like `[...].flatten` passes all these
-/// checks, so RuboCop flags it. The `is_call_on_array` guard was removed. The previously-assumed
-/// FP (`File.join [Rails.root, ENV['FIXTURES_PATH'] || %w[test fixtures]].flatten`) is actually
-/// a true positive — RuboCop detects it (any crash is in autocorrect, not detection). Moved that
-/// case from no_offense to offense fixtures.
+/// checks, so RuboCop flags it. The `is_call_on_array` guard was removed.
+///
+/// **FP correction (2026-03-24)**: The earlier claim that
+/// `File.join [Rails.root, ENV['FIXTURES_PATH'] || %w[test fixtures]].flatten` is a true positive
+/// was wrong. RuboCop's detection logic passes, but `add_offense` eagerly runs the autocorrect
+/// block which crashes with `Parser::ClobberingError` at `append_to_string_conversion`. When
+/// `add_offense` encounters this error, the offense is not registered. Result: 0 offenses.
+/// The crash only happens when `File.join` has no parentheses and the single argument is a method
+/// call on an array (e.g. `[...].flatten`). With parentheses (`File.join([...].flatten)`), the
+/// autocorrect succeeds and the offense IS reported. Fixed by adding a guard: skip when
+/// `opening_loc` is None (no parens) and the single arg is a CallNode.
 pub struct FilePath;
 
 /// Check if a constant node is top-level (bare `Foo` or `::Foo`), not namespaced (`A::Foo`).
@@ -421,6 +428,16 @@ impl FilePath {
             None => return,
         };
         let arg_list: Vec<_> = args.arguments().iter().collect();
+
+        // Skip File.join without parentheses when the single argument is a method call
+        // (e.g. `File.join [Rails.root, ...].flatten`). RuboCop's autocorrect crashes with
+        // ClobberingError on this pattern, so no offense is reported.
+        if call.opening_loc().is_none()
+            && arg_list.len() == 1
+            && arg_list[0].as_call_node().is_some()
+        {
+            return;
+        }
 
         // Check if any argument (including inside arrays) contains Rails.root
         let has_rails_root = arg_list.iter().any(|a| contains_rails_root(a));

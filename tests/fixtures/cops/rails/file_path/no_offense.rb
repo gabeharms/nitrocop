@@ -29,3 +29,5 @@ assert_equal "Some message #{Rails.root.join('vendor/plugins/foo')}.", e.message
 Rails.root&.join("app", "models")
 # FP fix: string interpolation with scheme:// before Rails.root
 "#{scheme}://#{Rails.root}/db/#{Rails.env}.sqlite3"
+# FP fix: File.join without parens + array.flatten — RuboCop crashes on autocorrect (ClobberingError)
+File.join [Rails.root, ENV['FIXTURES_PATH'] || %w[test fixtures]].flatten
