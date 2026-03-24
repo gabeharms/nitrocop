@@ -391,9 +391,18 @@ use ruby_prism::Visit;
 /// Condition context to VoidStatement when entering arrays (matching RuboCop behavior
 /// where arrays break the condition/boolean context chain).
 ///
-/// **Remaining FN (1):** chargify examples/metafields.rb:31: `field = Chargify::...create
-/// name: 'internal info'` — already correctly detected by nitrocop. This FN may be a
-/// secondary effect of one of the above fixes or a corpus oracle artifact.
+/// **FN fix 4: suppressed_create_vars pre-scan didn't track per-assignment positions (1 FN).**
+/// chargify examples/metafields.rb:31: `field = Chargify::SubscriptionMetafield.create
+/// name: 'internal info'`. The file also has `field = CustomerMetafield.create` earlier
+/// with `field.persisted?` after it. The pre-scan added `field` to `suppressed_create_vars`
+/// because `field.persisted?` existed anywhere in the scope, suppressing ALL create
+/// assignments to `field` including the later one without a persisted? check.
+/// RuboCop's VariableForce tracks each assignment separately — persisted? on an earlier
+/// assignment does not suppress a later re-assignment.
+/// **Fix:** Changed the pre-scan to track the statement index of each create assignment
+/// per variable. A variable is only added to `suppressed_create_vars` if ALL of its
+/// create assignments have a persisted? check before the next create assignment to that
+/// variable (or end of scope).
 pub struct SaveBang;
 
 /// Modify-type persistence methods whose return value indicates success/failure.
@@ -1002,23 +1011,55 @@ impl SaveBangVisitor<'_, '_> {
         let len = body.len();
 
         // Pre-scan: find local variable create assignments where persisted? is checked
-        // anywhere in this scope. This handles nested patterns like:
+        // in this scope. This handles nested patterns like:
         //   if (record = Creator.create(opts)) && record.present?
         //     increment if record.persisted?
         //   end
         // where the create is inside an if predicate and persisted? is in the body.
+        //
+        // Important: when the same variable is assigned with create multiple times,
+        // only suppress if each create assignment has a persisted? check either in
+        // the same statement or in subsequent statements before the next create
+        // assignment. Otherwise, re-assignments without a following persisted? check
+        // would be incorrectly suppressed (e.g., `field = A.create; field.persisted?;
+        // ...; field = B.create` — the second create has no persisted? check).
         let saved_suppressed = std::mem::take(&mut self.suppressed_create_vars);
-        for stmt in body.iter() {
+        // Collect (var_name, stmt_index) pairs for all create assignments.
+        let mut create_assignments: Vec<(Vec<u8>, usize)> = Vec::new();
+        for (i, stmt) in body.iter().enumerate() {
             let mut finder = CreateVarFinder { found: Vec::new() };
             finder.visit(stmt);
             for var_name in finder.found {
-                // Search ALL statements in this scope for persisted? on this variable
-                let has_persisted = body
-                    .iter()
-                    .any(|s| Self::subtree_checks_persisted(s, &var_name));
-                if has_persisted {
-                    self.suppressed_create_vars.push(var_name);
-                }
+                create_assignments.push((var_name, i));
+            }
+        }
+        // For each create assignment, determine if persisted? is checked before the next
+        // create assignment to the same variable (or end of scope). A variable is only
+        // added to suppressed_create_vars if ALL its create assignments have persisted?.
+        // Group by variable name and check each assignment.
+        let mut var_names_seen: Vec<Vec<u8>> = Vec::new();
+        for (var_name, _) in &create_assignments {
+            if !var_names_seen.contains(var_name) {
+                var_names_seen.push(var_name.clone());
+            }
+        }
+        for var_name in &var_names_seen {
+            let indices: Vec<usize> = create_assignments
+                .iter()
+                .filter(|(n, _)| n == var_name)
+                .map(|(_, i)| *i)
+                .collect();
+            let all_suppressed = indices.iter().enumerate().all(|(pos, &stmt_idx)| {
+                // Check from current statement through to the next create assignment
+                // (exclusive) or end of body.
+                let end_idx = indices.get(pos + 1).copied().unwrap_or(len);
+                body.iter()
+                    .skip(stmt_idx)
+                    .take(end_idx - stmt_idx)
+                    .any(|s| Self::subtree_checks_persisted(s, var_name))
+            });
+            if all_suppressed {
+                self.suppressed_create_vars.push(var_name.clone());
             }
         }
 
@@ -2079,4 +2120,27 @@ impl<'pr> Visit<'pr> for SaveBangVisitor<'_, '_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(SaveBang, "cops/rails/save_bang");
+
+    /// Regression test: when the same variable is assigned with create twice at
+    /// the top level, and persisted? is called after the first assignment but not
+    /// after the second, the second assignment should still be flagged.
+    /// Reproduces the chargify__chargify_api_ares corpus FN.
+    #[test]
+    fn reassigned_create_var_second_not_suppressed() {
+        let source =
+            b"field = A.create name: 'test'\nfield.persisted?\nfield = B.create name: 'info'\n";
+        let diagnostics = crate::testutil::run_cop_full(&SaveBang, source);
+        // The second create (line 3) should be flagged; the first (line 1) should be suppressed.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "Expected 1 offense for the second create, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics
+                .iter()
+                .map(|d| format!("{}:{}", d.location.line, d.location.column))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(diagnostics[0].location.line, 3);
+    }
 }

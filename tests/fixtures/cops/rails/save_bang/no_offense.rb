@@ -309,6 +309,12 @@ def execute
   end
 end
 
+# CREATE reassigned to same variable — first assignment with subsequent persisted? is exempt
+def metafield_setup
+  mf = Chargify::CustomerMetafield.create name: 'test'
+  mf.persisted?
+end
+
 # Block-bearing create inside hash value inside collect_concat block (Tempfile.create is NOT AR)
 # in_transparent_container should NOT leak through block boundaries
 def fetch_articles(ftp, files)

@@ -289,3 +289,14 @@ assert ( cnpj_valido.save ), "CNPJ valido nao foi salvo."
 @database_version ||= (version = raw_connection.oracle_server_version) &&
   [version.major, version.minor, version.update, version.patch]
                                          ^^^^^^ Rails/SaveBang: Use `update!` instead of `update` if the return value is not checked.
+
+# CREATE reassigned to same variable after persisted? check — second create has no persisted? check
+# RuboCop's VariableForce tracks each assignment separately; persisted? on an earlier assignment
+# does NOT suppress a later re-assignment to the same variable.
+def metafield_example
+  mf = Chargify::CustomerMetafield.create name: 'test'
+  mf.persisted?
+  mf = Chargify::SubscriptionMetafield.create name: 'internal info'
+                                       ^^^^^^ Rails/SaveBang: Use `create!` instead of `create` if the return value is not checked. Or check `persisted?` on model returned from `create`.
+  nil
+end
