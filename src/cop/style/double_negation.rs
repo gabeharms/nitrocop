@@ -129,6 +129,36 @@ use crate::parse::source::SourceFile;
 /// when inside a conditional and `parenthesized_last_line` is set, the lenient
 /// same-line check is used instead of the strict `last_child_last_line <=
 /// cond_last_line` check.
+///
+/// Corpus investigation (round 8): 3 FPs, 2 FNs.
+///
+/// FP root cause: `with_def_body` cleared `conditional_last_line_stack`, but
+/// RuboCop's `find_conditional_node_from_ascendant` walks past def boundaries.
+/// When a def is wrapped in an outer conditional (e.g., `if has_ssl; class X;
+/// def foo; ... end; end; end`), RuboCop sees the outer `if` as a conditional
+/// ancestor of the `!!` inside the def. Since the outer if's last_line is past
+/// the def body, `last_child.last_line <= cond_last_line` trivially passes,
+/// making the `!!` allowed. Nitrocop was clearing the conditional stack on def
+/// entry, preventing the outer conditional from being visible.
+/// Additionally, `visit_if_node` and other conditional visitors only pushed to
+/// the stack when `def_info_stack` was non-empty, so outer conditionals wrapping
+/// a def were never tracked.
+///
+/// FN root cause: Round 7's `parenthesized_last_line` fix was too broad.
+/// It leaked through `AndNode`/`OrNode` children, so `(expr && !!other)` or
+/// `(_options && !!_options[:allow_nil])` inside parens triggered the lenient
+/// same-line check. In RuboCop, `find_parent_not_enumerable` returns the `and`
+/// node (not `begin`/parens), and `and.begin_type?` is false, so the strict
+/// check applies instead.
+///
+/// Fix (round 8): (1) Stopped clearing `conditional_last_line_stack` in
+/// `with_def_body` — outer conditional context now carries through def
+/// boundaries, matching RuboCop. (2) Removed `!self.def_info_stack.is_empty()`
+/// guards from `visit_if_node`, `visit_unless_node`, `visit_case_node`, and
+/// `visit_case_match_node` — conditionals are always tracked so they're visible
+/// when a def is entered later. (3) Added `visit_and_node` and `visit_or_node`
+/// to clear `parenthesized_last_line`, preventing the lenient parens check from
+/// leaking through `and`/`or` nodes.
 pub struct DoubleNegation;
 
 impl Cop for DoubleNegation {
@@ -635,8 +665,13 @@ impl DoubleNegationVisitor<'_> {
             }
         }
 
-        // Save and clear conditional/statements stacks — these don't cross def boundaries
-        let saved_cond = std::mem::take(&mut self.conditional_last_line_stack);
+        // Save and clear statements stack and flags — these don't cross def boundaries.
+        // IMPORTANT: conditional_last_line_stack is NOT cleared here. RuboCop's
+        // find_conditional_node_from_ascendant walks past def boundaries, so a
+        // conditional wrapping the def (e.g., `if has_ssl; class X; def foo; ...`)
+        // is visible inside the def. This matches RuboCop's behavior where the
+        // outer conditional's last_line makes `last_child.last_line <= cond_last_line`
+        // true, allowing `!!` inside the def.
         let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
         let saved_parent_is_statements = self.parent_is_statements;
         let saved_parenthesized = self.parenthesized_last_line;
@@ -646,7 +681,6 @@ impl DoubleNegationVisitor<'_> {
         visit_fn(self);
 
         self.def_info_stack.truncate(prev_def_len);
-        self.conditional_last_line_stack = saved_cond;
         self.statements_last_line_stack = saved_stmts;
         self.parent_is_statements = saved_parent_is_statements;
         self.parenthesized_last_line = saved_parenthesized;
@@ -717,72 +751,81 @@ impl<'pr> Visit<'pr> for DoubleNegationVisitor<'_> {
     }
 
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
-        if !self.def_info_stack.is_empty() {
-            // For elsif IfNodes, use the Parser-equivalent last line that
-            // excludes the shared `end` keyword. This is critical because
-            // Prism includes `end` in elsif IfNode ranges while Parser doesn't,
-            // causing incorrect return-position detection.
-            let is_elsif = node
-                .if_keyword_loc()
-                .is_some_and(|kw| kw.as_slice() == b"elsif");
-            let last_line = if is_elsif {
-                self.parser_if_last_line(node)
-            } else {
-                self.last_line_of_node(node.location().start_offset(), node.location().end_offset())
-            };
-            self.conditional_last_line_stack.push(last_line);
-            // Clear statements stack: the condition is not inside a StatementsNode
-            // within this conditional, so the begin_type? check should not apply.
-            // StatementsNodes inside branches will re-push as they're visited.
-            let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
-            ruby_prism::visit_if_node(self, node);
-            self.statements_last_line_stack = saved_stmts;
-            self.conditional_last_line_stack.pop();
+        // Always push conditional context, even outside def bodies.
+        // RuboCop's find_conditional_node_from_ascendant walks past def
+        // boundaries, so outer conditionals wrapping a def are visible
+        // inside it. We must track them here so they're on the stack when
+        // a def is entered later.
+        //
+        // For elsif IfNodes, use the Parser-equivalent last line that
+        // excludes the shared `end` keyword. This is critical because
+        // Prism includes `end` in elsif IfNode ranges while Parser doesn't,
+        // causing incorrect return-position detection.
+        let is_elsif = node
+            .if_keyword_loc()
+            .is_some_and(|kw| kw.as_slice() == b"elsif");
+        let last_line = if is_elsif {
+            self.parser_if_last_line(node)
         } else {
-            ruby_prism::visit_if_node(self, node);
-        }
+            self.last_line_of_node(node.location().start_offset(), node.location().end_offset())
+        };
+        self.conditional_last_line_stack.push(last_line);
+        // Clear statements stack: the condition is not inside a StatementsNode
+        // within this conditional, so the begin_type? check should not apply.
+        // StatementsNodes inside branches will re-push as they're visited.
+        let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
+        ruby_prism::visit_if_node(self, node);
+        self.statements_last_line_stack = saved_stmts;
+        self.conditional_last_line_stack.pop();
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
-        if !self.def_info_stack.is_empty() {
-            let last_line = self
-                .last_line_of_node(node.location().start_offset(), node.location().end_offset());
-            self.conditional_last_line_stack.push(last_line);
-            let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
-            ruby_prism::visit_unless_node(self, node);
-            self.statements_last_line_stack = saved_stmts;
-            self.conditional_last_line_stack.pop();
-        } else {
-            ruby_prism::visit_unless_node(self, node);
-        }
+        let last_line =
+            self.last_line_of_node(node.location().start_offset(), node.location().end_offset());
+        self.conditional_last_line_stack.push(last_line);
+        let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
+        ruby_prism::visit_unless_node(self, node);
+        self.statements_last_line_stack = saved_stmts;
+        self.conditional_last_line_stack.pop();
     }
 
     fn visit_case_node(&mut self, node: &ruby_prism::CaseNode<'pr>) {
-        if !self.def_info_stack.is_empty() {
-            let last_line = self
-                .last_line_of_node(node.location().start_offset(), node.location().end_offset());
-            self.conditional_last_line_stack.push(last_line);
-            let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
-            ruby_prism::visit_case_node(self, node);
-            self.statements_last_line_stack = saved_stmts;
-            self.conditional_last_line_stack.pop();
-        } else {
-            ruby_prism::visit_case_node(self, node);
-        }
+        let last_line =
+            self.last_line_of_node(node.location().start_offset(), node.location().end_offset());
+        self.conditional_last_line_stack.push(last_line);
+        let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
+        ruby_prism::visit_case_node(self, node);
+        self.statements_last_line_stack = saved_stmts;
+        self.conditional_last_line_stack.pop();
     }
 
     fn visit_case_match_node(&mut self, node: &ruby_prism::CaseMatchNode<'pr>) {
-        if !self.def_info_stack.is_empty() {
-            let last_line = self
-                .last_line_of_node(node.location().start_offset(), node.location().end_offset());
-            self.conditional_last_line_stack.push(last_line);
-            let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
-            ruby_prism::visit_case_match_node(self, node);
-            self.statements_last_line_stack = saved_stmts;
-            self.conditional_last_line_stack.pop();
-        } else {
-            ruby_prism::visit_case_match_node(self, node);
-        }
+        let last_line =
+            self.last_line_of_node(node.location().start_offset(), node.location().end_offset());
+        self.conditional_last_line_stack.push(last_line);
+        let saved_stmts = std::mem::take(&mut self.statements_last_line_stack);
+        ruby_prism::visit_case_match_node(self, node);
+        self.statements_last_line_stack = saved_stmts;
+        self.conditional_last_line_stack.pop();
+    }
+
+    fn visit_and_node(&mut self, node: &ruby_prism::AndNode<'pr>) {
+        // In RuboCop, `find_parent_not_enumerable` returns the `and` node as a
+        // non-enumerable parent. `and.begin_type?` is false, so the lenient
+        // same-line check does NOT apply. Clear `parenthesized_last_line` so
+        // that `!!` inside `(expr && !!other)` uses the strict check.
+        let saved = self.parenthesized_last_line;
+        self.parenthesized_last_line = None;
+        ruby_prism::visit_and_node(self, node);
+        self.parenthesized_last_line = saved;
+    }
+
+    fn visit_or_node(&mut self, node: &ruby_prism::OrNode<'pr>) {
+        // Same as visit_and_node: `or` is non-enumerable, not begin_type?.
+        let saved = self.parenthesized_last_line;
+        self.parenthesized_last_line = None;
+        ruby_prism::visit_or_node(self, node);
+        self.parenthesized_last_line = saved;
     }
 
     fn visit_statements_node(&mut self, node: &ruby_prism::StatementsNode<'pr>) {

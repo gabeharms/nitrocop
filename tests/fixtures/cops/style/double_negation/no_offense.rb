@@ -415,3 +415,60 @@ def filter_data(data, transient)
     defs << { name: data[:name] }
   end
 end
+
+# FP fix (round 8): !! in method args inside def wrapped in outer if
+# RuboCop's find_conditional_node_from_ascendant walks past def boundaries,
+# finding the outer `if` as a conditional ancestor. The outer if's last_line
+# is past the def body, so last_child.last_line <= cond_last_line → true,
+# making the !! allowed. Nitrocop must replicate this behavior.
+if has_ssl
+  class TestPumaServerSSL
+    def assert_ssl_client_error_match(error, subject: nil, &blk)
+      client_error = false
+      begin
+        send_http
+      rescue => e
+        client_error = e
+      end
+      sleep 0.1
+      assert_equal !!error, !!client_error, client_error
+      if error
+        do_something
+      end
+      assert_equal subject, "x" if subject
+    ensure
+      stop
+    end
+  end
+end
+
+# FP fix (round 8): !! in array inside def wrapped in outer unless
+# Same root cause as above — outer unless leaks through def boundary
+unless in_memory_db?
+  def test_forked_child
+    rd, wr = IO.pipe
+    pid = fork {
+      rd.close
+      wr.write Marshal.dump [
+        !!ActiveRecord::Base.lease_connection.active?,
+        ActiveRecord::Base.lease_connection.object_id,
+      ]
+      wr.close
+    }
+    Process.waitpid pid
+    active, child_id = Marshal.load(rd.read)
+    assert_equal false, active
+  end
+end
+
+# FP fix (round 8): !! in keyword args inside def wrapped in outer modifier if
+# Same root cause — outer modifier if on describe block wraps the def
+describe "with real interaction" do
+  def s3(**options)
+    Shrine::Storage::S3.new(
+      bucket: ENV["S3_BUCKET"],
+      force_path_style: !!ENV["S3_ENDPOINT"],
+      **options
+    )
+  end
+end if ENV["S3_REAL"]

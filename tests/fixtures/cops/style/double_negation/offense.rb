@@ -198,3 +198,39 @@ def start_server
   end
 end
 
+# FN fix (round 8): !! inside parens used in ternary condition inside hash value
+# `(!!expr && other)` — the `!!` node's non-enumerable parent is `and`, NOT
+# `begin`/parens, so the lenient same-line check should NOT apply.
+# parenthesized_last_line must not leak through and/or nodes.
+def self.from_hash(hash)
+  page = self.new(URI(hash['url']))
+  {
+    '@visited' => hash['visited'],
+    '@redirect_to' => (!!hash['redirect_to'] && !hash['redirect_to'].empty?) ? URI(hash['redirect_to']) : nil,
+                       ^^^^^^^^^^^^^^^^^^^^^ Style/DoubleNegation: Avoid the use of double negation (`!!`).
+    '@fetched' => hash['fetched']
+  }.each do |var, value|
+    page.instance_variable_set(var, value)
+  end
+  page
+end
+
+# FN fix (round 8): !! inside parens in || condition within nested blocks
+# `(_options && !!_options[:allow_nil])` — the non-enumerable parent of `!!`
+# is `and`, not `begin`, so strict check applies: offense.
+def as_json(methods = nil)
+  methods ||= self.getters
+  {}.tap do |hash|
+    methods.each do |meth|
+      _options = self.property_options[meth]
+      if _options[:if].blank? || self.instance_eval(&_options[:if])
+        value = self.send(meth.to_sym)
+        if !value.nil? || (_options && !!_options[:allow_nil])
+                                       ^^^^^^^^^^^^^^^^^^^^^^ Style/DoubleNegation: Avoid the use of double negation (`!!`).
+          hash[meth] = value
+        end
+      end
+    end
+  end
+end
+
