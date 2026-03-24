@@ -31,3 +31,22 @@ if (octets);
 ^^^^^^^^^^^^ Style/IfWithSemicolon: Do not use `if (octets);` - use a newline instead.
   index = process(octets, result, index)
 end
+
+# Nested if with semicolon inside parent if with semicolon (RuboCop ignore_node)
+# Only the outer if is flagged; inner if is suppressed via part_of_ignored_node?
+if is_real?;
+^^^^^^^^^^^^ Style/IfWithSemicolon: Do not use `if is_real?;` - use a newline instead.
+  if @re>=0; return foo
+  else return bar
+  end
+end
+
+# Nested if with semicolon inside elsif with semicolon
+# Only the outer if is flagged; nested ifs are suppressed
+if other.kind_of?(Quaternion); ((self.log)*other).exp
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/IfWithSemicolon: Do not use `if other.kind_of?(Quaternion);` - use a newline instead.
+elsif other.kind_of?(Integer);
+  if other==0; return One
+  elsif other>0; x = self
+  end
+end

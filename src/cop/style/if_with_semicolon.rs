@@ -295,8 +295,7 @@ mod tests {
     #[test]
     fn nested_if_inside_elsif_suppressed() {
         // Outer if with semicolon, elsif with semicolon, nested if with semicolon
-        let source =
-            b"if a; foo\nelsif b;\n  if c; bar\n  elsif d; baz\n  end\nend\n";
+        let source = b"if a; foo\nelsif b;\n  if c; bar\n  elsif d; baz\n  end\nend\n";
         let diags = crate::testutil::run_cop_full(&IfWithSemicolon, source);
         assert_eq!(
             diags.len(),

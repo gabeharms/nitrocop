@@ -52,19 +52,3 @@ end
 unless done # not done; keep going
   process
 end
-
-# Nested if with semicolon inside parent if with semicolon (RuboCop ignore_node)
-# The outer if is flagged, but the inner if is suppressed via part_of_ignored_node?
-if is_real?;
-  if @re>=0; return foo
-  else return bar
-  end
-end
-
-# Nested if with semicolon inside elsif with semicolon
-if other.kind_of?(Quaternion); ((self.log)*other).exp
-elsif other.kind_of?(Integer);
-  if other==0; return One
-  elsif other>0; x = self
-  end
-end

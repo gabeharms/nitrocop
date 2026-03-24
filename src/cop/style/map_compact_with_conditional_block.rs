@@ -98,12 +98,7 @@ impl Cop for MapCompactWithConditionalBlock {
                         } else {
                             "Use `filter_map` instead of `map { ... }.compact`."
                         };
-                        diagnostics.push(self.diagnostic(
-                            source,
-                            line,
-                            column,
-                            msg.to_string(),
-                        ));
+                        diagnostics.push(self.diagnostic(source, line, column, msg.to_string()));
                     }
                 }
             }
@@ -119,8 +114,7 @@ impl Cop for MapCompactWithConditionalBlock {
                             source,
                             line,
                             column,
-                            "Replace `filter_map { ... }` with `select` or `reject`."
-                                .to_string(),
+                            "Replace `filter_map { ... }` with `select` or `reject`.".to_string(),
                         ));
                     }
                 }
