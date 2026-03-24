@@ -21,6 +21,10 @@ use crate::parse::source::SourceFile;
 ///   RuboCop silently skips these because `p.key.value` raises NoMethodError
 ///   on non-literal hash keys. Fixed by skipping when arguments contain
 ///   non-literal values or hash keys that aren't symbols/strings.
+/// - FN cause: interpolated string/symbol keys in hashrocket syntax
+///   (e.g. `"login_#{role}/:id" => "sessions#login_#{role}"`) were not
+///   recognized as valid literal keys. Fixed by also allowing
+///   InterpolatedStringNode and InterpolatedSymbolNode in the key type check.
 pub struct MatchRoute;
 
 /// Check if a symbol's unescaped bytes match a known HTTP method.
@@ -100,6 +104,8 @@ impl Cop for MatchRoute {
                                     let key = assoc.key();
                                     if key.as_symbol_node().is_none()
                                         && key.as_string_node().is_none()
+                                        && key.as_interpolated_string_node().is_none()
+                                        && key.as_interpolated_symbol_node().is_none()
                                     {
                                         return;
                                     }
