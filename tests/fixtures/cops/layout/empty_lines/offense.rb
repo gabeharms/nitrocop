@@ -50,7 +50,7 @@ d = 4
 more docs
 =end
 
-# Blank lines inside =begin/=end are NOT flagged (Parser gem has no embdoc tokens)
+# Blank lines inside =begin/=end are NOT flagged (Prism EMBDOC_LINE tokens mean no gaps)
 e = 5
 =begin
 some documentation

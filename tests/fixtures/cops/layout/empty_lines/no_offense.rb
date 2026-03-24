@@ -31,7 +31,7 @@ more documentation
 x = 1
 
 # Consecutive blank lines inside =begin/=end are NOT flagged
-# (Parser gem doesn't produce tokens for embdoc content).
+# (with Prism, every embdoc line has an EMBDOC_LINE token, so no gaps).
 =begin
 
 

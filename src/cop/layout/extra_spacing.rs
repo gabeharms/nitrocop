@@ -98,6 +98,25 @@ use std::ops::Range;
 ///     Mode 2 alignment matches. RuboCop's `range.source` returns the full string
 ///     token. Extended `extract_token_at` to extract the full quoted string, and
 ///     also improved `.method_name` extraction for dot-method calls.
+///
+/// ## Investigation findings (2026-03-24)
+///
+/// 11. **Missing `=`/`<<` cross-alignment (fixed)**: RuboCop's
+///     `aligned_with_append_operator?` treats `<<` and `=` as cross-alignable by
+///     last column. When a variable is assigned with `=` on one line and appended
+///     with `<<` on an adjacent line, the extra spaces before `=` are allowed if
+///     the `=` aligns with the second `<` of `<<`. Our `check_equals_alignment`
+///     only checked `=` vs `=`. Added cross-alignment checks for `=`/`<<` and
+///     `<<`/`=` using last-column matching, plus a `find_lshift_col` helper.
+///     Fixes 46 FPs from Arachni, ManageIQ, thinking-sphinx, etc.
+///
+/// 12. **Single-character operator/sigil alignment FNs (fixed)**: `extract_token_at`
+///     returned single characters for operators (`|`, `<`, `>`, `&`) and sigils
+///     (`@`, `$`), causing coincidental Mode 2 alignment matches (e.g., `@` in
+///     `@fake_stderr` matching `@` in `@called`). Extended `extract_token_at` to
+///     extract full variable names for `@foo`, `@@foo`, `$foo` sigils and
+///     multi-character operators (`||`, `&&`, `<<`, `>>`, `||=`, etc.).
+///     Fixes several FNs from gli, Arachni, and similar repos.
 pub struct ExtraSpacing;
 
 impl Cop for ExtraSpacing {
@@ -559,8 +578,10 @@ fn check_alignment(current_line: &[u8], adj_line: &[u8], col: usize) -> bool {
 /// This mirrors RuboCop's `range.source` for token comparison in `aligned_words?`.
 ///
 /// - Alphanumeric/underscore: returns the full identifier.
+/// - `@`, `@@`, `$` followed by identifier: returns the full variable name.
 /// - `.` followed by a letter/underscore: returns `.method_name` (method call).
 /// - `"` or `'`: returns the full quoted string to avoid coincidental single-char matches.
+/// - Multi-character operators (`||`, `&&`, `<<`, `>>`, `||=`, etc.): returns the full operator.
 /// - Other operator/punctuation: returns just that character.
 fn extract_token_at(line: &[u8], col: usize) -> &[u8] {
     if col >= line.len() {
@@ -576,6 +597,25 @@ fn extract_token_at(line: &[u8], col: usize) -> &[u8] {
         &line[col..end]
     } else if ch == b' ' || ch == b'\t' {
         &[]
+    } else if (ch == b'@' || ch == b'$')
+        && col + 1 < line.len()
+        && (line[col + 1].is_ascii_alphabetic()
+            || line[col + 1] == b'_'
+            || (ch == b'@' && line[col + 1] == b'@'))
+    {
+        // Instance variable (@foo), class variable (@@foo), or global variable ($foo).
+        // Include the sigil(s) and the full identifier to avoid coincidental
+        // single-character alignment on `@`, `@@`, or `$`.
+        let ident_start = if ch == b'@' && col + 1 < line.len() && line[col + 1] == b'@' {
+            col + 2 // @@
+        } else {
+            col + 1 // @ or $
+        };
+        let end = line[ident_start..]
+            .iter()
+            .position(|&b| !b.is_ascii_alphanumeric() && b != b'_')
+            .map_or(line.len(), |p| ident_start + p);
+        &line[col..end]
     } else if ch == b'.'
         && col + 1 < line.len()
         && (line[col + 1].is_ascii_alphabetic() || line[col + 1] == b'_')
@@ -596,8 +636,22 @@ fn extract_token_at(line: &[u8], col: usize) -> &[u8] {
             // No closing quote found on same line — return just the quote
             &line[col..col + 1]
         }
+    } else if ch == b'|' || ch == b'&' || ch == b'<' || ch == b'>' {
+        // Multi-character operators: ||, &&, <<, >>, ||=, &&=, <<=, >>=, <=, >=
+        // Extract the full operator to avoid coincidental single-character alignment
+        // (e.g., `|` in `||=` matching `|` in `||=` at a different position).
+        let mut end = col + 1;
+        // Second character of same type (||, &&, <<, >>)
+        if end < line.len() && line[end] == ch {
+            end += 1;
+        }
+        // Trailing = (||=, &&=, <<=, >>=, <=, >=)
+        if end < line.len() && line[end] == b'=' {
+            end += 1;
+        }
+        &line[col..end]
     } else {
-        // Operator/punctuation: just the single character
+        // Other operator/punctuation: just the single character
         &line[col..col + 1]
     }
 }
@@ -605,6 +659,11 @@ fn extract_token_at(line: &[u8], col: usize) -> &[u8] {
 /// Check if there's equals-sign alignment between the current line and
 /// the adjacent line. For compound assignment operators like +=, -=, ||=,
 /// &&=, the '=' sign should align with a '=' on the adjacent line.
+///
+/// Also handles cross-alignment between `=` and `<<` (append operator),
+/// matching RuboCop's `aligned_with_append_operator?` which allows:
+/// - `=` aligning with the last `<` of `<<` by last column
+/// - `<<` aligning with `=` by last column
 ///
 /// Both the current and adjacent line's `=` must look like an assignment
 /// operator (preceded by space or an operator character like `+`, `|`, etc.)
@@ -621,34 +680,75 @@ fn check_equals_alignment(current_line: &[u8], adj_line: &[u8], col: usize) -> b
             None => return false,
         };
         // Check if the adjacent line has '=' at the same character column
-        if adj_eq_col < adj_line.len() && adj_line[adj_eq_col] == b'=' {
-            // Verify the `=` on the adjacent line looks like an assignment operator:
-            // it must be preceded by a space or operator character, not part of an
-            // identifier or embedded in a string.
-            if adj_eq_col == 0 {
-                return true; // `=` at start of line is always an assignment
-            }
-            let prev = adj_line[adj_eq_col - 1];
-            if prev == b' '
-                || prev == b'\t'
-                || prev == b'+'
-                || prev == b'-'
-                || prev == b'*'
-                || prev == b'/'
-                || prev == b'%'
-                || prev == b'|'
-                || prev == b'&'
-                || prev == b'^'
-                || prev == b'<'
-                || prev == b'>'
-                || prev == b'!'
-                || prev == b'='
+        if adj_eq_col < adj_line.len()
+            && adj_line[adj_eq_col] == b'='
+            && is_assignment_equals(adj_line, adj_eq_col)
+        {
+            return true;
+        }
+        // Cross-alignment: current has `=` (or ends with `=`), adjacent has `<<`
+        // whose last `<` is at the same column. RuboCop's aligned_with_append_operator?
+        // checks: range.source[-1] == '=' && token.type == tLSHFT && last_column matches.
+        if adj_eq_col < adj_line.len()
+            && adj_line[adj_eq_col] == b'<'
+            && adj_eq_col > 0
+            && adj_line[adj_eq_col - 1] == b'<'
+        {
+            // Adjacent line has `<<` ending at eq_char_col — last `<` aligns with `=`
+            // Verify the `<<` is preceded by space (i.e., it's an operator, not inside something)
+            let lshift_start = adj_eq_col - 1;
+            if lshift_start == 0
+                || adj_line[lshift_start - 1] == b' '
+                || adj_line[lshift_start - 1] == b'\t'
             {
                 return true;
             }
         }
     }
+
+    // Cross-alignment: current has `<<`, adjacent has `=` at the same last column.
+    // RuboCop's aligned_with_append_operator? checks:
+    // range.source == '<<' && token.equal_sign? && last_column matches.
+    let lshift_col = find_lshift_col(current_line, col);
+    if let Some(lshift_col) = lshift_col {
+        // The last `<` of `<<` is at lshift_col + 1
+        let last_char_col = byte_to_char_col(current_line, lshift_col + 1);
+        let adj_last_col = match char_col_to_byte(adj_line, last_char_col) {
+            Some(c) => c,
+            None => return false,
+        };
+        // Check if adjacent line has `=` at the same column as last `<`
+        if adj_last_col < adj_line.len()
+            && adj_line[adj_last_col] == b'='
+            && is_assignment_equals(adj_line, adj_last_col)
+        {
+            return true;
+        }
+    }
+
     false
+}
+
+/// Check if `=` at the given column on a line looks like an assignment operator.
+fn is_assignment_equals(line: &[u8], eq_col: usize) -> bool {
+    if eq_col == 0 {
+        return true; // `=` at start of line is always an assignment
+    }
+    let prev = line[eq_col - 1];
+    prev == b' '
+        || prev == b'\t'
+        || prev == b'+'
+        || prev == b'-'
+        || prev == b'*'
+        || prev == b'/'
+        || prev == b'%'
+        || prev == b'|'
+        || prev == b'&'
+        || prev == b'^'
+        || prev == b'<'
+        || prev == b'>'
+        || prev == b'!'
+        || prev == b'='
 }
 
 /// Find the column of the '=' sign in an assignment operator starting at col.
@@ -663,6 +763,28 @@ fn find_equals_col(line: &[u8], col: usize) -> Option<usize> {
             return Some(c);
         }
         // Stop if we hit a space (we've gone past the token)
+        if line[c] == b' ' || line[c] == b'\t' {
+            break;
+        }
+    }
+    None
+}
+
+/// Find the starting column of `<<` (left-shift/append operator) at or near col.
+/// Returns Some(col_of_first_<) if found.
+fn find_lshift_col(line: &[u8], col: usize) -> Option<usize> {
+    for offset in 0..3 {
+        let c = col + offset;
+        if c + 1 >= line.len() {
+            break;
+        }
+        if line[c] == b'<' && line[c + 1] == b'<' {
+            // Make sure it's not `<<<` or part of a heredoc
+            if c + 2 < line.len() && line[c + 2] == b'<' {
+                return None;
+            }
+            return Some(c);
+        }
         if line[c] == b' ' || line[c] == b'\t' {
             break;
         }
@@ -1059,6 +1181,84 @@ mod tests {
             diags.is_empty(),
             "Aligned trailing comments with empty line between should be allowed, got {} offenses: {:?}",
             diags.len(),
+            diags
+                .iter()
+                .map(|d| format!("L{}:C{}", d.location.line, d.location.column))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn equals_aligned_with_lshift_allowed() {
+        use crate::testutil::run_cop_full;
+        let cop = ExtraSpacing;
+
+        // Corpus FP: = aligned with << on adjacent line (Arachni vector_feed.rb)
+        let src = b"pages  = pages.values\npages << page_buffer\n";
+        let diags = run_cop_full(&cop, src);
+        assert!(
+            diags.is_empty(),
+            "= aligned with << should be allowed, got {} offenses: {:?}",
+            diags.len(),
+            diags
+                .iter()
+                .map(|d| format!("L{}:C{}", d.location.line, d.location.column))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn equals_and_lshift_three_line_alignment() {
+        use crate::testutil::run_cop_full;
+        let cop = ExtraSpacing;
+
+        // Corpus FP: three-line alignment with =, <<, = (Arachni sax.rb)
+        let src = b"e.document     = @document\n@current_node << e\n@current_node  = e\n";
+        let diags = run_cop_full(&cop, src);
+        assert!(
+            diags.is_empty(),
+            "Three-line =/<< alignment should be allowed, got {} offenses: {:?}",
+            diags.len(),
+            diags
+                .iter()
+                .map(|d| format!("L{}:C{}", d.location.line, d.location.column))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ivar_sigil_not_coincidental_alignment() {
+        use crate::testutil::run_cop_full;
+        let cop = ExtraSpacing;
+
+        // Corpus FN: assert @fake_stderr should be flagged (gli test)
+        // The @ sigil coincidentally aligns with @ on adjacent line but they are
+        // different tokens (@fake_stderr vs @called).
+        let src = b"assert  @fake_stderr.contained?(/flag/)\nassert !@called\n";
+        let diags = run_cop_full(&cop, src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Extra space in 'assert  @fake_stderr' should be flagged, got: {:?}",
+            diags
+                .iter()
+                .map(|d| format!("L{}:C{}", d.location.line, d.location.column))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn unaligned_compound_assignment_flagged() {
+        use crate::testutil::run_cop_full;
+        let cop = ExtraSpacing;
+
+        // Corpus FN: ||= with extra spaces, = signs at different columns
+        let src = b"@signatures[pair_hash]      ||= {}\n@data_gathering[pair_hash] ||= {}\n";
+        let diags = run_cop_full(&cop, src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Unaligned ||= with extra spaces should be flagged, got: {:?}",
             diags
                 .iter()
                 .map(|d| format!("L{}:C{}", d.location.line, d.location.column))

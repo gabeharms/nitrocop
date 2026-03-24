@@ -33,3 +33,17 @@ check_c_patterns # comment C
 
 # Extra spaces inside empty word arrays (RuboCop flags these)
 a = %w( )
+
+# Extra space after assert (not aligned with anything meaningful)
+assert @fake_stderr.contained?(/flag/)
+assert !@called
+
+# Extra space after opening brace
+{ portal: {
+  name: 'test_portal'
+} }
+
+# Alignment FN: ||= with extra spaces not aligned with adjacent =
+# (different last_column of = sign)
+@signatures[pair_hash] ||= {}
+@data_gathering[pair_hash] ||= {}

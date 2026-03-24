@@ -47,3 +47,20 @@ check_c_patterns   # comment C
 # Extra spaces inside empty word arrays (RuboCop flags these)
 a = %w(  )
        ^ Layout/ExtraSpacing: Unnecessary spacing detected.
+
+# Extra space after assert (not aligned with anything meaningful)
+assert  @fake_stderr.contained?(/flag/)
+      ^ Layout/ExtraSpacing: Unnecessary spacing detected.
+assert !@called
+
+# Extra space after opening brace
+{  portal: {
+ ^ Layout/ExtraSpacing: Unnecessary spacing detected.
+  name: 'test_portal'
+} }
+
+# Alignment FN: ||= with extra spaces not aligned with adjacent =
+# (different last_column of = sign)
+@signatures[pair_hash]      ||= {}
+                      ^^^^^ Layout/ExtraSpacing: Unnecessary spacing detected.
+@data_gathering[pair_hash] ||= {}

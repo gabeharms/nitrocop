@@ -138,3 +138,34 @@ data = [
   {id: 1, name: 'short'     , code: 'a'},
   {id: 2, name: 'longer'    , code: 'b'},
 ]
+
+# Assignment = aligned with << on adjacent line (AllowForAlignment: true)
+# RuboCop treats << as an assignment-like operator that can align with =
+pages  = pages.values
+pages << page_buffer
+
+# Variable with = aligned with << (append) on next line
+hdr  = "<head><style>"
+hdr << "@page{size: landscape}"
+
+# Multiple aligned = and << operators
+message  = "Widget Generation..."
+message << " (error)" if error
+message << " (timeout)" if timeout
+
+# Aligned = and << with same-indent search
+id  = inputs ? inputs.sort_by { |k, _| k }.hash.to_s : ''
+id << ':'
+
+# Three-line alignment: =, <<, and = again
+e.document     = @document
+@current_node << e
+@current_node  = e
+
+# Aligned = and << with longer variable names
+results   = [set_to_array(statement.getResultSet)]
+results  << set_to_array(statement.getResultSet) while statement.getMoreResults
+
+# Compound assignment aligned with <<
+columns  = ((options && options[:columns]) || self.class.column_names_symbols.dup)
+columns << :id
