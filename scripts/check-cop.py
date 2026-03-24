@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from shared.corpus_artifacts import download_corpus_results as _download_corpus
@@ -225,23 +226,36 @@ def count_deduplicated_offenses(json_data: dict) -> int:
 def _run_one_repo(args: tuple[str, str]) -> tuple[str, int]:
     """Run nitrocop on a single repo. Used by the parallel executor.
 
-    Runs from inside the repo directory with GIT_CEILING_DIRECTORIES set
-    to the corpus root so the `ignore` crate does not walk up into the
-    parent nitrocop project. This matches the corpus oracle's git context
-    (which clones to repos/<id>/ outside the project tree).
+    The corpus oracle runs from its workspace root with repos at
+    repos/<id>/ — a path NOT inside any git tree. To match this,
+    we symlink the repo into a temp directory outside the nitrocop
+    project tree and run from there. This gives the `ignore` crate
+    the same .gitignore resolution context as the oracle.
     """
     cop_name, repo_dir = args
     repo_id = Path(repo_dir).name
-    env = corpus_env()
-    env["GIT_CEILING_DIRECTORIES"] = str(CORPUS_DIR)
+    repo_abs = str(Path(repo_dir).resolve())
+
+    # Create a temp directory outside the git tree with a symlink to the repo.
+    # The symlink makes the path <tmpdir>/repos/<repo_id> which mirrors the
+    # oracle's repos/<id>/ layout. Running from <tmpdir> means cwd is NOT
+    # inside any git tree, matching the oracle exactly.
+    tmpdir = tempfile.mkdtemp(prefix="nitrocop_cop_check_")
+    repos_parent = Path(tmpdir) / "repos"
+    repos_parent.mkdir()
+    link = repos_parent / repo_id
+    link.symlink_to(repo_abs)
     try:
         result = subprocess.run(
-            nitrocop_cmd(cop_name, "."),
+            nitrocop_cmd(cop_name, str(link)),
             capture_output=True, text=True, timeout=120,
-            cwd=repo_dir, env=env,
+            cwd=tmpdir, env=corpus_env(),
         )
     except subprocess.TimeoutExpired:
         return (repo_id, -1)
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     if result.returncode not in (0, 1):
         return (repo_id, -1)
