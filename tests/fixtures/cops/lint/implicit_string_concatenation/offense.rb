@@ -8,3 +8,7 @@ z = ["first" "second", "third"]
      ^^^^^^^^^^^^^^^^ Lint/ImplicitStringConcatenation: Combine "first" and "second" into a single string literal, rather than using implicit string concatenation.
 w = ['a' 'b' 'c']
      ^^^^^^ Lint/ImplicitStringConcatenation: Combine 'a' and 'b' into a single string literal, rather than using implicit string concatenation.
+         ^^^^^^ Lint/ImplicitStringConcatenation: Combine 'b' and 'c' into a single string literal, rather than using implicit string concatenation.
+ber = "\xa4\x2d" \
+  "\x04\x0b" "objectclass"
+  ^^^^^^^^^^^^^^^^^^^^^^^^^ Lint/ImplicitStringConcatenation: Combine "\x04\x0b" and "objectclass" into a single string literal, rather than using implicit string concatenation.

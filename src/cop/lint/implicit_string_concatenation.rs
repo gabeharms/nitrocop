@@ -70,8 +70,10 @@ impl Cop for ImplicitStringConcatenation {
                             let lhs_display = display_str(source, &prev_loc);
                             let rhs_display = display_str(source, &curr_loc);
 
-                            let loc = interp.location();
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
+                            // Report location at the start of the lhs string in the pair,
+                            // not at the parent dstr node. RuboCop uses the range spanning
+                            // lhs to rhs; we use lhs start for line/column.
+                            let (line, column) = source.offset_to_line_col(prev_loc.start_offset());
                             diagnostics.push(self.diagnostic(
                                 source,
                                 line,
@@ -81,7 +83,8 @@ impl Cop for ImplicitStringConcatenation {
                                     lhs_display, rhs_display
                                 ),
                             ));
-                            break; // One offense per dstr node
+                            // Do NOT break — report all consecutive same-line pairs,
+                            // matching RuboCop's behavior.
                         }
                     }
                 }
