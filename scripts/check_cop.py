@@ -185,25 +185,46 @@ def clear_file_cache():
     shutil.rmtree(cache_dir, ignore_errors=True)
 
 
-def corpus_env() -> dict[str, str]:
+def corpus_env(repo_dir: str | None = None) -> dict[str, str]:
     """Environment variables for corpus runs, matching the oracle exactly."""
     env = os.environ.copy()
     env["BUNDLE_GEMFILE"] = str(PROJECT_ROOT / "bench" / "corpus" / "Gemfile")
     env["BUNDLE_PATH"] = str(PROJECT_ROOT / "bench" / "corpus" / "vendor" / "bundle")
+    # Match oracle: GIT_CEILING_DIRECTORIES prevents walking up to parent git tree
+    if repo_dir:
+        env["GIT_CEILING_DIRECTORIES"] = str(Path(repo_dir).parent)
     return env
 
 
-def nitrocop_cmd(cop_name: str, target: str) -> list[str]:
+GEN_REPO_CONFIG = PROJECT_ROOT / "bench" / "corpus" / "gen_repo_config.py"
+
+
+def _resolve_repo_config(repo_id: str, repo_dir: str) -> str:
+    """Resolve per-repo config using gen_repo_config.py, matching the oracle.
+
+    Returns path to config file (either the baseline or a temporary overlay
+    with per-repo file exclusions for repos with known parser crashes).
+    """
+    result = subprocess.run(
+        [sys.executable, str(GEN_REPO_CONFIG), repo_id,
+         str(BASELINE_CONFIG), repo_dir],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return str(BASELINE_CONFIG)
+
+
+def nitrocop_cmd(cop_name: str, target: str, config: str | None = None) -> list[str]:
     """Build the nitrocop command for corpus checking.
 
-    Uses --config with the baseline config to match CI corpus oracle exactly.
-    This ensures disabled-by-default cops are enabled the same way as in CI.
+    Uses per-repo config (from gen_repo_config.py) to match the oracle exactly.
     All paths are absolute so the command works from any cwd.
     """
     return [
         str(NITROCOP_BIN), "--only", cop_name, "--preview",
         "--format", "json", "--no-cache",
-        "--config", str(BASELINE_CONFIG),
+        "--config", config or str(BASELINE_CONFIG),
         target,
     ]
 
@@ -254,16 +275,20 @@ def _run_one_repo(args: tuple[str, str]) -> tuple[str, int]:
 
     Runs from a shared temp directory outside the git tree with a
     symlink to the repo, matching the oracle's file-discovery context.
+    Uses per-repo config (gen_repo_config.py) and GIT_CEILING_DIRECTORIES
+    to exactly replicate the oracle's environment.
     """
     cop_name, repo_dir = args
     repo_id = Path(repo_dir).name
     symlink_dir = _ensure_symlink_dir()
     link = symlink_dir / "repos" / repo_id
+    abs_link = str(link.resolve()) if link.exists() else str(link)
+    config = _resolve_repo_config(repo_id, abs_link)
     try:
         result = subprocess.run(
-            nitrocop_cmd(cop_name, str(link)),
+            nitrocop_cmd(cop_name, abs_link, config=config),
             capture_output=True, text=True, timeout=120,
-            cwd=str(symlink_dir), env=corpus_env(),
+            cwd=str(symlink_dir), env=corpus_env(abs_link),
         )
     except subprocess.TimeoutExpired:
         return (repo_id, -1)
