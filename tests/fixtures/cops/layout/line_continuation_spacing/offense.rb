@@ -43,3 +43,9 @@ if condition_a &&\
    condition_b
   do_something
 end
+
+# Quoted symbol with escaped backslash spanning lines — RuboCop flags this
+# because :sym nodes are not in ignored_literal_ranges
+x = :"a\\
+        ^ Layout/LineContinuationSpacing: Use one space before backslash.
+b"

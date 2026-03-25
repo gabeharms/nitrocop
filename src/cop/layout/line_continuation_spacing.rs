@@ -12,6 +12,19 @@ use crate::parse::source::SourceFile;
 /// `ignored_literal_ranges`. The skip logic was removed because it caused
 /// 1,535 FNs (88.5% miss rate) by suppressing offenses on lines where a
 /// string happened to precede the backslash continuation.
+///
+/// Corpus investigation (2026-03-25):
+/// FP=37 all from CRLF files. RuboCop's `\\$` regex does not match `\<CR>`
+/// because `$` matches before `\n`, not before `\r\n`. The fix: skip lines
+/// where the backslash is followed by `\r` (CRLF line endings).
+///
+/// FN=16: 15 were already fixed in the current code (the code_map correctly
+/// identifies line-continuation backslashes as code). 1 FN from a symbol
+/// literal `:"a\\\nb"` — RuboCop flags it because `:sym` nodes are not in
+/// `ignored_literal_ranges`, but the code_map marks it as non-code. To match
+/// RuboCop, we use `is_heredoc()` instead of `is_code()` for the primary
+/// skip check, and add a separate comment check, so that symbol interiors
+/// are not incorrectly skipped.
 pub struct LineContinuationSpacing;
 
 impl Cop for LineContinuationSpacing {
@@ -45,23 +58,69 @@ impl Cop for LineContinuationSpacing {
         }
 
         for (i, &line) in lines.iter().enumerate() {
-            // Strip trailing \r
-            let trimmed_end = line
-                .iter()
-                .rposition(|&b| b != b'\r')
-                .map(|p| &line[..=p])
-                .unwrap_or(line);
+            // Strip trailing \r for content inspection, but remember if CRLF
+            let has_cr = line.last() == Some(&b'\r');
+            let trimmed_end = if has_cr {
+                &line[..line.len() - 1]
+            } else {
+                line
+            };
 
             if !trimmed_end.ends_with(b"\\") {
                 continue;
             }
 
+            // CRLF compatibility: RuboCop's regex `\\$` does not match `\<CR>`
+            // because `$` matches before `\n`, not before `\r\n`. Skip CRLF
+            // lines to avoid false positives on Windows-style line endings.
+            if has_cr {
+                continue;
+            }
+
             let backslash_pos = trimmed_end.len() - 1;
 
-            // Skip backslashes inside heredocs/strings
+            // Skip backslashes inside heredoc bodies, comments, and the
+            // __END__ data section. We intentionally do NOT use the broad
+            // `code_map.is_code()` check here because it also covers symbol
+            // interiors — RuboCop's `ignored_literal_ranges` does not include
+            // `:sym` nodes, so symbol interiors should not be skipped.
             let backslash_offset = line_starts[i] + backslash_pos;
-            if !code_map.is_code(backslash_offset) {
+            if code_map.is_heredoc(backslash_offset) {
                 continue;
+            }
+            // Comment or __END__ data section: non-code AND not inside a string/symbol
+            if !code_map.is_code(backslash_offset) && code_map.is_not_string(backslash_offset) {
+                continue;
+            }
+            // Inside a multiline string literal (not a symbol): the backslash
+            // is part of the string content, not a line continuation.
+            // Check: non-code, inside string_ranges, but NOT inside a symbol.
+            // We detect symbols by checking if the non-code region starts with `:"`.
+            if !code_map.is_code(backslash_offset)
+                && !code_map.is_not_string(backslash_offset)
+                && !code_map.is_heredoc(backslash_offset)
+            {
+                // Inside a string-like region (string, symbol, regexp, xstring).
+                // RuboCop skips strings/regexps/xstrings (they have loc.begin in
+                // ignored_literal_ranges) but NOT symbols. To distinguish, we check
+                // if the region is a regex (skip) or look at source context.
+                if code_map.is_regex(backslash_offset) {
+                    continue;
+                }
+                // For non-regex string-like regions: skip unless it's a quoted
+                // symbol (:"..." or :'...'). RuboCop's ignored_literal_ranges
+                // iterates :str/:dstr/:array but NOT :sym/:dsym, so symbol
+                // interiors are not skipped.
+                let mut region_start = backslash_offset;
+                while region_start > 0 && !code_map.is_code(region_start - 1) {
+                    region_start -= 1;
+                }
+                let is_quoted_symbol = content[region_start] == b':'
+                    && region_start + 1 < content.len()
+                    && (content[region_start + 1] == b'"' || content[region_start + 1] == b'\'');
+                if !is_quoted_symbol {
+                    continue;
+                }
             }
 
             match style {
@@ -138,4 +197,93 @@ mod tests {
         LineContinuationSpacing,
         "cops/layout/line_continuation_spacing"
     );
+
+    #[test]
+    fn crlf_backslash_not_flagged() {
+        // RuboCop's regex \\$ doesn't match \<CR> so CRLF lines are skipped
+        let source = b"x = \"hello\"\\\r\n\"world\"\r\n";
+        let diags = crate::testutil::run_cop_full_internal(
+            &LineContinuationSpacing,
+            source,
+            CopConfig::default(),
+            "test.rb",
+        );
+        assert!(
+            diags.is_empty(),
+            "CRLF backslash should not be flagged (RuboCop compat): got {} diagnostics",
+            diags.len()
+        );
+    }
+
+    #[test]
+    fn crlf_no_space_style_not_flagged() {
+        // no_space style should also skip CRLF lines
+        let source = b"x = 1 \\\r\n  + 2\r\n";
+        let mut config = CopConfig::default();
+        config.options.insert(
+            "EnforcedStyle".to_string(),
+            serde_yml::Value::from("no_space"),
+        );
+        let diags = crate::testutil::run_cop_full_internal(
+            &LineContinuationSpacing,
+            source,
+            config,
+            "test.rb",
+        );
+        assert!(
+            diags.is_empty(),
+            "CRLF backslash should not be flagged in no_space style: got {} diagnostics",
+            diags.len()
+        );
+    }
+
+    #[test]
+    fn symbol_interior_flagged() {
+        // RuboCop does not add :sym nodes to ignored_literal_ranges,
+        // so backslashes inside symbols are flagged
+        let source = b":\"a\\\\\nb\"\n";
+        let diags = crate::testutil::run_cop_full_internal(
+            &LineContinuationSpacing,
+            source,
+            CopConfig::default(),
+            "test.rb",
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should flag backslash inside symbol (RuboCop compat)"
+        );
+    }
+
+    #[test]
+    fn chained_method_backslash_flagged() {
+        // Backslash with no space in chained method calls
+        let source = b"Dir.entries(dir)\\\n        .select {|s| s }\n";
+        let diags = crate::testutil::run_cop_full_internal(
+            &LineContinuationSpacing,
+            source,
+            CopConfig::default(),
+            "test.rb",
+        );
+        assert!(
+            !diags.is_empty(),
+            "Should flag backslash with no space after )"
+        );
+    }
+
+    #[test]
+    fn string_then_unless_backslash_flagged() {
+        // Backslash after closing quote with postfix unless
+        let source = b"raise ArgumentError, \"not directory: #{dir}\"\\\n  unless cond\n";
+        let diags = crate::testutil::run_cop_full_internal(
+            &LineContinuationSpacing,
+            source,
+            CopConfig::default(),
+            "test.rb",
+        );
+        assert!(
+            !diags.is_empty(),
+            "Should flag backslash with no space after closing quote"
+        );
+    }
 }
