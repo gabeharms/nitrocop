@@ -26,3 +26,17 @@ module MyNamespace
     end
   end
 end
+
+# Module with RSpec.describe called as utility (no block) — not flagged
+module Helpers
+  def metadata_with(additional_metadata)
+    ::RSpec.describe("example group").metadata.merge(additional_metadata)
+  end
+end
+
+# Module with RSpec.describe called with block argument (not actual block) — not flagged
+module CommonHelpers
+  def describe_successfully(*args, &describe_body)
+    RSpec.describe(*args, &describe_body)
+  end
+end

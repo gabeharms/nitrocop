@@ -591,7 +591,8 @@ pub fn is_blank_line(line: &[u8]) -> bool {
 /// This is used by spacing/separation cops that mirror RuboCop's `blank?`
 /// behavior when deciding whether an empty separator line exists.
 pub fn is_blank_or_whitespace_line(line: &[u8]) -> bool {
-    line.iter().all(|&b| b == b' ' || b == b'\t' || b == b'\r')
+    line.iter()
+        .all(|&b| b == b' ' || b == b'\t' || b == b'\r' || b == b'\x0C' || b == b'\x0B')
 }
 
 /// Check for extra empty lines at the beginning/end of a body.

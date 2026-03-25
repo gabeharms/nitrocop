@@ -22,6 +22,13 @@ use crate::parse::source::SourceFile;
 /// inside `class << self` → `def specs` which was missed.
 /// Fix: use `ruby_prism::Visit` for unrestricted deep descendant search, matching
 /// RuboCop's `def_node_search` behavior.
+///
+/// Corpus FP=2 root cause: `RSpecDescribeFinder` matched any `RSpec.describe` call
+/// regardless of whether it had an actual inline block. RuboCop's pattern
+/// `(block (send (const nil? :RSpec) :describe ...) ...)` requires a real block node.
+/// Calls like `RSpec.describe("example").metadata` (no block) and
+/// `RSpec.describe(*args, &blk)` (block argument, not inline block) were false positives.
+/// Fix: check `node.block().and_then(|b| b.as_block_node()).is_some()` before matching.
 pub struct DescribedClassModuleWrapping;
 
 impl Cop for DescribedClassModuleWrapping {
@@ -101,19 +108,25 @@ impl<'pr> Visit<'pr> for RSpecDescribeFinder {
         if !self.found {
             let name = node.name().as_slice();
             if name == b"describe" {
-                if let Some(recv) = node.receiver() {
-                    if let Some(cr) = recv.as_constant_read_node() {
-                        if cr.name().as_slice() == b"RSpec" {
-                            self.found = true;
-                            return;
+                // Only match calls with an actual inline block (do...end or {}).
+                // RuboCop's pattern uses `(block (send ...))` which requires
+                // a real block node, not just a block argument (&blk) or bare call.
+                let has_block = node.block().and_then(|b| b.as_block_node()).is_some();
+                if has_block {
+                    if let Some(recv) = node.receiver() {
+                        if let Some(cr) = recv.as_constant_read_node() {
+                            if cr.name().as_slice() == b"RSpec" {
+                                self.found = true;
+                                return;
+                            }
                         }
-                    }
-                    if let Some(cp) = recv.as_constant_path_node() {
-                        if cp.name().is_some_and(|n| n.as_slice() == b"RSpec")
-                            && cp.parent().is_none()
-                        {
-                            self.found = true;
-                            return;
+                        if let Some(cp) = recv.as_constant_path_node() {
+                            if cp.name().is_some_and(|n| n.as_slice() == b"RSpec")
+                                && cp.parent().is_none()
+                            {
+                                self.found = true;
+                                return;
+                            }
                         }
                     }
                 }
