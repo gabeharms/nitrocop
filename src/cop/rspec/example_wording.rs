@@ -34,6 +34,13 @@ use crate::parse::source::SourceFile;
 ///   `is_word_char` check.
 /// - 1 FN: `group.it('works') { }` — receiver present. Fixed by removing
 ///   receiver filter.
+///
+/// ## Corpus investigation (2026-03-25)
+///
+/// 4 FPs in jpmobile repo: double-quoted strings with `\xf8\x9f` / `\xf9\x8b` hex
+/// escapes produce non-UTF-8 unescaped bytes. RuboCop's Parser gem cannot represent
+/// these as valid string content, so it never fires on them. Fixed by skipping
+/// descriptions where `unescaped()` is not valid UTF-8.
 pub struct ExampleWording;
 
 impl Cop for ExampleWording {
@@ -128,7 +135,13 @@ impl Cop for ExampleWording {
             };
 
             if let (Some(desc), Some(loc)) = (desc_bytes, desc_loc) {
-                let desc_str = std::str::from_utf8(&desc).unwrap_or("");
+                // RuboCop's Parser gem cannot represent non-UTF-8 string content,
+                // so it never fires on descriptions with invalid UTF-8 bytes
+                // (e.g., \xf8\x9f hex escapes in double-quoted strings).
+                let desc_str = match std::str::from_utf8(&desc) {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
 
                 // Check IgnoredWords — if description starts with an ignored word, skip should-check
                 let skip_should = if let Some(ref words) = ignored_words {

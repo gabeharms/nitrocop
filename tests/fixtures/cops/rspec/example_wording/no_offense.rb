@@ -40,3 +40,12 @@ end
 it 'should convert the example', &(proc do
   expect(true).to eq(true)
 end)
+# Double-quoted strings with non-UTF-8 hex escapes — RuboCop skips these
+it "should convert emoticon &#xe63e; to \xf8\x9f in B-Encoding" do
+end
+it "should convert emoticon &#xe63e; to \xf8\x9f" do
+end
+it "should convert emoticon &#xe63e; to \xf9\x8b in B-Encoding" do
+end
+it "should convert emoticon &#xe63e; to \xf9\x8b" do
+end
