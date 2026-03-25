@@ -3,6 +3,14 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// Style/DirEmpty — prefer `Dir.empty?('path')` over manual emptiness checks.
+///
+/// FP fix (2026-03-25): nitrocop was not checking the RHS integer value in
+/// comparison patterns and was also matching `length`/`count` in addition to
+/// `size`. RuboCop's node_matcher requires:
+///   - `Dir.entries(path).size {== != >} (int 2)` — only integer 2
+///   - `Dir.children(path).size {== != >} (int 0)` — only integer 0
+///   - Only `size`, not `length` or `count`
 pub struct DirEmpty;
 
 fn is_dir_const(node: &ruby_prism::Node<'_>) -> bool {
@@ -93,55 +101,80 @@ impl Cop for DirEmpty {
 
         // Pattern: Dir.entries('path').size == 2
         // Pattern: Dir.children('path').size == 0
+        // RuboCop only matches `size` (not `length`/`count`) and requires specific
+        // integer values: 2 for entries (. and ..), 0 for children.
         if method_name == "==" || method_name == "!=" || method_name == ">" {
-            if let Some(receiver) = call.receiver() {
-                if let Some(recv_call) = receiver.as_call_node() {
-                    let recv_method =
-                        std::str::from_utf8(recv_call.name().as_slice()).unwrap_or("");
-                    if recv_method == "size" || recv_method == "length" || recv_method == "count" {
-                        if let Some(inner_recv) = recv_call.receiver() {
-                            if let Some(inner_call) = inner_recv.as_call_node() {
-                                let inner_method =
-                                    std::str::from_utf8(inner_call.name().as_slice()).unwrap_or("");
-                                if matches!(inner_method, "entries" | "children") {
-                                    if let Some(dir_recv) = inner_call.receiver() {
-                                        if is_dir_const(&dir_recv) {
-                                            let loc = node.location();
-                                            let (line, column) =
-                                                source.offset_to_line_col(loc.start_offset());
-                                            let mut diag = self.diagnostic(
-                                                source,
-                                                line,
-                                                column,
-                                                "Use `Dir.empty?('path/to/dir')` instead."
-                                                    .to_string(),
-                                            );
-                                            if let Some(ref mut corr) = corrections {
-                                                let args_src = if let Some(args) =
-                                                    inner_call.arguments()
-                                                {
-                                                    std::str::from_utf8(args.location().as_slice())
+            // Check the RHS integer value
+            let rhs_value = call.arguments().and_then(|args| {
+                let mut iter = args.arguments().iter();
+                let first = iter.next()?;
+                if iter.next().is_some() {
+                    return None; // more than one argument
+                }
+                let int_node = first.as_integer_node()?;
+                let src = std::str::from_utf8(int_node.location().as_slice()).unwrap_or("");
+                let cleaned: String = src.chars().filter(|c| *c != '_').collect();
+                cleaned.parse::<i64>().ok()
+            });
+
+            if let Some(rhs) = rhs_value {
+                if let Some(receiver) = call.receiver() {
+                    if let Some(recv_call) = receiver.as_call_node() {
+                        let recv_method =
+                            std::str::from_utf8(recv_call.name().as_slice()).unwrap_or("");
+                        if recv_method == "size" {
+                            if let Some(inner_recv) = recv_call.receiver() {
+                                if let Some(inner_call) = inner_recv.as_call_node() {
+                                    let inner_method =
+                                        std::str::from_utf8(inner_call.name().as_slice())
+                                            .unwrap_or("");
+                                    let expected_rhs = match inner_method {
+                                        "entries" => Some(2),
+                                        "children" => Some(0),
+                                        _ => None,
+                                    };
+                                    if expected_rhs == Some(rhs) {
+                                        if let Some(dir_recv) = inner_call.receiver() {
+                                            if is_dir_const(&dir_recv) {
+                                                let loc = node.location();
+                                                let (line, column) =
+                                                    source.offset_to_line_col(loc.start_offset());
+                                                let mut diag = self.diagnostic(
+                                                    source,
+                                                    line,
+                                                    column,
+                                                    "Use `Dir.empty?('path/to/dir')` instead."
+                                                        .to_string(),
+                                                );
+                                                if let Some(ref mut corr) = corrections {
+                                                    let args_src = if let Some(args) =
+                                                        inner_call.arguments()
+                                                    {
+                                                        std::str::from_utf8(
+                                                            args.location().as_slice(),
+                                                        )
                                                         .unwrap_or("")
-                                                } else {
-                                                    ""
-                                                };
-                                                let dir_src = std::str::from_utf8(
-                                                    dir_recv.location().as_slice(),
-                                                )
-                                                .unwrap_or("Dir");
-                                                corr.push(crate::correction::Correction {
-                                                    start: loc.start_offset(),
-                                                    end: loc.end_offset(),
-                                                    replacement: format!(
-                                                        "{}.empty?({})",
-                                                        dir_src, args_src
-                                                    ),
-                                                    cop_name: self.name(),
-                                                    cop_index: 0,
-                                                });
-                                                diag.corrected = true;
+                                                    } else {
+                                                        ""
+                                                    };
+                                                    let dir_src = std::str::from_utf8(
+                                                        dir_recv.location().as_slice(),
+                                                    )
+                                                    .unwrap_or("Dir");
+                                                    corr.push(crate::correction::Correction {
+                                                        start: loc.start_offset(),
+                                                        end: loc.end_offset(),
+                                                        replacement: format!(
+                                                            "{}.empty?({})",
+                                                            dir_src, args_src
+                                                        ),
+                                                        cop_name: self.name(),
+                                                        cop_index: 0,
+                                                    });
+                                                    diag.corrected = true;
+                                                }
+                                                diagnostics.push(diag);
                                             }
-                                            diagnostics.push(diag);
                                         }
                                     }
                                 }

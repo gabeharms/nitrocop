@@ -1,6 +1,9 @@
 Dir.entries('path/to/dir').size == 2
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/DirEmpty: Use `Dir.empty?('path/to/dir')` instead.
 
+Dir.children('path/to/dir').size == 0
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/DirEmpty: Use `Dir.empty?('path/to/dir')` instead.
+
 Dir.children('path/to/dir').empty?
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/DirEmpty: Use `Dir.empty?('path/to/dir')` instead.
 

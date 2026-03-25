@@ -3,6 +3,15 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// FP fix: RuboCop uses `regexp_parser` which tokenizes the regex and requires
+/// exactly `:bos`, `:literal`, `:eos`. Our `is_literal_string` was treating
+/// non-literal escape sequences (`\n`, `\t`, `\r`, `\0`, etc.) as literal
+/// escaped chars, and also matching empty inner patterns (`/\A\z/`). Fixed by:
+/// 1. Rejecting empty inner (no `:literal` token between anchors).
+/// 2. Rejecting all non-literal escape sequences: C-style escapes (`\n`, `\t`,
+///    `\r`, `\f`, `\a`, `\e`, `\v`), octal (`\0`-`\9`), hex/unicode (`\x`,
+///    `\u`), control/meta (`\c`, `\C`, `\M`), backrefs (`\k`, `\g`, `\N`),
+///    and the `\G` anchor.
 pub struct ExactRegexpMatch;
 
 impl ExactRegexpMatch {
@@ -34,6 +43,11 @@ impl ExactRegexpMatch {
             return false;
         }
         let inner = &bytes[2..bytes.len() - 2];
+        // RuboCop requires a :literal token between :bos and :eos,
+        // so the inner part must be non-empty and a simple literal.
+        if inner.is_empty() {
+            return false;
+        }
         // The inner part must be a simple literal (no metacharacters)
         Self::is_literal_string(inner)
     }
@@ -54,12 +68,23 @@ impl ExactRegexpMatch {
                     if i + 1 < bytes.len() {
                         let next = bytes[i + 1];
                         match next {
-                            // These are special regex escapes
-                            b'd' | b'D' | b'w' | b'W' | b's' | b'S' | b'b' | b'B' | b'h' | b'H'
-                            | b'R' | b'p' | b'P' | b'A' | b'z' | b'Z' => {
+                            // Character class escapes
+                            b'd' | b'D' | b'w' | b'W' | b's' | b'S' | b'h' | b'H' => {
                                 return false;
                             }
-                            // Literal escape of special char
+                            // Anchor and boundary escapes
+                            b'b' | b'B' | b'A' | b'z' | b'Z' | b'G' => return false,
+                            // Unicode property escapes
+                            b'R' | b'p' | b'P' => return false,
+                            // C-style escape sequences (non-literal in regexp parser)
+                            b'n' | b't' | b'r' | b'f' | b'a' | b'e' | b'v' => return false,
+                            // Octal escapes (\0-\9)
+                            b'0'..=b'9' => return false,
+                            // Hex, unicode, control, meta escapes
+                            b'x' | b'u' | b'c' | b'C' | b'M' => return false,
+                            // Named/numbered backreferences and subexpression calls
+                            b'k' | b'g' | b'N' => return false,
+                            // Literal escape of a special punctuation char (e.g. \., \\, \/)
                             _ => {
                                 i += 2;
                                 continue;
