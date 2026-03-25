@@ -17,6 +17,19 @@ use crate::parse::source::SourceFile;
 ///
 /// Fix: Replaced pairwise prev/curr comparison with RuboCop's `last_seen_line`
 /// tracking from `MultilineElementLineBreaks#check_line_breaks`.
+///
+/// FP investigation (2026-03-25): 6 FPs, 0 FNs.
+///
+/// Root cause: NOT a cop logic bug. All 6 FPs come from one repo (noosfero),
+/// one file (`vendor/plugins/xss_terminate/lib/html5lib_sanitize.rb`) that uses
+/// hash rocket syntax (`{:key => val}`). The corpus baseline config uses
+/// `TargetRubyVersion: 4.0`, and the Parser gem's Ruby 4.0 grammar cannot parse
+/// `=>` in hash literals (conflicts with pattern matching syntax). RuboCop only
+/// reports `Lint/Syntax` errors for this file, while Prism parses it successfully,
+/// causing nitrocop to report 6 legitimate offenses that appear as FPs. Local
+/// testing confirms RuboCop DOES flag the same patterns with Ruby 3.3 parser.
+/// The fix belongs at the infrastructure level (e.g., `repo_excludes.json` or
+/// filtering FPs where RuboCop only has `Lint/Syntax` errors), not in the cop.
 pub struct MultilineHashKeyLineBreaks;
 
 impl Cop for MultilineHashKeyLineBreaks {
