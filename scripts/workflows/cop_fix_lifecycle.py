@@ -967,7 +967,7 @@ def _build_final_pr_body(
         "",
     ]
     if issue_number:
-        link_keyword = "Refs" if docs_only else "Closes"
+        link_keyword = "Refs"
         lines += [
             f"{link_keyword} #{issue_number}",
             "",
