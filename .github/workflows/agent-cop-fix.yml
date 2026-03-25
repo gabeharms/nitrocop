@@ -249,6 +249,13 @@ jobs:
           gem install "rubocop:$V_RC" "rubocop-performance:$V_PERF" \
             "rubocop-rails:$V_RAILS" "rubocop-rspec:$V_RSPEC" prism --no-document
 
+      - name: Install corpus bundle (for check_cop.py)
+        if: steps.task.outputs.code_bugs != '0'
+        run: |
+          cd bench/corpus
+          bundle config set --local path vendor/bundle
+          bundle install --jobs 4 --retry 3
+
       # --- Wait for main to be healthy right before agent starts ---
       - name: Wait for healthy main
         if: steps.task.outputs.code_bugs != '0'
