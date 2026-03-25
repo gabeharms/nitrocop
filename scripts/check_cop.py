@@ -32,6 +32,8 @@ from pathlib import Path
 from shared.corpus_artifacts import download_corpus_results as _download_corpus
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "bench" / "corpus"))
+from run_nitrocop import run_nitrocop as _run_corpus_nitrocop  # noqa: E402, I001
 CORPUS_DIR = PROJECT_ROOT / "vendor" / "corpus"
 MANIFEST_PATH = PROJECT_ROOT / "bench" / "corpus" / "manifest.jsonl"
 NITROCOP_BIN = Path(os.environ["NITROCOP_BIN"]) if "NITROCOP_BIN" in os.environ else PROJECT_ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "release" / "nitrocop"
@@ -69,7 +71,8 @@ def check_corpus_bundle():
         )
         return
     # Check that rubocop gem is findable
-    env = corpus_env()
+    from run_nitrocop import build_env
+    env = build_env()
     try:
         result = subprocess.run(
             ["bundle", "info", "--path", "rubocop"],
@@ -185,63 +188,6 @@ def clear_file_cache():
     shutil.rmtree(cache_dir, ignore_errors=True)
 
 
-def corpus_env(repo_dir: str | None = None) -> dict[str, str]:
-    """Environment variables for corpus runs, matching the oracle exactly."""
-    env = os.environ.copy()
-    env["BUNDLE_GEMFILE"] = str(PROJECT_ROOT / "bench" / "corpus" / "Gemfile")
-    env["BUNDLE_PATH"] = str(PROJECT_ROOT / "bench" / "corpus" / "vendor" / "bundle")
-    # Match oracle: GIT_CEILING_DIRECTORIES prevents walking up to parent git tree
-    if repo_dir:
-        env["GIT_CEILING_DIRECTORIES"] = str(Path(repo_dir).parent)
-    return env
-
-
-GEN_REPO_CONFIG = PROJECT_ROOT / "bench" / "corpus" / "gen_repo_config.py"
-
-
-def _resolve_repo_config(repo_id: str, repo_dir: str) -> str:
-    """Resolve per-repo config using gen_repo_config.py, matching the oracle.
-
-    Returns path to config file (either the baseline or a temporary overlay
-    with per-repo file exclusions for repos with known parser crashes).
-    """
-    result = subprocess.run(
-        [sys.executable, str(GEN_REPO_CONFIG), repo_id,
-         str(BASELINE_CONFIG), repo_dir],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.strip()
-    return str(BASELINE_CONFIG)
-
-
-def nitrocop_cmd(cop_name: str, target: str, config: str | None = None) -> list[str]:
-    """Build the nitrocop command for corpus checking.
-
-    Uses per-repo config (from gen_repo_config.py) to match the oracle exactly.
-    All paths are absolute so the command works from any cwd.
-    """
-    return [
-        str(NITROCOP_BIN), "--only", cop_name, "--preview",
-        "--format", "json", "--no-cache",
-        "--config", config or str(BASELINE_CONFIG),
-        target,
-    ]
-
-
-
-def count_deduplicated_offenses(json_data: dict) -> int:
-    """Count offenses deduplicated by (path, line, cop_name).
-
-    The corpus oracle uses this deduplication, so we must match it.
-    E.g., two offenses on the same line for the same cop count as one.
-    """
-    seen = set()
-    for o in json_data.get("offenses", []):
-        key = (o.get("path", ""), o.get("line", 0), o.get("cop_name", ""))
-        seen.add(key)
-    return len(seen)
-
 
 _SYMLINK_DIR: Path | None = None
 
@@ -271,83 +217,17 @@ def _ensure_symlink_dir() -> Path:
 
 
 def _run_one_repo(args: tuple[str, str]) -> tuple[str, int]:
-    """Run nitrocop on a single repo. Used by the parallel executor.
-
-    Runs from a shared temp directory outside the git tree with a
-    symlink to the repo, matching the oracle's file-discovery context.
-    Uses per-repo config (gen_repo_config.py) and GIT_CEILING_DIRECTORIES
-    to exactly replicate the oracle's environment.
-    """
+    """Run nitrocop on a single repo via the shared corpus runner."""
     cop_name, repo_dir = args
     repo_id = Path(repo_dir).name
     symlink_dir = _ensure_symlink_dir()
     link = symlink_dir / "repos" / repo_id
     abs_link = str(link.resolve()) if link.exists() else str(link)
-    config = _resolve_repo_config(repo_id, abs_link)
-    try:
-        result = subprocess.run(
-            nitrocop_cmd(cop_name, abs_link, config=config),
-            capture_output=True, text=True, timeout=120,
-            cwd=str(symlink_dir), env=corpus_env(abs_link),
-        )
-    except subprocess.TimeoutExpired:
-        return (repo_id, -1)
+    result = _run_corpus_nitrocop(
+        abs_link, cop=cop_name, binary=str(NITROCOP_BIN), timeout=120,
+    )
+    return (repo_id, result["count"])
 
-    if result.returncode not in (0, 1):
-        return (repo_id, -1)
-
-    try:
-        data = json.loads(result.stdout)
-        return (repo_id, count_deduplicated_offenses(data))
-    except json.JSONDecodeError:
-        return (repo_id, -1)
-
-
-def _run_batch(args: tuple[str, list[str]]) -> dict[str, int]:
-    """Run nitrocop on a batch of repos in one process call.
-
-    Passes multiple repo paths to a single nitrocop invocation and
-    groups offenses by repo from the file paths. Much faster than
-    one process per repo due to eliminated startup overhead.
-    """
-    cop_name, repo_dirs = args
-    symlink_dir = _ensure_symlink_dir()
-    links = [str(symlink_dir / "repos" / Path(d).name) for d in repo_dirs]
-    repo_ids = [Path(d).name for d in repo_dirs]
-
-    cmd = [
-        str(NITROCOP_BIN), "--only", cop_name, "--preview",
-        "--format", "json", "--no-cache",
-        "--config", str(BASELINE_CONFIG),
-    ] + links
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300,
-            cwd=str(symlink_dir), env=corpus_env(),
-        )
-    except subprocess.TimeoutExpired:
-        return {rid: -1 for rid in repo_ids}
-
-    if result.returncode not in (0, 1):
-        return {rid: -1 for rid in repo_ids}
-
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return {rid: -1 for rid in repo_ids}
-
-    # Group offenses by repo — path starts with "repos/<repo_id>/..."
-    counts: dict[str, set[tuple]] = {rid: set() for rid in repo_ids}
-    for o in data.get("offenses", []):
-        path = o.get("path", "")
-        # Path format: repos/<repo_id>/path/to/file.rb
-        parts = path.split("/", 2)
-        if len(parts) >= 2 and parts[0] == "repos":
-            repo_id = parts[1]
-            if repo_id in counts:
-                key = (path, o.get("line", 0), o.get("cop_name", ""))
-                counts[repo_id].add(key)
-    return {rid: len(offenses) for rid, offenses in counts.items()}
 
 
 def load_manifest() -> dict[str, dict]:

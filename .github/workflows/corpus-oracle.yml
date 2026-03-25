@@ -275,20 +275,14 @@ jobs:
             WORKSPACE="$PWD"
             ABS_DEST="$(cd "$DEST" && pwd)"
 
-            # nitrocop
+            # nitrocop — uses shared script for oracle-identical invocation
             echo "=== nitrocop: ${REPO_ID} ==="
             rc=0
-            timeout "${REPO_TIMEOUT}" \
-            env BUNDLE_GEMFILE=$WORKSPACE/bench/corpus/Gemfile \
-                BUNDLE_PATH=$WORKSPACE/bench/corpus/vendor/bundle \
-                GIT_CEILING_DIRECTORIES=$(dirname "$ABS_DEST") \
-            $WORKSPACE/bin/nitrocop \
-              --preview \
-              --format json \
-              --no-cache \
-              --config "$REPO_CONFIG" \
-              "$ABS_DEST" \
-              > "$WORKSPACE/results/nitrocop/${REPO_ID}.json" 2>"$WORKSPACE/results/nitrocop/${REPO_ID}.err" || rc=$?
+            python3 bench/corpus/run_nitrocop.py "$ABS_DEST" \
+              --binary "$WORKSPACE/bin/nitrocop" \
+              --timeout "${REPO_TIMEOUT}" \
+              --output "$WORKSPACE/results/nitrocop/${REPO_ID}.json" \
+              2>"$WORKSPACE/results/nitrocop/${REPO_ID}.err" || rc=$?
 
             if [ "$rc" -eq 124 ]; then
               echo "::warning::nitrocop timed out after ${REPO_TIMEOUT}s for ${REPO_ID}"
