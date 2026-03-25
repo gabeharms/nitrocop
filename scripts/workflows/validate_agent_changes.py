@@ -32,7 +32,6 @@ ALLOWLISTS = {
         "src/cop/**",
         "tests/fixtures/cops/**",
         "tests/integration.rs",
-        "bench/corpus/**",
     ],
     "repair-smoke": [
         "src/**",
