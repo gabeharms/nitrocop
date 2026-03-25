@@ -483,6 +483,9 @@ def validate_corpus():
 def run_nitrocop_per_repo(
     cop_name: str,
     relevant_repos: set[str] | None = None,
+    *,
+    shard_index: int | None = None,
+    total_shards: int | None = None,
 ) -> dict[str, int]:
     """Run nitrocop --only on each corpus repo in parallel, return {repo_id: count}.
 
@@ -516,6 +519,11 @@ def run_nitrocop_per_repo(
         skipped = len(all_repos) - len(repos)
         print(f"  --quick: running {len(repos)}/{len(all_repos)} repos "
               f"(skipping {skipped} with zero baseline activity)", file=sys.stderr)
+
+    if shard_index is not None and total_shards is not None:
+        full = len(repos)
+        repos = [r for i, r in enumerate(repos) if i % total_shards == shard_index]
+        print(f"  shard {shard_index}/{total_shards}: {len(repos)}/{full} repos", file=sys.stderr)
 
     total = len(repos)
 
@@ -559,6 +567,8 @@ def rerun_local_per_repo(
     *,
     quick: bool,
     has_activity_index: bool,
+    shard_index: int | None = None,
+    total_shards: int | None = None,
 ) -> dict[str, int]:
     """Re-run nitrocop locally using per-repo subprocess mode.
 
@@ -578,7 +588,10 @@ def rerun_local_per_repo(
                 "quick rerun falls back to divergence-only data",
                 file=sys.stderr,
             )
-    return run_nitrocop_per_repo(cop_name, relevant_repos=relevant_repos)
+    return run_nitrocop_per_repo(
+        cop_name, relevant_repos=relevant_repos,
+        shard_index=shard_index, total_shards=total_shards,
+    )
 
 
 def main():
@@ -597,6 +610,10 @@ def main():
                         help="Only run repos with baseline activity (faster, may miss new FPs on zero-baseline repos)")
     parser.add_argument("--clone", action="store_true",
                         help="Auto-clone needed corpus repos from manifest (for CI use with --rerun --quick)")
+    parser.add_argument("--shard-index", type=int, default=None,
+                        help="Shard index for parallel CI (0-based)")
+    parser.add_argument("--total-shards", type=int, default=None,
+                        help="Total number of shards for parallel CI")
     args = parser.parse_args()
 
     # Load corpus results
@@ -698,6 +715,8 @@ def main():
                 data,
                 quick=args.quick,
                 has_activity_index=has_activity_index,
+                shard_index=args.shard_index,
+                total_shards=args.total_shards,
             )
             save_cached_results(args.cop, per_repo)
 
