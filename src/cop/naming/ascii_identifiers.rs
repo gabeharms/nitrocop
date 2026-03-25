@@ -1,4 +1,4 @@
-use crate::cop::node_type::ALIAS_METHOD_NODE;
+use crate::cop::node_type::{ALIAS_METHOD_NODE, DEF_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::codemap::CodeMap;
@@ -53,6 +53,16 @@ use crate::parse::source::SourceFile;
 /// ending in `?` or `!`, not `tIDENTIFIER`. RuboCop only checks `tIDENTIFIER`
 /// and `tCONSTANT`, so these are never flagged. Fix: skip identifiers ending
 /// with `?` or `!` in the byte scanner.
+///
+/// ## Corpus investigation (2026-03-25) — FN=3
+///
+/// FN=3 from Pluvie/italian-ruby: `def non_è_un?`, `def è_un_commento?`,
+/// `def è_una_stringa?`. After `def`, Parser gem enters `expr_fname` state
+/// where the method name is tokenized as `tIDENTIFIER` (not `tFID`), even
+/// with `?`/`!` suffix. So RuboCop DOES flag method definitions but NOT
+/// method calls with `?`/`!` endings. Fix: added DefNode to check_node to
+/// inspect method definition names that end with `?`/`!`, which the byte
+/// scanner skips.
 pub struct AsciiIdentifiers;
 
 impl Cop for AsciiIdentifiers {
@@ -178,7 +188,7 @@ impl Cop for AsciiIdentifiers {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[ALIAS_METHOD_NODE]
+        &[ALIAS_METHOD_NODE, DEF_NODE]
     }
 
     fn check_node(
@@ -190,6 +200,46 @@ impl Cop for AsciiIdentifiers {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        // Handle `def method_with_non_ascii?` — after `def`, the Parser gem
+        // tokenizes the method name as tIDENTIFIER (not tFID), even with ?/!
+        // suffix. The byte scanner skips ?/! ending identifiers to avoid
+        // flagging method calls (which are tFID), so we handle method
+        // definitions here via check_node.
+        if let Some(def_node) = node.as_def_node() {
+            let name_bytes = def_node.name().as_slice();
+            // Only handle names ending with ? or ! — names without these
+            // suffixes are already caught by the byte scanner in check_source.
+            let ends_with_fid_suffix = name_bytes.last().is_some_and(|&b| b == b'?' || b == b'!');
+            if !ends_with_fid_suffix {
+                return;
+            }
+            if name_bytes.iter().all(|&b| b.is_ascii()) {
+                return;
+            }
+            let ascii_constants = config.get_bool("AsciiConstants", true);
+            let is_constant = name_bytes.first().is_some_and(|b| b.is_ascii_uppercase());
+            if is_constant && !ascii_constants {
+                return;
+            }
+            // Find offset of first non-ASCII char in the name location
+            let loc = def_node.name_loc();
+            let src_bytes = &source.content[loc.start_offset()..loc.end_offset()];
+            let first_non_ascii = src_bytes
+                .iter()
+                .enumerate()
+                .find(|&(_, &b)| !b.is_ascii() && (b & 0xC0) != 0x80)
+                .map(|(idx, _)| loc.start_offset() + idx)
+                .unwrap_or(loc.start_offset());
+            let (line, column) = source.offset_to_line_col(first_non_ascii);
+            let message = if is_constant {
+                "Use only ascii symbols in constants."
+            } else {
+                "Use only ascii symbols in identifiers."
+            };
+            diagnostics.push(self.diagnostic(source, line, column, message.to_string()));
+            return;
+        }
+
         // Handle `alias new_name old_name` — Prism represents the bare method
         // names as SymbolNodes, which the CodeMap marks as non-code. The
         // check_source scanner skips them, so we catch non-ASCII identifiers

@@ -29,7 +29,6 @@ alias :è_un? :is_a?
 è_una_stringa?
 non_è_nullo!
 
-# Method definitions with ? or ! suffix are also tFID
-def è_un_commento?
-  false
-end
+# Method definitions with ? or ! suffix: after `def`, Parser gem tokenizes
+# method name as tIDENTIFIER (not tFID), so RuboCop DOES flag these.
+# See offense.rb for the offense case.
