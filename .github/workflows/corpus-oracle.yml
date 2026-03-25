@@ -57,9 +57,9 @@ jobs:
           python3 << 'PYEOF'
           import json, os, sys, hashlib
 
-          # 75 repos/batch → ~73 batches. GHA runs ~20 concurrently, so 4 waves.
-          # Smaller batches (25) created 224 jobs / 11 waves of scheduling overhead.
-          BATCH_SIZE = 75
+          # 50 repos/batch → ~112 batches. GHA runs ~20 concurrently, so ~6 waves.
+          # Balances scheduling overhead vs per-batch duration on cold caches.
+          BATCH_SIZE = 50
 
           repos = []
           with open('bench/corpus/manifest.jsonl') as f:
@@ -241,6 +241,8 @@ jobs:
               echo "::endgroup::"
               continue
             fi
+
+            DEST="repos/${REPO_ID}"
 
             RUBOCOP_CACHED=false
             if [ -f "rubocop-cache/${REPO_ID}.json" ]; then
