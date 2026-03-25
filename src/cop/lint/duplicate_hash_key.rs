@@ -5,28 +5,15 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
-/// Returns true if a method name is a known arithmetic/comparison operator that
-/// preserves literal-ness (e.g. `1 + 2`). Excludes `[]` and other method calls.
+/// Returns true if a method name is a known comparison/multiplication operator that
+/// preserves literal-ness. Must match RuboCop's `LITERAL_RECURSIVE_METHODS`
+/// (`==`, `===`, `!=`, `<=`, `>=`, `>`, `<`, `*`, `<=>`) to avoid false positives.
+/// Notably excludes `+`, `-`, `/`, `%`, `**`, `<<`, `>>`, `&`, `|`, `^` which
+/// RuboCop does NOT treat as literal-preserving operators.
 fn is_literal_binary_operator(name: &[u8]) -> bool {
     matches!(
         name,
-        b"+" | b"-"
-            | b"*"
-            | b"/"
-            | b"%"
-            | b"**"
-            | b"=="
-            | b"!="
-            | b"<"
-            | b">"
-            | b"<="
-            | b">="
-            | b"<=>"
-            | b"<<"
-            | b">>"
-            | b"&"
-            | b"|"
-            | b"^"
+        b"==" | b"===" | b"!=" | b"<" | b">" | b"<=" | b">=" | b"<=>" | b"*"
     )
 }
 
@@ -172,6 +159,20 @@ fn is_literal(node: &ruby_prism::Node<'_>) -> bool {
 /// call matched since the receiver (ConstantPathNode) and argument (StringNode)
 /// were both literal. Fixed by restricting binary operator check to a known
 /// allowlist of arithmetic/comparison operators (dc856393).
+///
+/// ## Investigation (2026-03-25)
+///
+/// Found 5 FPs total:
+/// - 1 FP in chronic_duration: `(2 * 3600 + 20 * 60)` was treated as literal
+///   because `is_literal_binary_operator` included `+`, `-`, `/`, `%`, `**`,
+///   `<<`, `>>`, `&`, `|`, `^`. RuboCop's `LITERAL_RECURSIVE_METHODS` only
+///   includes `==`, `===`, `!=`, `<=`, `>=`, `>`, `<`, `*`, `<=>`.
+///   Fixed by aligning the operator allowlist.
+/// - 4 FPs in noosfero: genuine duplicate string keys in a 2000+ line hash in
+///   `html5lib_sanitize.rb`. RuboCop's Parser gem cannot parse this file
+///   (dynamic constant assignment error), so it reports 0 offenses. Prism
+///   parses it successfully, so nitrocop correctly detects duplicates. These
+///   are parser-difference artifacts, not cop logic bugs.
 pub struct DuplicateHashKey;
 
 impl Cop for DuplicateHashKey {
