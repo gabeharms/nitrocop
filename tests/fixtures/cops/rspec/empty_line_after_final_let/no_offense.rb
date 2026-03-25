@@ -106,6 +106,31 @@ end
 # Whitespace-only separator lines should count as blank.
 RSpec.describe WhitespaceSeparatorAfterLet do
   let(:admin) { create(:admin) }
-  
+
   before { admin }
+end
+
+# Form-feed character (\x0C) in separator line should count as blank.
+RSpec.describe FormFeedSeparator do
+  let(:spec) { ">=20190101010101" }
+  
+  it "returns all matches" do
+    expect(spec).to be_present
+  end
+end
+
+# let without a block is not a real let definition (RuboCop's let?
+# requires a block or block_pass argument).
+RSpec.describe LetWithoutBlock do
+  it "doesn't raise an error if it is just another let" do
+    proc do
+      describe :outer do
+        let(:bar)
+        describe :inner do
+          let(:bar)
+        end
+      end
+      :good
+    end.call.must_equal :good
+  end
 end

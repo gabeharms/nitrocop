@@ -30,6 +30,20 @@ use crate::parse::source::SourceFile;
 ///
 /// Fix: keep strict blank semantics globally, but for this separation cop use a
 /// whitespace-aware blank-line check when deciding whether a separator exists.
+///
+/// ## Corpus investigation (2026-03-25)
+///
+/// Corpus oracle reported FP=2, FN=0.
+///
+/// FP 1 (gocardless/nandi line 94): form-feed character (0x0C) in separator
+/// line after let. Already handled by `is_blank_or_whitespace_line` — verified
+/// FIXED in `verify_cop_locations.py`.
+///
+/// FP 2 (liaoziyang/stackneveroverflow line 637): `let(:bar)` without a block,
+/// inside a proc/describe chain in a test. RuboCop's `let?` matcher requires
+/// either a block `(block (send nil? ...))` or a block_pass argument
+/// `(send nil? ... _ block_pass)`. A bare `let(:name)` call is not a real let
+/// definition. Fix: require `c.block().is_some()` when identifying let calls.
 pub struct EmptyLineAfterFinalLet;
 
 impl Cop for EmptyLineAfterFinalLet {
@@ -111,12 +125,19 @@ impl<'a, 'pr> Visit<'pr> for FinalLetVisitor<'a> {
             }
         };
 
-        // Find the last let/let! in this block
+        // Find the last let/let! in this block.
+        // Match RuboCop's `let?` which requires either a block or block_pass:
+        //   (block (send nil? #Helpers.all ...) ...)
+        //   (send nil? #Helpers.all _ block_pass)
+        // A bare `let(:name)` without a block is NOT a real let definition.
         let nodes: Vec<_> = stmts.body().iter().collect();
         let mut last_let_idx = None;
         for (i, stmt) in nodes.iter().enumerate() {
             if let Some(c) = stmt.as_call_node() {
-                if c.receiver().is_none() && is_rspec_let(c.name().as_slice()) {
+                if c.receiver().is_none()
+                    && is_rspec_let(c.name().as_slice())
+                    && c.block().is_some()
+                {
                     last_let_idx = Some(i);
                 }
             }
