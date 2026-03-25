@@ -46,6 +46,28 @@ use ruby_prism::Visit;
 /// skipped. Fixed by switching from `check_node` to `check_source` with a visitor
 /// that tracks the end offset of flagged nodes, suppressing any nested semicolon
 /// `if`/`unless` within that range.
+///
+/// ## Corpus investigation (2026-03-25, round 4)
+///
+/// FP=5, FN=2.
+///
+/// FP=5: All in victords/minigl (3) and jjyg/metasm (2). These are multiline
+/// `if cond; body\nelse; body; end` patterns. Tested with RuboCop directly and
+/// confirmed RuboCop DOES flag these — so these are corpus artifacts (likely
+/// RuboCop parser crashes dropping those files from RuboCop's output). No code
+/// change needed for FPs.
+///
+/// FN=1 (real): floraison/fugit `cron.rb:875` — `else if at; zt = tt; else; at = tt; end`
+/// inside a `case/when/else` block. The `else` belongs to the `case`, not to an `if`.
+/// The old text-based `is_preceded_by_else` check incorrectly treated this as an
+/// `else if` pattern and skipped it. Fixed by replacing the text-based check with an
+/// AST-based approach: during visitation, each if/unless node registers its else-branch
+/// child if-node's start offset in `else_if_offsets`. Only if-nodes in that set are
+/// skipped, correctly distinguishing `case else if` from `if else if`.
+///
+/// FN=1 (not real): waagsociety/citysdk-ld `filters.rb:181` — `if cond\n  ;\nelse`.
+/// The `;` is on a separate line as the body, not between condition and body. Tested
+/// with RuboCop directly: RuboCop does NOT flag this. Corpus artifact.
 pub struct IfWithSemicolon;
 
 impl Cop for IfWithSemicolon {
@@ -67,6 +89,7 @@ impl Cop for IfWithSemicolon {
             source,
             diagnostics: Vec::new(),
             ignored_end_offset: 0,
+            else_if_offsets: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -81,16 +104,24 @@ struct IfWithSemicolonVisitor<'a> {
     /// Any node starting before this offset is inside a flagged node and should be skipped
     /// (replicates RuboCop's `ignore_node`/`part_of_ignored_node?` mechanism).
     ignored_end_offset: usize,
+    /// Start offsets of `if` nodes that are the sole body of another `if`/`unless` node's
+    /// else branch (`else if` pattern). These should be skipped per RuboCop's
+    /// `node.parent&.if_type?` check. We collect these during visitation of parent nodes.
+    else_if_offsets: Vec<usize>,
 }
 
 impl<'pr> Visit<'pr> for IfWithSemicolonVisitor<'_> {
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
+        // Before checking/visiting, register any `else if` child so it gets
+        // skipped (mirrors RuboCop's `node.parent&.if_type?`).
+        self.register_else_if_child_of_if(node);
         self.check_if_node(node);
         // Continue visiting child nodes
         ruby_prism::visit_if_node(self, node);
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
+        self.register_else_if_child_of_unless(node);
         self.check_unless_node(node);
         // Continue visiting child nodes
         ruby_prism::visit_unless_node(self, node);
@@ -98,6 +129,49 @@ impl<'pr> Visit<'pr> for IfWithSemicolonVisitor<'_> {
 }
 
 impl IfWithSemicolonVisitor<'_> {
+    /// If the if node has an else branch containing a single `if` node,
+    /// register that child if's start offset so it gets skipped.
+    /// This mirrors RuboCop's `node.parent&.if_type?` check.
+    fn register_else_if_child_of_if(&mut self, if_node: &ruby_prism::IfNode<'_>) {
+        // Walk through subsequent chain to find the final else clause
+        let mut subsequent = if_node.subsequent();
+        while let Some(sub) = subsequent {
+            if let Some(elsif_node) = sub.as_if_node() {
+                // This is an elsif — continue to its subsequent
+                subsequent = elsif_node.subsequent();
+            } else if let Some(else_node) = sub.as_else_node() {
+                // Found the else clause — check if its body is a single if node
+                if let Some(stmts) = else_node.statements() {
+                    let body = stmts.body();
+                    if body.len() == 1 {
+                        if let Some(inner_if) = body.iter().next().unwrap().as_if_node() {
+                            self.else_if_offsets
+                                .push(inner_if.location().start_offset());
+                        }
+                    }
+                }
+                break;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Same as above but for unless nodes (unless can have an else clause too).
+    fn register_else_if_child_of_unless(&mut self, unless_node: &ruby_prism::UnlessNode<'_>) {
+        if let Some(else_node) = unless_node.else_clause() {
+            if let Some(stmts) = else_node.statements() {
+                let body = stmts.body();
+                if body.len() == 1 {
+                    if let Some(inner_if) = body.iter().next().unwrap().as_if_node() {
+                        self.else_if_offsets
+                            .push(inner_if.location().start_offset());
+                    }
+                }
+            }
+        }
+    }
+
     fn check_if_node(&mut self, if_node: &ruby_prism::IfNode<'_>) {
         // Must have an `if` keyword (not ternary)
         let if_kw_loc = match if_node.if_keyword_loc() {
@@ -116,12 +190,13 @@ impl IfWithSemicolonVisitor<'_> {
         }
 
         // Skip `else if` patterns (RuboCop: node.parent&.if_type?)
-        if is_preceded_by_else(self.source, if_kw_loc.start_offset()) {
+        // The parent if/unless registered this node's offset in else_if_offsets.
+        let loc = if_node.location();
+        if self.else_if_offsets.contains(&loc.start_offset()) {
             return;
         }
 
         // Skip if inside a previously flagged node (RuboCop: part_of_ignored_node?)
-        let loc = if_node.location();
         if loc.start_offset() < self.ignored_end_offset {
             return;
         }
@@ -224,43 +299,6 @@ fn has_semicolon_between(source: &SourceFile, pred_end: usize, body_start: usize
     }
 }
 
-/// Check if the `if`/`unless` keyword at the given offset is preceded by `else`
-/// on the same source line (indicating an `else if` pattern).
-fn is_preceded_by_else(source: &SourceFile, if_kw_offset: usize) -> bool {
-    let content = &source.content;
-    if if_kw_offset == 0 {
-        return false;
-    }
-
-    let mut line_start = if_kw_offset;
-    while line_start > 0 && content[line_start - 1] != b'\n' {
-        line_start -= 1;
-    }
-
-    let before_kw = &content[line_start..if_kw_offset];
-    let trimmed = before_kw
-        .iter()
-        .rev()
-        .skip_while(|&&b| b == b' ' || b == b'\t')
-        .collect::<Vec<_>>();
-
-    if trimmed.len() >= 4 {
-        let last4: Vec<u8> = trimmed[..4].iter().rev().map(|&&b| b).collect();
-        if &last4 == b"else" {
-            if trimmed.len() == 4 {
-                return true;
-            }
-            let before_else = *trimmed[4];
-            return before_else == b' '
-                || before_else == b'\t'
-                || before_else == b';'
-                || before_else == b'\n';
-        }
-    }
-
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +348,39 @@ mod tests {
         let source = b"if a; foo end\nif b; bar end\n";
         let diags = crate::testutil::run_cop_full(&IfWithSemicolon, source);
         assert_eq!(diags.len(), 2, "Both sequential ifs should be flagged");
+    }
+
+    #[test]
+    fn case_else_if_with_semicolon_flagged() {
+        // `else if` inside a case statement should be flagged — the `else` belongs to
+        // the case, not to an if, so `node.parent&.if_type?` is false.
+        let source =
+            b"case tt\nwhen :slash then slt = tt\nelse if at; zt = tt; else; at = tt; end\nend\n";
+        let diags = crate::testutil::run_cop_full(&IfWithSemicolon, source);
+        assert_eq!(diags.len(), 1, "Should flag 'if at;' inside case else");
+    }
+
+    #[test]
+    fn else_if_inside_if_still_suppressed() {
+        // `else if` inside an if statement should still be suppressed
+        let source = b"if x > 0\n  foo\nelse if y > 0; bar else baz end\nend\n";
+        let diags = crate::testutil::run_cop_full(&IfWithSemicolon, source);
+        assert_eq!(
+            diags.len(),
+            0,
+            "else if inside if's else should be suppressed"
+        );
+    }
+
+    #[test]
+    fn multiline_if_semicolon_with_else_flagged() {
+        // Multiline if with semicolon on first line, else on next line
+        let source = b"if @flip.nil?; @flip = :horiz\nelse; @flip = nil; end\n";
+        let diags = crate::testutil::run_cop_full(&IfWithSemicolon, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Multiline if with semicolon should be flagged"
+        );
     }
 }

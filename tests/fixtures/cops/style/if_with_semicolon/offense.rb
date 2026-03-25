@@ -50,3 +50,12 @@ elsif other.kind_of?(Integer);
   elsif other>0; x = self
   end
 end
+
+# if with semicolon inside case else (not an if's else) — should be flagged
+# The `else` here belongs to `case`, not to an `if` node, so
+# `node.parent&.if_type?` is false in RuboCop.
+case tt
+when :slash then slt = tt
+else if at; zt = tt; else; at = tt; end
+     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/IfWithSemicolon: Do not use `if at;` - use a newline instead.
+end
