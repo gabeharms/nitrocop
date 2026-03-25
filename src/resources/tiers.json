@@ -238,6 +238,7 @@
     "Performance/RedundantBlockCall": "stable",
     "Performance/RedundantEqualityComparisonBlock": "stable",
     "Performance/RedundantMatch": "stable",
+    "Performance/RegexpMatch": "stable",
     "Performance/RedundantMerge": "stable",
     "Performance/RedundantSortBlock": "stable",
     "Performance/RedundantSplitRegexpArgument": "stable",

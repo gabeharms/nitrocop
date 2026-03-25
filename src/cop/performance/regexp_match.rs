@@ -808,6 +808,24 @@ mod tests {
     }
 
     #[test]
+    fn modifier_if_with_gsub_no_matchdata() {
+        use crate::testutil::run_cop_full;
+        // Corpus FN pattern: modifier-if with gsub body, no MatchData usage.
+        // `'from-\1'` is a gsub replacement backreference, NOT a MatchData ref.
+        let source = b"def http_url(prefix)\n  path = name_for_path\n  path = path.gsub(/<<\\s*(\\w*)/, 'from-\\1') if path =~ /<</\n  path\nend\n";
+        let diags = run_cop_full(&RegexpMatch, source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "Should flag =~ in modifier-if when MatchData is not used. Got: {:?}",
+            diags
+                .iter()
+                .map(|d| format!("{}:{} {}", d.location.line, d.location.column, d.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn skips_when_target_ruby_below_2_4() {
         use crate::cop::CopConfig;
         use crate::testutil::run_cop_full_with_config;
