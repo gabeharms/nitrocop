@@ -3,6 +3,18 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
+/// ## Corpus investigation (2026-03-25)
+///
+/// Corpus oracle reported FP=2, FN=33.
+///
+/// Root cause: the source length check used byte length (`[u8]::len()`) instead of
+/// Unicode character count. RuboCop uses `node.source.size.between?(2, 3)` which
+/// counts characters, not bytes. Multi-byte character literals like `?中` (4 bytes
+/// but 2 chars) were incorrectly skipped as meta/control characters because their
+/// byte length exceeded 3. Fixed by using `str::chars().count()` instead.
+///
+/// This fix should address most of the FN=33 (multi-byte Unicode character literals)
+/// and possibly FP=2 (if related to the same boundary mismatch).
 pub struct CharacterLiteral;
 
 impl Cop for CharacterLiteral {
@@ -42,10 +54,16 @@ impl Cop for CharacterLiteral {
             return;
         }
 
-        // The total source of the node: ?x is 2 bytes, ?\n is 3 bytes
-        // Allow meta and control characters like ?\C-\M-d (more than 3 bytes)
+        // The total source of the node: ?x is 2 chars, ?\n is 3 chars
+        // Allow meta and control characters like ?\C-\M-d (more than 3 chars)
+        // RuboCop checks `node.source.size.between?(2, 3)` which counts
+        // Unicode characters, not bytes. We must do the same for multi-byte
+        // character literals like ?中 (? + 3-byte char = 4 bytes but 2 chars).
         let node_source = string_node.location().as_slice();
-        if node_source.len() > 3 {
+        let char_count = std::str::from_utf8(node_source)
+            .map(|s| s.chars().count())
+            .unwrap_or(node_source.len());
+        if char_count > 3 {
             return;
         }
 
