@@ -44,24 +44,8 @@ runs:
         python3 scripts/workflows/resolve_backend.py "$BACKEND" \
           > "$RUNNER_TEMP/backend.env"
 
-        # Write each needed secret to its own file (preserves exact bytes
-        # including newlines — unlike repr() which corrupts multi-line values).
-        python3 - "$RUNNER_TEMP/backend.env" "$RUNNER_TEMP/agent-secrets" << 'PY'
-        import os, sys
-        from pathlib import Path
-        backend_env, secrets_dir = sys.argv[1], sys.argv[2]
-        Path(secrets_dir).mkdir(exist_ok=True)
-        for line in open(backend_env):
-            if line.startswith("secret_"):
-                key, _, target = line.strip().partition("=")
-                source_name = key[len("secret_"):]
-                value = os.environ.get(f"_SECRET_{source_name}", "")
-                if value:
-                    Path(secrets_dir, target).write_text(value)
-                    if target != source_name:
-                        Path(secrets_dir, source_name).write_text(value)
-        os.chmod(secrets_dir, 0o700)
-        PY
+        python3 scripts/workflows/resolve_agent_secrets.py \
+          "$RUNNER_TEMP/backend.env" "$RUNNER_TEMP/agent-secrets"
 
     # Step 2: long-running — only GH_TOKEN_FOR_ACTIONS_READ is in env.
     # Backend secrets are loaded from individual files and cleaned up
