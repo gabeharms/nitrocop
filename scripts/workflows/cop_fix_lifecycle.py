@@ -892,9 +892,6 @@ def _close_pr_rejected(
     run_url: str,
     scope_report: str,
 ) -> None:
-    _run_ok(["gh", "label", "create", "state:needs-human", "--repo", repo, "--color", "b60205"])
-    _run_ok(["gh", "pr", "edit", pr_url, "--repo", repo, "--add-label", "state:needs-human"])
-
     body = (
         f"## Agent Fix Rejected\n\n"
         f"The workflow rejected this attempt because it edited files outside "
@@ -908,10 +905,12 @@ def _close_pr_rejected(
 
     if issue_number:
         _run_ok(["gh", "issue", "comment", issue_number, "--repo", repo, "--body-file", str(claim_body)])
+        # Return to backlog so the cop can be retried — scope violations are
+        # transient (e.g., agent scratch files), not permanent blockers.
         _run_ok([
             "gh", "issue", "edit", issue_number, "--repo", repo,
-            "--remove-label", "state:pr-open,state:dispatched,state:backlog",
-            "--add-label", "state:blocked",
+            "--remove-label", "state:pr-open,state:dispatched,state:blocked",
+            "--add-label", "state:backlog",
         ])
 
     _run_ok([
