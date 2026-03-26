@@ -405,8 +405,6 @@ jobs:
             echo "- Reason: ${{ steps.repair.outputs.reason }}"
             echo "- Repair workflow: [#${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
             echo ""
-            echo "_If no follow-up comment appears, check the [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for cancellation or timeout._"
-            echo ""
             echo "<details>"
             echo "<summary>Task prompt (${{ steps.prompt.outputs.tokens }} tokens)</summary>"
             echo ""
