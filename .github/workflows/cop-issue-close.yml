@@ -30,10 +30,18 @@ jobs:
             echo "Found: cop=$COP issue=#$ISSUE"
           fi
 
+      - name: Generate app token
+        if: steps.extract.outputs.issue != ''
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
       - name: Close tracker issue
         if: steps.extract.outputs.issue != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           ISSUE="${{ steps.extract.outputs.issue }}"
           COP="${{ steps.extract.outputs.cop }}"
@@ -44,5 +52,5 @@ jobs:
           fi
           gh issue close "$ISSUE" \
             --repo "${{ github.repository }}" \
-            --comment "Closed by merge of #${{ github.event.pull_request.number }} (${COP})."
+            --comment "Closed by merge of #${{ github.event.pull_request.number }} (\`${COP}\`). If divergence remains, the corpus oracle will reopen this issue."
           echo "Closed issue #$ISSUE"
