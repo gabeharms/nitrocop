@@ -337,7 +337,6 @@ jobs:
           ANTHROPIC_MODEL: ${{ steps.backend.outputs.env_ANTHROPIC_MODEL }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           CARGO_INCREMENTAL: "1"
-          GH_TOKEN_FOR_ACTIONS_READ: ${{ steps.actions-read-token.outputs.token }}
 
       - name: Adapt action output
         if: steps.task.outputs.code_bugs != '0' && steps.backend.outputs.action == 'true'
