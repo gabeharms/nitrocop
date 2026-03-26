@@ -221,17 +221,42 @@ patterns (Layout, Style, Lint, Metrics, Naming). This means the `base_dir`
 change affects more than just cop-level Include patterns — it changes how
 AllCops.Exclude and cop-level Exclude patterns resolve too. Under investigation.
 
-Hypothesis: the old 98.5% was inflated because both tools were equally broken
-on pattern resolution. Many "matches" were from cops running on files they
-shouldn't have (both tools making the same mistake). The 94.1% is closer to
-real conformance, but the specific regression needs analysis.
+### Key finding: RuboCop ignores cop Exclude patterns regardless of base_dir
 
-### PR #229 is stale
+Tested on dotenv: RuboCop produces identical offenses (2267) with either
+config (baseline OR overlay). Its `base_dir_for_path_parameters` changes
+(`/workspace` → `/tmp/dotenv_test`), but cop-level Exclude patterns like
+`spec/**/*` on `Style/DocumentationMethod` have NO effect on RuboCop's output.
 
-Corpus oracle PR #229 was generated while the reverted target_dir fix was on
-main. Its code diff includes the reverted Rust changes and its corpus numbers
-reflect the regressed state. Should be closed; a new oracle run will produce
-correct results after the config fix.
+Meanwhile, nitrocop's offense count drops (2258 → 2244) with the overlay
+because its `is_cop_match()` now correctly applies Exclude patterns.
+
+This means:
+- OLD oracle (baseline config): Both tools broken on patterns → both run cops
+  on all files → offenses match → **inflated conformance**
+- NEW oracle (overlay config): Only nitrocop fixed → it correctly excludes
+  spec/test files → RuboCop still reports them → **asymmetric = FN increase**
+
+The "symmetric fix" hypothesis was wrong. RuboCop's cop-level Include/Exclude
+resolution works differently than nitrocop's — it doesn't use
+`base_dir_for_path_parameters` for cop Exclude patterns.
+
+### Resolution: reverted in-repo overlay config (2026-03-26)
+
+Reverted the `.rubocop_corpus.yml` overlay approach. The config change only
+fixed nitrocop's pattern resolution while RuboCop's was unaffected, creating
+an asymmetry that dropped conformance from 98.5% to 94.1%. The 98.5% was
+correct from the "does nitrocop match RuboCop" perspective — both tools ran
+all cops on all files, and results mostly agreed.
+
+The 47 Include-gated cops with no corpus data remain unfixed. A correct fix
+would need to either:
+- Make nitrocop match RuboCop's (lenient) cop Include/Exclude behavior
+- Fix both tools simultaneously (requires changes to RuboCop itself)
+- Accept per-cop FN for correctly-scoped cops and fix implementations
+
+Commits reverted: 3cc8bd0e, 9c7d3102, c19e6e8e.
+Commits kept: acdb591e (oracle rm -rf bug fix), d11399d4 (cleanup removal).
 
 ## Key Code Locations
 

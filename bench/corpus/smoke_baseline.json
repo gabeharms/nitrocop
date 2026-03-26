@@ -1,50 +1,78 @@
 {
   "bkeepers__dotenv__34156bf": {
-    "fn": 31,
+    "fn": 18,
     "fp": 9,
-    "matches": 1937,
-    "nc_files": 34,
-    "rate": 98.0,
+    "matches": 1950,
+    "nc_files": 35,
+    "rate": 98.6,
     "rc_files": 35
   },
   "doorkeeper__doorkeeper__b305358": {
-    "fn": 488,
+    "fn": 302,
     "fp": 14,
-    "matches": 13498,
-    "nc_files": 259,
-    "rate": 96.4,
+    "matches": 13684,
+    "nc_files": 260,
+    "overlay_divergence": {
+      "fn": 5674,
+      "fp": 53,
+      "fp_delta": 39,
+      "match_delta": 5372,
+      "matches": 8312
+    },
+    "rate": 97.7,
     "rc_files": 260
   },
   "multi_json__multi_json__c5fa9fc": {
-    "fn": 935,
+    "fn": 16,
     "fp": 1,
-    "matches": 5014,
-    "nc_files": 120,
-    "rate": 84.3,
+    "matches": 5933,
+    "nc_files": 121,
+    "overlay_divergence": {
+      "fn": 2412,
+      "fp": 11,
+      "fp_delta": 10,
+      "match_delta": 2396,
+      "matches": 3537
+    },
+    "rate": 99.7,
     "rc_files": 121
   },
   "rubocop__rubocop-rspec__51dab28": {
-    "fn": 496,
+    "fn": 473,
     "fp": 13,
-    "matches": 4145,
+    "matches": 4168,
     "nc_files": 288,
-    "rate": 89.1,
+    "overlay_divergence": {
+      "fn": 1888,
+      "fp": 10,
+      "fp_delta": -3,
+      "match_delta": 1415,
+      "matches": 2753
+    },
+    "rate": 89.6,
     "rc_files": 288
   },
   "ruby-formatter__rufo__a90e654": {
-    "fn": 721,
+    "fn": 528,
     "fp": 21,
-    "matches": 10182,
-    "nc_files": 156,
-    "rate": 93.2,
+    "matches": 10375,
+    "nc_files": 158,
+    "overlay_divergence": {
+      "fn": 6419,
+      "fp": 10,
+      "fp_delta": -11,
+      "match_delta": 5891,
+      "matches": 4484
+    },
+    "rate": 95.0,
     "rc_files": 158
   },
   "standardrb__standard__c886a57": {
-    "fn": 264,
+    "fn": 32,
     "fp": 3,
-    "matches": 2916,
-    "nc_files": 104,
-    "rate": 91.6,
+    "matches": 3148,
+    "nc_files": 107,
+    "rate": 98.9,
     "rc_files": 107
   }
 }

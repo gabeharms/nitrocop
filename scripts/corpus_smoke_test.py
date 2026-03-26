@@ -37,10 +37,7 @@ SMOKE_REPOS = [
         "id": "multi_json__multi_json__c5fa9fc",
         "repo_url": "https://github.com/sferik/multi_json",
         "sha": "c5fa9fce50aec2d98c438f5d5e751b6f6980805c",
-        # Lowered from 95.0% after fixing Include pattern resolution (both tools
-        # now correctly match cop Include patterns, revealing new FN from cops
-        # nitrocop doesn't yet implement fully).
-        "min_match_rate": 82.0,
+        "min_match_rate": 95.0,
         "min_nc_files": 118,
     },
     {
@@ -71,8 +68,7 @@ SMOKE_REPOS = [
         "id": "standardrb__standard__c886a57",
         "repo_url": "https://github.com/standardrb/standard",
         "sha": "c886a57812b1b15d596eac33712defe12443fbcf",
-        # Lowered from 95.0% — same reason as multi_json above.
-        "min_match_rate": 89.0,
+        "min_match_rate": 95.0,
         "min_nc_files": 104,
     },
     {
@@ -239,15 +235,8 @@ def run_rubocop(repo_dir: str) -> dict:
     env = os.environ.copy()
     env["BUNDLE_GEMFILE"] = os.path.join(ROOT, "bench", "corpus", "Gemfile")
     env["BUNDLE_PATH"] = os.path.join(ROOT, "bench", "corpus", "vendor", "bundle")
-    # Use the same overlay config as nitrocop so both tools resolve base_dir
-    # to the repo directory. Without this, RuboCop's base_dir = CWD and
-    # cop-level Include patterns like `db/**/*.rb` fail to match.
-    repo_id = os.path.basename(repo_dir)
-    sys.path.insert(0, os.path.join(ROOT, "bench", "corpus"))
-    from gen_repo_config import gen_repo_config
-    overlay = gen_repo_config(repo_id, BASELINE_CONFIG, repo_dir)
     result = subprocess.run(
-        ["bundle", "exec", "rubocop", "--config", overlay,
+        ["bundle", "exec", "rubocop", "--config", BASELINE_CONFIG,
          "--format", "json", "--force-exclusion", "--cache", "false", repo_dir],
         capture_output=True, text=True, env=env, timeout=300,
     )
@@ -290,12 +279,23 @@ def run_with_overlay_config(binary: str, repo_dir: str, repo_id: str) -> dict:
     env["BUNDLE_GEMFILE"] = os.path.join(ROOT, "bench", "corpus", "Gemfile")
     env["BUNDLE_PATH"] = os.path.join(ROOT, "bench", "corpus", "vendor", "bundle")
 
-    # gen_repo_config.py always writes a .rubocop_corpus.yml inside the repo dir.
-    # The `.rubocop`-prefixed name makes base_dir = repo_dir for both tools.
+    # Generate an overlay config with a dummy exclude (exercises the inherit_from path)
     overlay_config = subprocess.run(
         ["python3", GEN_REPO_CONFIG, repo_id, BASELINE_CONFIG, repo_dir],
         capture_output=True, text=True,
     ).stdout.strip()
+
+    # If gen_repo_config returned the baseline directly (no excludes for this repo),
+    # create a synthetic overlay to exercise the inherit_from + AllCops.Exclude path.
+    if overlay_config == BASELINE_CONFIG:
+        overlay_path = os.path.join(tempfile.gettempdir(), f"smoke_overlay_{repo_id}.yml")
+        abs_baseline = os.path.abspath(BASELINE_CONFIG)
+        with open(overlay_path, "w") as f:
+            f.write(f"inherit_from: {abs_baseline}\n\n")
+            f.write("AllCops:\n")
+            f.write("  Exclude:\n")
+            f.write('    - "nonexistent_smoke_exclude.rb"\n')
+        overlay_config = overlay_path
 
     result = subprocess.run(
         [binary, "--preview", "--format", "json", "--no-cache",
