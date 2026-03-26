@@ -110,9 +110,10 @@ def run_nitrocop(
         cmd += ["--only", cop]
     cmd.append(repo_dir)
 
-    # Run from outside any git tree to avoid .gitignore interference.
-    # Default to /tmp if no cwd provided — the command uses absolute paths
-    # so cwd only affects git/ignore behavior.
+    # CWD no longer affects Include/Exclude resolution because the overlay
+    # config is placed inside the repo with a `.rubocop*` name, making
+    # base_dir = repo_dir regardless of CWD. We still default to /tmp to
+    # avoid any git-related side effects from running inside a workspace.
     effective_cwd = cwd or "/tmp"
     try:
         result = subprocess.run(

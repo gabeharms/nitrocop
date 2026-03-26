@@ -131,10 +131,65 @@ different entirely.
   itself (cleaning up after). This would make `config_dir` resolve to the repo
   root, sidestepping the relativization issue entirely.
 
+## Investigation Session 2 (2026-03-26)
+
+### Key Discovery: RuboCop has the same bug (symmetric failure)
+
+The FP regression was NOT caused by migration cops having bad implementations.
+It was caused by an **asymmetric fix**: the target_dir change only fixed
+nitrocop, but the oracle's RuboCop invocation has the identical Include matching
+failure.
+
+In the corpus oracle workflow (`.github/workflows/corpus-oracle.yml:284-298`):
+```
+bundle exec rubocop --config "$REPO_CONFIG" ... "$ABS_DEST"
+```
+
+- `$REPO_CONFIG` is either `bench/corpus/baseline_rubocop.yml` or
+  `/tmp/nitrocop_corpus_configs/corpus_config_xxx.yml`
+- Neither starts with `.rubocop`, so RuboCop's `base_dir = Dir.pwd` = CI workspace
+- For `repos/REPO_ID/db/migrate/xxx.rb`, RuboCop relativizes to
+  `repos/REPO_ID/db/migrate/xxx.rb` (includes `repos/` prefix)
+- Include pattern `db/**/*.rb` does NOT match `repos/REPO_ID/db/migrate/xxx.rb`
+
+Both tools are symmetrically broken — 0 offenses for Include-gated cops. The
+target_dir fix broke this symmetry: nitrocop found thousands of offenses that
+RuboCop couldn't, all counted as FP.
+
+### CWD does not affect file discovery
+
+Confirmed that `WalkBuilder::new(dir)` in `src/fs.rs` walks from the target
+directory, not CWD. The `.gitignore` concern in `run_nitrocop.py`'s `/tmp` CWD
+is about config resolution (`base_dir`), not file discovery. Changing CWD to
+the repo dir would fix `base_dir` for nitrocop but NOT for RuboCop in the oracle
+(which has its own CWD).
+
+### Recommended fix: in-repo config with `.rubocop*` name
+
+Both tools have identical `base_dir` logic: if config filename starts with
+`.rubocop`, then `base_dir = dirname(config_path)`. By writing the overlay as
+`<repo_dir>/.rubocop_corpus.yml`:
+
+1. `base_dir = repo_dir` for **both** tools
+2. `strip_prefix(repo_dir)` succeeds for all repo files
+3. Include patterns match correctly in both tools
+4. No Rust code changes needed — fix is entirely in Python/CI layer
+5. FP/FN delta reflects real implementation gaps, not config artifacts
+
+### PR #229 is stale
+
+Corpus oracle PR #229 was generated while the reverted target_dir fix was on
+main. Its code diff includes the reverted Rust changes and its corpus numbers
+reflect the regressed state. Should be closed; a new oracle run will produce
+correct results after the config fix.
+
 ## Key Code Locations
 
 - `src/config/mod.rs:294-343` — `is_cop_match()` (Include/Exclude checking)
 - `src/config/mod.rs:924-997` — `load_config()` (base_dir/config_dir setup)
 - `src/config/mod.rs:534-553` — `build_glob_set()` with `literal_separator(true)`
+- `src/config/mod.rs:984-997` — `base_dir` resolution: `.rubocop*` → config dir, else CWD
 - `bench/corpus/run_nitrocop.py:87-121` — corpus runner (`cwd=/tmp`, `--config`)
 - `bench/corpus/gen_repo_config.py` — overlay config generation
+- `.github/workflows/corpus-oracle.yml:284-298` — oracle RuboCop invocation (same bug)
+- `src/fs.rs:44-50` — file discovery (CWD-independent, uses walk root)

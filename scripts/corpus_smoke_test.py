@@ -279,23 +279,12 @@ def run_with_overlay_config(binary: str, repo_dir: str, repo_id: str) -> dict:
     env["BUNDLE_GEMFILE"] = os.path.join(ROOT, "bench", "corpus", "Gemfile")
     env["BUNDLE_PATH"] = os.path.join(ROOT, "bench", "corpus", "vendor", "bundle")
 
-    # Generate an overlay config with a dummy exclude (exercises the inherit_from path)
+    # gen_repo_config.py always writes a .rubocop_corpus.yml inside the repo dir.
+    # The `.rubocop`-prefixed name makes base_dir = repo_dir for both tools.
     overlay_config = subprocess.run(
         ["python3", GEN_REPO_CONFIG, repo_id, BASELINE_CONFIG, repo_dir],
         capture_output=True, text=True,
     ).stdout.strip()
-
-    # If gen_repo_config returned the baseline directly (no excludes for this repo),
-    # create a synthetic overlay to exercise the inherit_from + AllCops.Exclude path.
-    if overlay_config == BASELINE_CONFIG:
-        overlay_path = os.path.join(tempfile.gettempdir(), f"smoke_overlay_{repo_id}.yml")
-        abs_baseline = os.path.abspath(BASELINE_CONFIG)
-        with open(overlay_path, "w") as f:
-            f.write(f"inherit_from: {abs_baseline}\n\n")
-            f.write("AllCops:\n")
-            f.write("  Exclude:\n")
-            f.write('    - "nonexistent_smoke_exclude.rb"\n')
-        overlay_config = overlay_path
 
     result = subprocess.run(
         [binary, "--preview", "--format", "json", "--no-cache",

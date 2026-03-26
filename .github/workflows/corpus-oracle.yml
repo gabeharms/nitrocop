@@ -260,10 +260,10 @@ jobs:
             # Resolve per-repo config (adds file exclusions for repos with known parser crashes)
             REPO_CONFIG=$(python3 bench/corpus/gen_repo_config.py "$REPO_ID" bench/corpus/baseline_rubocop.yml "$DEST")
 
-            # Both tools run from inside the repo so the `ignore` crate and
-            # RuboCop see the same .gitignore context. GIT_CEILING_DIRECTORIES
-            # prevents walking up to the parent workspace git tree.
-            # All config/output paths are absolute so they resolve from any cwd.
+            # The overlay config is a `.rubocop*`-named file inside the repo,
+            # so both tools resolve base_dir = repo_dir (not CWD). This makes
+            # cop-level Include/Exclude patterns like `db/**/*.rb` match correctly.
+            # GIT_CEILING_DIRECTORIES prevents walking up to parent git trees.
             WORKSPACE="$PWD"
             ABS_DEST="$(cd "$DEST" && pwd)"
 
