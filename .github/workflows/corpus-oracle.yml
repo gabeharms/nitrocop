@@ -266,19 +266,21 @@ jobs:
             # Resolve per-repo config (adds file exclusions for repos with known parser crashes)
             REPO_CONFIG=$(python3 bench/corpus/gen_repo_config.py "$REPO_ID" bench/corpus/baseline_rubocop.yml "$DEST")
 
-            # The overlay config is a `.rubocop*`-named file inside the repo,
-            # so both tools resolve base_dir = repo_dir (not CWD). This makes
-            # cop-level Include/Exclude patterns like `db/**/*.rb` match correctly.
+            # The overlay config lives under /tmp/ (not inside the repo), so
+            # RuboCop must run from inside the repo dir to resolve base_dir
+            # correctly.  See the `cd "$ABS_DEST"` in the rubocop invocation.
             # GIT_CEILING_DIRECTORIES prevents walking up to parent git trees.
             WORKSPACE="$PWD"
             ABS_DEST="$(cd "$DEST" && pwd)"
 
             # nitrocop — uses shared script for oracle-identical invocation
+            # Pass --cwd to run from inside the repo dir for correct base_dir resolution.
             echo "=== nitrocop: ${REPO_ID} ==="
             rc=0
             python3 bench/corpus/run_nitrocop.py "$ABS_DEST" \
               --binary "$WORKSPACE/bin/nitrocop" \
               --timeout "${REPO_TIMEOUT}" \
+              --cwd "$ABS_DEST" \
               --output "$WORKSPACE/results/nitrocop/${REPO_ID}.json" \
               2>"$WORKSPACE/results/nitrocop/${REPO_ID}.err" || rc=$?
 
@@ -287,10 +289,14 @@ jobs:
             fi
 
             # rubocop — skip if we have a cached result
+            # Run from inside the repo dir so RuboCop resolves base_dir to the
+            # repo root. This matters when --config points to an overlay outside
+            # the repo (e.g., /tmp/nitrocop_corpus_configs/). Without this,
+            # Include/Exclude globs and TargetRubyVersion can resolve incorrectly.
             if [ "$RUBOCOP_CACHED" = false ]; then
               echo "=== rubocop: ${REPO_ID} ==="
               rc=0
-              timeout "${REPO_TIMEOUT}" \
+              (cd "$ABS_DEST" && timeout "${REPO_TIMEOUT}" \
               env BUNDLE_GEMFILE=$WORKSPACE/bench/corpus/Gemfile \
                   BUNDLE_PATH=$WORKSPACE/bench/corpus/vendor/bundle \
                   GIT_CEILING_DIRECTORIES=$(dirname "$ABS_DEST") \
@@ -300,8 +306,8 @@ jobs:
                 --format json \
                 --force-exclusion \
                 --cache false \
-                "$ABS_DEST" \
-                > "$WORKSPACE/results/rubocop/${REPO_ID}.json" 2>"$WORKSPACE/results/rubocop/${REPO_ID}.err" || rc=$?
+                . \
+                > "$WORKSPACE/results/rubocop/${REPO_ID}.json" 2>"$WORKSPACE/results/rubocop/${REPO_ID}.err") || rc=$?
 
               if [ "$rc" -eq 124 ]; then
                 echo "::warning::rubocop timed out after ${REPO_TIMEOUT}s for ${REPO_ID}"

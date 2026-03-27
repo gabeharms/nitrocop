@@ -143,11 +143,13 @@ def main():
     parser.add_argument("--only", dest="cop", help="Filter to one cop (e.g., Style/NegatedWhile)")
     parser.add_argument("--binary", help="Path to nitrocop binary")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout in seconds (default: 120)")
+    parser.add_argument("--cwd", help="Working directory for nitrocop (default: /tmp)")
     parser.add_argument("--output", help="Write JSON to file instead of stdout")
     args = parser.parse_args()
 
     result = run_nitrocop(
         args.repo_dir, cop=args.cop, binary=args.binary, timeout=args.timeout,
+        cwd=args.cwd,
     )
 
     if args.output:
