@@ -21,6 +21,7 @@ AllCops:
   # Standard junk exclusions — same for both tools
   Exclude:
     - "vendor/**/*"
+    - "vendor*/**/*"
     - "node_modules/**/*"
     - "tmp/**/*"
     - "coverage/**/*"
