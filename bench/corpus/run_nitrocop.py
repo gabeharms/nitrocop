@@ -25,6 +25,7 @@ from pathlib import Path
 CORPUS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CORPUS_DIR.parent.parent
 BASELINE_CONFIG = CORPUS_DIR / "baseline_rubocop.yml"
+GEN_REPO_CONFIG = CORPUS_DIR / "gen_repo_config.py"
 
 
 def resolve_binary(binary: str | None = None) -> str:
@@ -41,6 +42,24 @@ def resolve_binary(binary: str | None = None) -> str:
             return str(candidate)
     return "nitrocop"
 
+
+def resolve_repo_config(repo_id: str, repo_dir: str) -> str:
+    """Get per-repo config via gen_repo_config.py.
+
+    Returns path to config file — either the baseline or a temporary
+    overlay with per-repo file exclusions for repos with known issues.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, str(GEN_REPO_CONFIG), repo_id,
+             str(BASELINE_CONFIG), repo_dir],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return str(BASELINE_CONFIG)
 
 
 def build_env(repo_dir: str | None = None) -> dict[str, str]:
@@ -82,7 +101,8 @@ def run_nitrocop(
     # symlink outside the git tree to match the oracle's file-discovery context.
     repo_path = Path(repo_dir).absolute()
     repo_dir = str(repo_path)
-    config = str(BASELINE_CONFIG)
+    repo_id = repo_path.name
+    config = resolve_repo_config(repo_id, repo_dir)
     env = build_env(repo_dir)
 
     cmd = [binary, "--preview", "--format", "json", "--no-cache", "--config", config]
@@ -123,13 +143,11 @@ def main():
     parser.add_argument("--only", dest="cop", help="Filter to one cop (e.g., Style/NegatedWhile)")
     parser.add_argument("--binary", help="Path to nitrocop binary")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout in seconds (default: 120)")
-    parser.add_argument("--cwd", help="Working directory for nitrocop (default: /tmp)")
     parser.add_argument("--output", help="Write JSON to file instead of stdout")
     args = parser.parse_args()
 
     result = run_nitrocop(
         args.repo_dir, cop=args.cop, binary=args.binary, timeout=args.timeout,
-        cwd=args.cwd,
     )
 
     if args.output:
