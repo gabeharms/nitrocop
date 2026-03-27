@@ -72,7 +72,10 @@ Show a table of actions taken:
 ## Rules
 
 - Only review PRs with the `agent-fix` label
+- Skip draft PRs entirely
+- Skip PRs with failing or pending CI checks — only review PRs where all checks have passed
 - PRs with `validation-failed` label: close with comment explaining why
 - PRs with merge conflicts: close with comment, agent can retry on fresh main
+- Do not merge PRs — only approve, fix+approve, or close
 - When fixing, commit with a clear message explaining what was changed
 - When closing, always leave a comment with the specific reason so the dispatch system can learn
