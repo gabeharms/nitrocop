@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -370,12 +369,34 @@ fn systemtime_to_parts(time: Option<SystemTime>) -> (u64, u32) {
     }
 }
 
+#[inline]
+fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
+    const PRIME: u64 = 1099511628211;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
 /// Compute a stable hash of just the file path (used as cache key).
 fn compute_path_hash(path: &Path) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    "nitrocop-path-v3:".hash(&mut hasher);
-    path.to_string_lossy().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut hash = 14695981039346656037u64; // FNV-1a offset basis
+    hash = fnv1a64_extend(hash, b"nitrocop-path-v4:");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        hash = fnv1a64_extend(hash, path.as_os_str().as_bytes());
+    }
+
+    #[cfg(not(unix))]
+    {
+        let path_string = path.to_string_lossy();
+        hash = fnv1a64_extend(hash, path_string.as_bytes());
+    }
+
+    format!("{hash:016x}")
 }
 
 /// Compute SHA-256 of file content.
