@@ -102,11 +102,16 @@ Implemented autocorrect in this session:
 - `Lint/PercentSymbolArray`
 - `Style/RedundantDoubleSplatHashBraces`
 - `Style/RedundantEach`
+- `Style/UnpackFirst`
+- `Style/LambdaCall`
+- `Style/RedundantArrayFlatten`
+- `Style/MapToSet`
+- `Style/InPatternThen`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **329** (down from 372, -43)
-- `nitrocop_autocorrectable_cops`: **130** (up from 87, +43)
-- Missing by department now: Style (199), Lint (69), Layout (56), Naming (3), Security (1), Migration (1)
+- `missing_core_autocorrect_cops`: **324** (down from 372, -48)
+- `nitrocop_autocorrectable_cops`: **135** (up from 87, +48)
+- Missing by department now: Style (194), Lint (69), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`

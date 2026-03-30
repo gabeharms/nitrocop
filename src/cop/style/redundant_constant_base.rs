@@ -11,6 +11,10 @@ impl Cop for RedundantConstantBase {
         "Style/RedundantConstantBase"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -18,16 +22,21 @@ impl Cop for RedundantConstantBase {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = RedundantConstantBaseVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            emit_corrections: corrections.is_some(),
             in_class_or_module: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -35,6 +44,8 @@ struct RedundantConstantBaseVisitor<'a> {
     cop: &'a RedundantConstantBase,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
     in_class_or_module: bool,
 }
 
@@ -45,12 +56,28 @@ impl<'pr> Visit<'pr> for RedundantConstantBaseVisitor<'_> {
             // This is a ::Foo reference at top level - redundant ::
             let loc = node.location();
             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-            self.diagnostics.push(self.cop.diagnostic(
+            let mut diag = self.cop.diagnostic(
                 self.source,
                 line,
                 column,
                 "Remove redundant `::`.".to_string(),
-            ));
+            );
+
+            if self.emit_corrections {
+                let src = loc.as_slice();
+                if src.starts_with(b"::") {
+                    self.corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.start_offset() + 2,
+                        replacement: "".to_string(),
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+            }
+
+            self.diagnostics.push(diag);
         }
 
         // Visit children
@@ -90,4 +117,8 @@ impl<'pr> Visit<'pr> for RedundantConstantBaseVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantConstantBase, "cops/style/redundant_constant_base");
+    crate::cop_autocorrect_fixture_tests!(
+        RedundantConstantBase,
+        "cops/style/redundant_constant_base"
+    );
 }

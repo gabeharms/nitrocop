@@ -1,5 +1,5 @@
-- Explore `Style/MapToSet` and `Style/UnpackFirst` as next low-branching canonicalization cops.
-- Evaluate `Lint/AmbiguousRegexpLiteral` for a conservative autocorrect path only when correction boundaries are provably unambiguous.
-- Consider `Style/CommandLiteral` and `Style/RedundantArrayFlatten` if replacements can stay full-node and syntax-safe.
+- Consider `Style/CommandLiteral` as a next literal-form canonicalization target if delimiter rewrites can be constrained to syntax-safe cases.
+- Evaluate `Style/RedundantConstantBase` / `Style/RedundantRegexpConstructor` for selector/range-based replacements with minimal AST risk.
+- Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
 - Keep Layout backlog in staged batches (spacing cops first, then alignment/indentation) after easy Style/Lint wins taper off.
 - Optional throughput refactor if implementation churn grows: tiny helper for selector/operator/full-call replacements to reduce duplicate correction code.
