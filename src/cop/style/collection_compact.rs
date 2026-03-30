@@ -52,6 +52,10 @@ impl Cop for CollectionCompact {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -59,7 +63,7 @@ impl Cop for CollectionCompact {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allowed_receivers = config
             .get_string_array("AllowedReceivers")
@@ -73,7 +77,14 @@ impl Cop for CollectionCompact {
 
         match method_name {
             "reject" | "reject!" => {
-                self.check_reject(source, &call, method_name, &allowed_receivers, diagnostics);
+                self.check_reject(
+                    source,
+                    &call,
+                    method_name,
+                    &allowed_receivers,
+                    diagnostics,
+                    &mut corrections,
+                );
             }
             "select" | "select!" | "filter" | "filter!" => {
                 self.check_select_filter(
@@ -82,6 +93,7 @@ impl Cop for CollectionCompact {
                     method_name,
                     &allowed_receivers,
                     diagnostics,
+                    &mut corrections,
                 );
             }
             _ => {}
@@ -90,6 +102,43 @@ impl Cop for CollectionCompact {
 }
 
 impl CollectionCompact {
+    fn add_offense(
+        &self,
+        source: &SourceFile,
+        call: &ruby_prism::CallNode<'_>,
+        message: String,
+        replacement: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
+    ) {
+        let loc = call.message_loc().unwrap_or(call.location());
+        let (line, column) = source.offset_to_line_col(loc.start_offset());
+        let mut diag = self.diagnostic(source, line, column, message);
+
+        if let Some(corr) = corrections.as_mut() {
+            let end = call
+                .block()
+                .map(|block| {
+                    if block.as_block_node().is_some() {
+                        block.location().end_offset()
+                    } else {
+                        call.location().end_offset()
+                    }
+                })
+                .unwrap_or_else(|| call.location().end_offset());
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end,
+                replacement: replacement.to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
+    }
+
     /// Check reject { |e| e.nil? } and reject(&:nil?) patterns
     fn check_reject(
         &self,
@@ -98,6 +147,7 @@ impl CollectionCompact {
         method_name: &str,
         allowed_receivers: &[String],
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if call.receiver().is_none() {
             return;
@@ -116,14 +166,14 @@ impl CollectionCompact {
                     if let Some(sym) = expr.as_symbol_node() {
                         let sym_name = std::str::from_utf8(sym.unescaped()).unwrap_or("");
                         if sym_name == "nil?" {
-                            let loc = call.message_loc().unwrap_or(call.location());
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(self.diagnostic(
+                            self.add_offense(
                                 source,
-                                line,
-                                column,
+                                call,
                                 format!("Use `compact{bang}` instead of `{method_name}(&:nil?)`."),
-                            ));
+                                &format!("compact{bang}"),
+                                diagnostics,
+                                corrections,
+                            );
                         }
                     }
                 }
@@ -141,17 +191,16 @@ impl CollectionCompact {
                             if stmts_list.len() == 1 {
                                 if let Some(inner_call) = stmts_list[0].as_call_node() {
                                     if self.is_nil_check_on_var(&inner_call, &last_param_name) {
-                                        let loc = call.message_loc().unwrap_or(call.location());
-                                        let (line, column) =
-                                            source.offset_to_line_col(loc.start_offset());
-                                        diagnostics.push(self.diagnostic(
+                                        self.add_offense(
                                             source,
-                                            line,
-                                            column,
+                                            call,
                                             format!(
                                                 "Use `compact{bang}` instead of `{method_name} {{ |e| e.nil? }}`."
                                             ),
-                                        ));
+                                            &format!("compact{bang}"),
+                                            diagnostics,
+                                            corrections,
+                                        );
                                     }
                                 }
                             }
@@ -170,6 +219,7 @@ impl CollectionCompact {
         method_name: &str,
         allowed_receivers: &[String],
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if call.receiver().is_none() {
             return;
@@ -204,19 +254,16 @@ impl CollectionCompact {
                                                     &nil_call,
                                                     &last_param_name,
                                                 ) {
-                                                    let loc = call
-                                                        .message_loc()
-                                                        .unwrap_or(call.location());
-                                                    let (line, column) = source
-                                                        .offset_to_line_col(loc.start_offset());
-                                                    diagnostics.push(self.diagnostic(
+                                                    self.add_offense(
                                                         source,
-                                                        line,
-                                                        column,
+                                                        call,
                                                         format!(
                                                             "Use `compact{bang}` instead of `{method_name} {{ |e| !e.nil? }}`."
                                                         ),
-                                                    ));
+                                                        &format!("compact{bang}"),
+                                                        diagnostics,
+                                                        corrections,
+                                                    );
                                                 }
                                             }
                                         }
@@ -320,6 +367,7 @@ impl CollectionCompact {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(CollectionCompact, "cops/style/collection_compact");
+    crate::cop_autocorrect_fixture_tests!(CollectionCompact, "cops/style/collection_compact");
 
     #[test]
     fn allowed_receivers_traverses_method_chains() {

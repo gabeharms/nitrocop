@@ -120,11 +120,16 @@ Implemented autocorrect in this session:
 - `Lint/RescueType`
 - `Style/PerlBackrefs`
 - `Style/CaseEquality`
+- `Style/CollectionMethods`
+- `Style/RedundantStringEscape`
+- `Style/RedundantRegexpEscape`
+- `Style/ArrayIntersect`
+- `Style/CollectionQuerying`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **311** (down from 372, -61)
-- `nitrocop_autocorrectable_cops`: **148** (up from 87, +61)
-- Missing by department now: Style (183), Lint (67), Layout (56), Naming (3), Security (1), Migration (1)
+- `missing_core_autocorrect_cops`: **306** (down from 372, -66)
+- `nitrocop_autocorrectable_cops`: **153** (up from 87, +66)
+- Missing by department now: Style (178), Lint (67), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`
