@@ -55,5 +55,26 @@ It prints `METRIC ...` lines for autoresearch parsing.
 
 ## What's Been Tried
 - Baseline analysis complete: identified 372 implemented-but-not-autocorrectable cops where RuboCop core autocorrects.
-- Gap is concentrated in Style (230), Lint (79), and Layout (56).
-- Initial low-risk strategy: start with simple keyword/token replacement cops with explicit RuboCop autocorrect behavior (e.g. single-range replace/remove).
+- Gap concentration at baseline: Style (230), Lint (79), Layout (56), Naming (3), Security (3), Migration (1).
+- Low-risk strategy validated: prioritize cops with one-range rewrites (keyword swaps, selector removals, whole-node rewrites).
+
+Implemented autocorrect in this session:
+- `Style/EndBlock` — `END` keyword rewrite to `at_exit`
+- `Lint/BigDecimalNew` — remove `.new` (and remove leading `::` for cbase form)
+- `Style/StderrPuts` — replace receiver+selector with `warn`
+- `Style/RedundantCurrentDirectoryInPath` — remove leading `./+` in `require_relative` string
+- `Style/ArrayJoin` — rewrite `array * string` to `array.join(string)`
+- `Style/ArrayCoercion` — rewrite `[*expr]` to `Array(expr)`
+- `Style/EnvHome` — replace call-node forms with `Dir.home` (index-or-write form intentionally left uncorrected)
+
+Current progress snapshot:
+- `missing_core_autocorrect_cops`: **365** (down from 372, -7)
+- `nitrocop_autocorrectable_cops`: **94** (up from 87, +7)
+- Missing by department now: Style (224), Lint (78), Layout (56), Naming (3), Security (3), Migration (1)
+
+Repeatable successful pattern:
+1. Add `supports_autocorrect()`
+2. Emit exactly one deterministic correction per offense (or clear multi-edit pair when needed)
+3. Add `corrected.rb`
+4. Add `cop_autocorrect_fixture_tests!`
+5. Run targeted `cargo test --lib -- cop::<dept>::<cop>`

@@ -32,6 +32,10 @@ impl Cop for IdentityComparison {
         &[CALL_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -39,7 +43,7 @@ impl Cop for IdentityComparison {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -101,7 +105,7 @@ impl Cop for IdentityComparison {
 
         let loc = call.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
@@ -109,7 +113,31 @@ impl Cop for IdentityComparison {
                 "Use `{}equal?` instead of `{}` when comparing `object_id`.",
                 bang, comparison
             ),
-        ));
+        );
+
+        if let Some(ref mut corr) = corrections {
+            let lhs_recv = lhs_call.receiver().unwrap();
+            let rhs_recv = rhs_call.receiver().unwrap();
+            let lhs_src = std::str::from_utf8(lhs_recv.location().as_slice()).unwrap_or("");
+            let rhs_src = std::str::from_utf8(rhs_recv.location().as_slice()).unwrap_or("");
+            if !lhs_src.is_empty() && !rhs_src.is_empty() {
+                let replacement = if is_eq {
+                    format!("{lhs_src}.equal?({rhs_src})")
+                } else {
+                    format!("!{lhs_src}.equal?({rhs_src})")
+                };
+                corr.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -117,4 +145,5 @@ impl Cop for IdentityComparison {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(IdentityComparison, "cops/lint/identity_comparison");
+    crate::cop_autocorrect_fixture_tests!(IdentityComparison, "cops/lint/identity_comparison");
 }
