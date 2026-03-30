@@ -27,6 +27,10 @@ impl Cop for PerlBackrefs {
         "Style/PerlBackrefs"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -34,16 +38,21 @@ impl Cop for PerlBackrefs {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = PerlBackrefsVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            emit_corrections: corrections.is_some(),
             namespace_depth: 0,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -51,19 +60,35 @@ struct PerlBackrefsVisitor<'a> {
     cop: &'a PerlBackrefs,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
     namespace_depth: usize,
 }
 
 impl PerlBackrefsVisitor<'_> {
     fn add_offense(&mut self, loc: ruby_prism::Location<'_>, replacement: &str, var_display: &str) {
         let prefix = if self.namespace_depth > 0 { "::" } else { "" };
+        let preferred = format!("{prefix}{replacement}");
         let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diag = self.cop.diagnostic(
             self.source,
             line,
             column,
-            format!("Prefer `{prefix}{replacement}` over `{var_display}`."),
-        ));
+            format!("Prefer `{preferred}` over `{var_display}`."),
+        );
+
+        if self.emit_corrections {
+            self.corrections.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: preferred,
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        self.diagnostics.push(diag);
     }
 }
 
@@ -119,4 +144,5 @@ impl<'pr> Visit<'pr> for PerlBackrefsVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(PerlBackrefs, "cops/style/perl_backrefs");
+    crate::cop_autocorrect_fixture_tests!(PerlBackrefs, "cops/style/perl_backrefs");
 }
