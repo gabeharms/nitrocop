@@ -97,11 +97,13 @@ Implemented autocorrect in this session:
 - `Style/RedundantPercentQ`
 - `Style/QuotedSymbols`
 - `Lint/UriRegexp`
+- `Style/ConcatArrayLiterals`
+- `Style/MinMax`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **334** (down from 372, -38)
-- `nitrocop_autocorrectable_cops`: **125** (up from 87, +38)
-- Missing by department now: Style (203), Lint (70), Layout (56), Naming (3), Security (1), Migration (1)
+- `missing_core_autocorrect_cops`: **332** (down from 372, -40)
+- `nitrocop_autocorrectable_cops`: **127** (up from 87, +40)
+- Missing by department now: Style (201), Lint (70), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`

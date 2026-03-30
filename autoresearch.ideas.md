@@ -1,5 +1,5 @@
-- Implement `Lint/BooleanSymbol` autocorrect (`:true`/`:false` -> boolean literals, plus keyword-hash `true:`/`false:` -> `:true =>`/`:false =>`) to match RuboCop safety semantics.
-- Add `Style/QuotedSymbols` autocorrect by swapping quote delimiters when no interpolation/escape hazards exist, honoring `EnforcedStyle` and hash-key symbol forms.
-- Add `Style/RedundantPercentQ` autocorrect by rewriting `%q/%Q` delimiters to `'`/`"` with strict guards (no unsafe interpolation activation, no required escape semantics).
+- Implement `Lint/PercentSymbolArray` autocorrect by stripping leading `:` and trailing `,` from each `%i/%I` element range (RuboCop-style element-local removals).
+- Evaluate `Lint/AmbiguousRegexpLiteral` for a conservative autocorrect path (only when we can safely parenthesize the call arguments without changing operator intent).
+- Explore `Style/RedundantDoubleSplatHashBraces` and `Style/MapToSet` as next low-branching canonicalization cops.
 - Keep Layout backlog in staged batches (spacing cops first, then alignment/indentation) after easy Style/Lint wins taper off.
 - Optional throughput refactor if implementation churn grows: tiny helper for selector/operator/full-call replacements to reduce duplicate correction code.
