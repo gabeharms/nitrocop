@@ -145,6 +145,10 @@ impl Cop for NegativeArrayIndex {
         &[CALL_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -152,7 +156,7 @@ impl Cop for NegativeArrayIndex {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -188,7 +192,15 @@ impl Cop for NegativeArrayIndex {
                     let inner_list: Vec<_> = stmts.body().iter().collect();
                     if inner_list.len() == 1 {
                         if let Some(range) = inner_list[0].as_range_node() {
-                            self.check_range_pattern(source, &receiver, range, true, diagnostics);
+                            self.check_range_pattern(
+                                source,
+                                &receiver,
+                                arg,
+                                range,
+                                true,
+                                diagnostics,
+                                &mut corrections,
+                            );
                             return;
                         }
                     }
@@ -198,12 +210,20 @@ impl Cop for NegativeArrayIndex {
 
         // Check if arg is a bare range (without parens)
         if let Some(range) = arg.as_range_node() {
-            self.check_range_pattern(source, &receiver, range, false, diagnostics);
+            self.check_range_pattern(
+                source,
+                &receiver,
+                arg,
+                range,
+                false,
+                diagnostics,
+                &mut corrections,
+            );
             return;
         }
 
         // Simple index pattern: arr[arr.length - N]
-        self.check_simple_pattern(source, &receiver, arg, diagnostics);
+        self.check_simple_pattern(source, &receiver, arg, diagnostics, &mut corrections);
     }
 }
 
@@ -214,6 +234,7 @@ impl NegativeArrayIndex {
         array_receiver: &ruby_prism::Node<'_>,
         arg: &ruby_prism::Node<'_>,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let info = match extract_length_subtraction(arg) {
             Some(v) => v,
@@ -253,21 +274,36 @@ impl NegativeArrayIndex {
         let full_src = format!("{arr_src}[{arg_src}]");
         let loc = arg.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Use `{arr_src}[-{n_src}]` instead of `{full_src}`."),
-        ));
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: format!("-{n_src}"),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 
     fn check_range_pattern(
         &self,
         source: &SourceFile,
         array_receiver: &ruby_prism::Node<'_>,
+        arg: &ruby_prism::Node<'_>,
         range: ruby_prism::RangeNode<'_>,
         has_outer_parens: bool,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let range_start = match range.left() {
             Some(s) => s,
@@ -345,12 +381,31 @@ impl NegativeArrayIndex {
 
         let loc = range_end.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Use `{replacement_str}` instead of `{current_str}`."),
-        ));
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            let arg_loc = arg.location();
+            let replacement = if has_outer_parens {
+                format!("({start_src}{range_op}-{n_src})")
+            } else {
+                format!("{start_src}{range_op}-{n_src}")
+            };
+            corr.push(crate::correction::Correction {
+                start: arg_loc.start_offset(),
+                end: arg_loc.end_offset(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -358,4 +413,5 @@ impl NegativeArrayIndex {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(NegativeArrayIndex, "cops/style/negative_array_index");
+    crate::cop_autocorrect_fixture_tests!(NegativeArrayIndex, "cops/style/negative_array_index");
 }
