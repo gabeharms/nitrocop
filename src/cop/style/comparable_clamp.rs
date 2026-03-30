@@ -10,6 +10,10 @@ impl Cop for ComparableClamp {
         "Style/ComparableClamp"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE, ELSE_NODE, IF_NODE]
     }
@@ -21,7 +25,7 @@ impl Cop for ComparableClamp {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Pattern: if x < low then low elsif x > high then high else x end
         // (or with > / reversed operand positions)
@@ -103,11 +107,8 @@ impl Cop for ComparableClamp {
             None => return,
         };
 
-        // Match one of the 8 patterns from RuboCop:
-        // The else body must be the clamped variable x.
-        // The if body must be one bound, the elsif body the other.
-        // Each condition must compare x with the respective bound.
-        let is_clamp = is_clamp_pattern(
+        // Match one of the 8 patterns from RuboCop and extract clamp parts.
+        if let Some((x, min, max)) = clamp_parts(
             &f_left,
             f_op,
             &f_right,
@@ -117,17 +118,26 @@ impl Cop for ComparableClamp {
             &s_right,
             &elsif_body_src,
             &else_body_src,
-        );
-
-        if is_clamp {
+        ) {
             let loc = if_node.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Use `clamp` instead of `if/elsif/else`.".to_string(),
-            ));
+            );
+            if let Some(corr) = corrections.as_mut() {
+                corr.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement: format!("{}.clamp({}, {})", x, min, max),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
         }
     }
 }
@@ -170,73 +180,71 @@ fn get_comparison(node: &ruby_prism::Node<'_>) -> Option<(String, u8, String)> {
     Some((left, op, right))
 }
 
-/// Check if the if/elsif/else matches any of the 8 clamp patterns:
-/// Pattern: if (x < min) then min elsif (x > max) then max else x end
-/// (or with reversed operands / operators)
-#[allow(clippy::too_many_arguments)] // pattern-matching all branch components
-fn is_clamp_pattern(
-    f_left: &str,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClampKind {
+    Min,
+    Max,
+}
+
+fn extract_condition_part<'a>(
+    left: &'a str,
+    op: u8,
+    right: &'a str,
+    body: &'a str,
+) -> Option<(&'a str, ClampKind, &'a str)> {
+    if body == left {
+        let x = right;
+        let kind = if op == b'>' {
+            ClampKind::Min
+        } else {
+            ClampKind::Max
+        };
+        return Some((x, kind, body));
+    }
+    if body == right {
+        let x = left;
+        let kind = if op == b'<' {
+            ClampKind::Min
+        } else {
+            ClampKind::Max
+        };
+        return Some((x, kind, body));
+    }
+    None
+}
+
+/// Extract `(x, min, max)` if this if/elsif/else is a clamp pattern.
+#[allow(clippy::too_many_arguments)]
+fn clamp_parts<'a>(
+    f_left: &'a str,
     f_op: u8,
-    f_right: &str,
-    if_body: &str,
-    s_left: &str,
+    f_right: &'a str,
+    if_body: &'a str,
+    s_left: &'a str,
     s_op: u8,
-    s_right: &str,
-    elsif_body: &str,
-    else_body: &str,
-) -> bool {
-    // Determine x and bound from first condition
-    // Pattern 1: x < min → body is min, so x is the other operand
-    // Pattern 2: min > x → body is min, so x is the other operand
-    let (x_from_first, bound1) = if f_op == b'<' && f_right == if_body {
-        // x < min → body is min → x = f_left, bound = f_right
-        (f_left, f_right)
-    } else if f_op == b'>' && f_left == if_body {
-        // min > x → body is min → x = f_right, bound = f_left
-        (f_right, f_left)
-    } else if f_op == b'>' && f_right == if_body {
-        // x > max → body is max → (this is the max-first variant)
-        (f_left, f_right)
-    } else if f_op == b'<' && f_left == if_body {
-        // max < x → body is max → x = f_right, bound = f_left
-        (f_right, f_left)
+    s_right: &'a str,
+    elsif_body: &'a str,
+    else_body: &'a str,
+) -> Option<(&'a str, &'a str, &'a str)> {
+    let (x1, kind1, bound1) = extract_condition_part(f_left, f_op, f_right, if_body)?;
+    let (x2, kind2, bound2) = extract_condition_part(s_left, s_op, s_right, elsif_body)?;
+
+    if x1 != x2 || else_body != x1 || kind1 == kind2 || bound1 == bound2 {
+        return None;
+    }
+
+    let (min, max) = if kind1 == ClampKind::Min {
+        (bound1, bound2)
     } else {
-        return false;
+        (bound2, bound1)
     };
 
-    // The else body must be x
-    if else_body != x_from_first {
-        return false;
-    }
-
-    // Check second condition: x compared with bound2, and elsif body is bound2
-    let (x_from_second, bound2) = if s_op == b'<' && s_right == elsif_body {
-        (s_left, s_right)
-    } else if s_op == b'>' && s_left == elsif_body {
-        (s_right, s_left)
-    } else if s_op == b'>' && s_right == elsif_body {
-        (s_left, s_right)
-    } else if s_op == b'<' && s_left == elsif_body {
-        (s_right, s_left)
-    } else {
-        return false;
-    };
-
-    // x must be the same in both conditions
-    if x_from_first != x_from_second {
-        return false;
-    }
-
-    // bound1 and bound2 must be different
-    if bound1 == bound2 {
-        return false;
-    }
-
-    true
+    Some((x1, min, max))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ComparableClamp, "cops/style/comparable_clamp");
+    crate::cop_autocorrect_fixture_tests!(ComparableClamp, "cops/style/comparable_clamp");
 }
