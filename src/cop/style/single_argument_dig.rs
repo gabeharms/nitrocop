@@ -37,6 +37,10 @@ impl Cop for SingleArgumentDig {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -44,7 +48,7 @@ impl Cop for SingleArgumentDig {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -111,12 +115,25 @@ impl Cop for SingleArgumentDig {
         let original = std::str::from_utf8(node.location().as_slice()).unwrap_or("");
         let loc = node.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Use `{}[{}]` instead of `{}`.", recv_src, arg_src, original),
-        ));
+        );
+
+        if let Some(ref mut corr) = corrections {
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: format!("{recv_src}[{arg_src}]"),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -124,4 +141,5 @@ impl Cop for SingleArgumentDig {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(SingleArgumentDig, "cops/style/single_argument_dig");
+    crate::cop_autocorrect_fixture_tests!(SingleArgumentDig, "cops/style/single_argument_dig");
 }

@@ -19,6 +19,10 @@ impl Cop for RedundantArrayConstructor {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -26,7 +30,7 @@ impl Cop for RedundantArrayConstructor {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -35,28 +39,42 @@ impl Cop for RedundantArrayConstructor {
 
         let method_bytes = call.name().as_slice();
 
-        // Check for Array.new([...]) or Array[...] or Array([...])
-        let receiver = match call.receiver() {
-            Some(r) => r,
-            None => {
-                // Check for Kernel method: Array([...])
-                if method_bytes == b"Array" {
-                    if let Some(args) = call.arguments() {
-                        let arg_list: Vec<_> = args.arguments().iter().collect();
-                        if arg_list.len() == 1 && arg_list[0].as_array_node().is_some() {
-                            let loc = call.location();
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(self.diagnostic(
-                                source,
-                                line,
-                                column,
-                                "Remove the redundant `Array` constructor.".to_string(),
-                            ));
+        // Check for Kernel method: Array([...])
+        if call.receiver().is_none() && method_bytes == b"Array" {
+            if let Some(args) = call.arguments() {
+                let arg_list: Vec<_> = args.arguments().iter().collect();
+                if arg_list.len() == 1 && arg_list[0].as_array_node().is_some() {
+                    let loc = call.location();
+                    let (line, column) = source.offset_to_line_col(loc.start_offset());
+                    let mut diag = self.diagnostic(
+                        source,
+                        line,
+                        column,
+                        "Remove the redundant `Array` constructor.".to_string(),
+                    );
+                    if let Some(ref mut corr) = corrections {
+                        let replacement =
+                            std::str::from_utf8(arg_list[0].location().as_slice()).unwrap_or("");
+                        if !replacement.is_empty() {
+                            corr.push(crate::correction::Correction {
+                                start: loc.start_offset(),
+                                end: loc.end_offset(),
+                                replacement: replacement.to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
                         }
                     }
+                    diagnostics.push(diag);
                 }
-                return;
             }
+            return;
+        }
+
+        let receiver = match call.receiver() {
+            Some(r) => r,
+            None => return,
         };
 
         let is_array = if let Some(cr) = receiver.as_constant_read_node() {
@@ -76,27 +94,58 @@ impl Cop for RedundantArrayConstructor {
             if let Some(args) = call.arguments() {
                 let arg_list: Vec<_> = args.arguments().iter().collect();
                 if arg_list.len() == 1 && arg_list[0].as_array_node().is_some() {
-                    let _msg_loc = call.message_loc().unwrap_or_else(|| call.location());
                     let recv_start = receiver.location().start_offset();
                     let (line, column) = source.offset_to_line_col(recv_start);
-                    diagnostics.push(self.diagnostic(
+                    let mut diag = self.diagnostic(
                         source,
                         line,
                         column,
                         "Remove the redundant `Array` constructor.".to_string(),
-                    ));
+                    );
+                    if let Some(ref mut corr) = corrections {
+                        let loc = call.location();
+                        let replacement =
+                            std::str::from_utf8(arg_list[0].location().as_slice()).unwrap_or("");
+                        if !replacement.is_empty() {
+                            corr.push(crate::correction::Correction {
+                                start: loc.start_offset(),
+                                end: loc.end_offset(),
+                                replacement: replacement.to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+                    }
+                    diagnostics.push(diag);
                 }
             }
         } else if method_bytes == b"[]" {
             // Array[...] - any usage is redundant
             let recv_start = receiver.location().start_offset();
             let (line, column) = source.offset_to_line_col(recv_start);
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Remove the redundant `Array` constructor.".to_string(),
-            ));
+            );
+            if let Some(ref mut corr) = corrections {
+                let loc = call.location();
+                let args_src = call
+                    .arguments()
+                    .map(|a| std::str::from_utf8(a.location().as_slice()).unwrap_or(""))
+                    .unwrap_or("");
+                corr.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement: format!("[{args_src}]"),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
         }
     }
 }
@@ -105,6 +154,10 @@ impl Cop for RedundantArrayConstructor {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantArrayConstructor,
+        "cops/style/redundant_array_constructor"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantArrayConstructor,
         "cops/style/redundant_array_constructor"
     );

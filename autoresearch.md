@@ -59,22 +59,42 @@ It prints `METRIC ...` lines for autoresearch parsing.
 - Low-risk strategy validated: prioritize cops with one-range rewrites (keyword swaps, selector removals, whole-node rewrites).
 
 Implemented autocorrect in this session:
-- `Style/EndBlock` — `END` keyword rewrite to `at_exit`
-- `Lint/BigDecimalNew` — remove `.new` (and remove leading `::` for cbase form)
-- `Style/StderrPuts` — replace receiver+selector with `warn`
-- `Style/RedundantCurrentDirectoryInPath` — remove leading `./+` in `require_relative` string
-- `Style/ArrayJoin` — rewrite `array * string` to `array.join(string)`
-- `Style/ArrayCoercion` — rewrite `[*expr]` to `Array(expr)`
-- `Style/EnvHome` — replace call-node forms with `Dir.home` (index-or-write form intentionally left uncorrected)
+- `Style/EndBlock`
+- `Lint/BigDecimalNew`
+- `Style/StderrPuts`
+- `Style/RedundantCurrentDirectoryInPath`
+- `Style/ArrayJoin`
+- `Style/ArrayCoercion`
+- `Style/EnvHome`
+- `Lint/IdentityComparison`
+- `Style/Dir`
+- `Style/SymbolLiteral`
+- `Style/FileNull`
+- `Style/ColonMethodCall`
+- `Style/ClassCheck`
+- `Security/JSONLoad`
+- `Lint/RegexpAsCondition`
+- `Security/IoMethods`
+- `Lint/TopLevelReturnWithArgument`
+- `Lint/OrAssignmentToConstant`
+- `Style/PercentQLiterals`
+- `Style/StringMethods`
+- `Style/ObjectThen`
+- `Lint/ToJSON`
+- `Style/BarePercentLiterals`
+- `Style/PreferredHashMethods`
+- `Style/ArrayIntersectWithSingleElement`
+- `Style/DefWithParentheses`
+- `Style/MethodDefParentheses`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **365** (down from 372, -7)
-- `nitrocop_autocorrectable_cops`: **94** (up from 87, +7)
-- Missing by department now: Style (224), Lint (78), Layout (56), Naming (3), Security (3), Migration (1)
+- `missing_core_autocorrect_cops`: **345** (down from 372, -27)
+- `nitrocop_autocorrectable_cops`: **114** (up from 87, +27)
+- Missing by department now: Style (211), Lint (73), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`
-2. Emit exactly one deterministic correction per offense (or clear multi-edit pair when needed)
+2. Keep correction localized (selector/operator token or full-node template)
 3. Add `corrected.rb`
 4. Add `cop_autocorrect_fixture_tests!`
-5. Run targeted `cargo test --lib -- cop::<dept>::<cop>`
+5. Run targeted `cargo test --lib -- cop::<dept>::<cop>` before measuring
