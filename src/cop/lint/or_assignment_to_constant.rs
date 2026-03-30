@@ -18,6 +18,10 @@ impl Cop for OrAssignmentToConstant {
         &[CONSTANT_OR_WRITE_NODE, CONSTANT_PATH_OR_WRITE_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -25,30 +29,54 @@ impl Cop for OrAssignmentToConstant {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // ConstantOrWriteNode represents CONST ||= value
         if let Some(n) = node.as_constant_or_write_node() {
             let loc = n.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Do not use `||=` for assigning to constants.".to_string(),
-            ));
+            );
+            if let Some(ref mut corr) = corrections {
+                let op = n.operator_loc();
+                corr.push(crate::correction::Correction {
+                    start: op.start_offset(),
+                    end: op.end_offset(),
+                    replacement: "=".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
         }
 
         // ConstantPathOrWriteNode represents Foo::BAR ||= value
         if let Some(n) = node.as_constant_path_or_write_node() {
             let loc = n.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Do not use `||=` for assigning to constants.".to_string(),
-            ));
+            );
+            if let Some(ref mut corr) = corrections {
+                let op = n.operator_loc();
+                corr.push(crate::correction::Correction {
+                    start: op.start_offset(),
+                    end: op.end_offset(),
+                    replacement: "=".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
         }
     }
 }
@@ -57,6 +85,10 @@ impl Cop for OrAssignmentToConstant {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        OrAssignmentToConstant,
+        "cops/lint/or_assignment_to_constant"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         OrAssignmentToConstant,
         "cops/lint/or_assignment_to_constant"
     );

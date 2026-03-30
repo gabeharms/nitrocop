@@ -14,6 +14,10 @@ impl Cop for PercentQLiterals {
         &[INTERPOLATED_STRING_NODE, STRING_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -21,28 +25,30 @@ impl Cop for PercentQLiterals {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "lower_case_q");
 
         // Check for %Q or %q string nodes using the opening_loc, which
         // reliably identifies percent literals vs regular string content.
-        let opening_bytes = if let Some(s) = node.as_string_node() {
-            s.opening_loc().map(|loc| loc.as_slice())
+        let opening_loc = if let Some(s) = node.as_string_node() {
+            s.opening_loc()
         } else if let Some(s) = node.as_interpolated_string_node() {
-            s.opening_loc().map(|loc| loc.as_slice())
+            s.opening_loc()
         } else {
             None
         };
 
-        let opening = match opening_bytes {
-            Some(b) => b,
+        let opening = match opening_loc {
+            Some(loc) => loc,
             None => return,
         };
 
+        let opening_bytes = opening.as_slice();
+
         if style == "lower_case_q" {
             // Flag %Q when %q would suffice (no interpolation, no escape sequences)
-            if opening.starts_with(b"%Q") {
+            if opening_bytes.starts_with(b"%Q") {
                 if let Some(s) = node.as_string_node() {
                     // StringNode means no interpolation.
                     let raw_content = s.content_loc().as_slice();
@@ -59,17 +65,28 @@ impl Cop for PercentQLiterals {
                     }
                     let loc = node.location();
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diag = self.diagnostic(
                         source,
                         line,
                         column,
                         "Use `%q` instead of `%Q`.".to_string(),
-                    ));
+                    );
+                    if let Some(ref mut corr) = corrections {
+                        corr.push(crate::correction::Correction {
+                            start: opening.start_offset(),
+                            end: opening.start_offset() + 2,
+                            replacement: "%q".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                    diagnostics.push(diag);
                 }
             }
         } else if style == "upper_case_q" {
             // Flag %q when %Q is preferred
-            if opening.starts_with(b"%q") {
+            if opening_bytes.starts_with(b"%q") {
                 if let Some(s) = node.as_string_node() {
                     let raw_content = s.content_loc().as_slice();
                     // Skip if content contains backslashes — converting %q to %Q
@@ -84,12 +101,23 @@ impl Cop for PercentQLiterals {
                 }
                 let loc = node.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     "Use `%Q` instead of `%q`.".to_string(),
-                ));
+                );
+                if let Some(ref mut corr) = corrections {
+                    corr.push(crate::correction::Correction {
+                        start: opening.start_offset(),
+                        end: opening.start_offset() + 2,
+                        replacement: "%Q".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
     }
@@ -99,4 +127,5 @@ impl Cop for PercentQLiterals {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(PercentQLiterals, "cops/style/percent_q_literals");
+    crate::cop_autocorrect_fixture_tests!(PercentQLiterals, "cops/style/percent_q_literals");
 }
