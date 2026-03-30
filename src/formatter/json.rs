@@ -39,7 +39,7 @@ struct OffenseRef<'a> {
     path: &'a str,
     line: usize,
     column: usize,
-    severity: String,
+    severity: &'static str,
     cop_name: &'a str,
     message: &'a str,
     corrected: bool,
@@ -51,6 +51,15 @@ struct SkippedOutput<'a> {
     unimplemented: &'a [String],
     outside_baseline: &'a [String],
     total: usize,
+}
+
+fn severity_letter_str(severity: crate::diagnostic::Severity) -> &'static str {
+    match severity {
+        crate::diagnostic::Severity::Convention => "C",
+        crate::diagnostic::Severity::Warning => "W",
+        crate::diagnostic::Severity::Error => "E",
+        crate::diagnostic::Severity::Fatal => "F",
+    }
 }
 
 impl Formatter for JsonFormatter {
@@ -80,7 +89,7 @@ impl Formatter for JsonFormatter {
                     path: &d.path,
                     line: d.location.line,
                     column: d.location.column,
-                    severity: d.severity.letter().to_string(),
+                    severity: severity_letter_str(d.severity),
                     cop_name: &d.cop_name,
                     message: &d.message,
                     corrected: d.corrected,
