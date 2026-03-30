@@ -67,11 +67,47 @@ impl NilLambda {
         }
         false
     }
+
+    fn body_correction_range(
+        source: &SourceFile,
+        expr_loc: ruby_prism::Location<'_>,
+        body_loc: ruby_prism::Location<'_>,
+    ) -> (usize, usize) {
+        let bytes = source.as_bytes();
+        let (expr_start_line, _) = source.offset_to_line_col(expr_loc.start_offset());
+        let (expr_end_line, _) = source.offset_to_line_col(expr_loc.end_offset().saturating_sub(1));
+        let (body_start_line, _) = source.offset_to_line_col(body_loc.start_offset());
+        let (body_end_line, _) = source.offset_to_line_col(body_loc.end_offset().saturating_sub(1));
+
+        // Single-line lambda/proc: remove body with surrounding horizontal spaces.
+        if expr_start_line == expr_end_line && body_start_line == body_end_line {
+            let mut start = body_loc.start_offset();
+            let mut end = body_loc.end_offset();
+            while start > 0 && matches!(bytes[start - 1], b' ' | b'\t') {
+                start -= 1;
+            }
+            while end < bytes.len() && matches!(bytes[end], b' ' | b'\t') {
+                end += 1;
+            }
+            return (start, end);
+        }
+
+        // Multi-line block: remove whole lines containing body.
+        let start = source.line_start_offset(body_start_line);
+        let end = source
+            .line_col_to_offset(body_end_line + 1, 0)
+            .unwrap_or(bytes.len());
+        (start, end)
+    }
 }
 
 impl Cop for NilLambda {
     fn name(&self) -> &'static str {
         "Style/NilLambda"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -94,7 +130,7 @@ impl Cop for NilLambda {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Check lambda node: `-> { nil }`
         if let Some(lambda) = node.as_lambda_node() {
@@ -102,12 +138,25 @@ impl Cop for NilLambda {
                 if Self::check_block_body(&body) {
                     let loc = lambda.location();
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diag = self.diagnostic(
                         source,
                         line,
                         column,
                         "Use an empty lambda instead of always returning nil.".to_string(),
-                    ));
+                    );
+                    if let Some(corr) = corrections.as_mut() {
+                        let (start, end) =
+                            Self::body_correction_range(source, loc, body.location());
+                        corr.push(crate::correction::Correction {
+                            start,
+                            end,
+                            replacement: "".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                    diagnostics.push(diag);
                 }
             }
         }
@@ -122,7 +171,7 @@ impl Cop for NilLambda {
                                 // Report on the whole expression including the block
                                 let loc = node.location();
                                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                                diagnostics.push(self.diagnostic(
+                                let mut diag = self.diagnostic(
                                     source,
                                     line,
                                     column,
@@ -130,7 +179,20 @@ impl Cop for NilLambda {
                                         "Use an empty {} instead of always returning nil.",
                                         type_name
                                     ),
-                                ));
+                                );
+                                if let Some(corr) = corrections.as_mut() {
+                                    let (start, end) =
+                                        Self::body_correction_range(source, loc, body.location());
+                                    corr.push(crate::correction::Correction {
+                                        start,
+                                        end,
+                                        replacement: "".to_string(),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    diag.corrected = true;
+                                }
+                                diagnostics.push(diag);
                             }
                         }
                     }
@@ -144,4 +206,5 @@ impl Cop for NilLambda {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(NilLambda, "cops/style/nil_lambda");
+    crate::cop_autocorrect_fixture_tests!(NilLambda, "cops/style/nil_lambda");
 }

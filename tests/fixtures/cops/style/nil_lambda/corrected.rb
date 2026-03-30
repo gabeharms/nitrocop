@@ -1,0 +1,7 @@
+-> {}
+
+proc {}
+
+Proc.new {}
+
+lambda {}

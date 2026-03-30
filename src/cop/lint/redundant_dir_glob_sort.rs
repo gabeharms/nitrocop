@@ -10,6 +10,10 @@ impl Cop for RedundantDirGlobSort {
         "Lint/RedundantDirGlobSort"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -30,7 +34,7 @@ impl Cop for RedundantDirGlobSort {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // RuboCop: minimum_target_ruby_version 3.0
         // Dir.glob and Dir[] return sorted results in Ruby 3.0+, so `.sort` is
@@ -106,12 +110,23 @@ impl Cop for RedundantDirGlobSort {
 
         let msg_loc = call.message_loc().unwrap();
         let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            column,
-            "Remove redundant `sort`.".to_string(),
-        ));
+        let mut diag =
+            self.diagnostic(source, line, column, "Remove redundant `sort`.".to_string());
+
+        if let Some(corr) = corrections.as_mut() {
+            if let Some(op_loc) = call.call_operator_loc() {
+                corr.push(crate::correction::Correction {
+                    start: op_loc.start_offset(),
+                    end: msg_loc.end_offset(),
+                    replacement: "".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -119,4 +134,8 @@ impl Cop for RedundantDirGlobSort {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantDirGlobSort, "cops/lint/redundant_dir_glob_sort");
+    crate::cop_autocorrect_fixture_tests!(
+        RedundantDirGlobSort,
+        "cops/lint/redundant_dir_glob_sort"
+    );
 }
