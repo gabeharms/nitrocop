@@ -38,6 +38,10 @@ impl Cop for GlobalStdStream {
         "Style/GlobalStdStream"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -45,17 +49,22 @@ impl Cop for GlobalStdStream {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = GlobalStdStreamVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            emit_corrections: corrections.is_some(),
             in_std_gvar_assignment: None,
             in_const_path_write: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -63,6 +72,8 @@ struct GlobalStdStreamVisitor<'a, 'src> {
     cop: &'a GlobalStdStream,
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
     /// The name of the std gvar being assigned to, if any (e.g., "$stdout")
     /// Used to suppress flagging only when assigning a constant TO its matching gvar.
     in_std_gvar_assignment: Option<&'static str>,
@@ -86,12 +97,25 @@ impl GlobalStdStreamVisitor<'_, '_> {
         if let Some(gvar) = std_stream_gvar(name_bytes) {
             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
             let const_name = std::str::from_utf8(name_bytes).unwrap_or("");
-            self.diagnostics.push(self.cop.diagnostic(
+            let mut diag = self.cop.diagnostic(
                 self.source,
                 line,
                 column,
                 format!("Use `{}` instead of `{}`.", gvar, const_name),
-            ));
+            );
+
+            if self.emit_corrections {
+                self.corrections.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement: gvar.to_string(),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+
+            self.diagnostics.push(diag);
         }
     }
 }
@@ -231,4 +255,5 @@ fn std_stream_gvar(name: &[u8]) -> Option<&'static str> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(GlobalStdStream, "cops/style/global_std_stream");
+    crate::cop_autocorrect_fixture_tests!(GlobalStdStream, "cops/style/global_std_stream");
 }
