@@ -20,8 +20,10 @@ pub trait Formatter {
 
     fn print(&self, diagnostics: &[Diagnostic], files: &[PathBuf]) {
         let stdout = std::io::stdout();
-        let mut lock = stdout.lock();
-        self.format_to(diagnostics, files, &mut lock);
+        let lock = stdout.lock();
+        let mut out = std::io::BufWriter::new(lock);
+        self.format_to(diagnostics, files, &mut out);
+        let _ = out.flush();
     }
 }
 
