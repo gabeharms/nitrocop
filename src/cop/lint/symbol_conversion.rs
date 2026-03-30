@@ -551,6 +551,10 @@ impl Cop for SymbolConversion {
         "Lint/SymbolConversion"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -566,19 +570,19 @@ impl Cop for SymbolConversion {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let _style = config.get_str("EnforcedStyle", "strict");
 
         // Check SymbolNode: quoted symbols (standalone or hash keys)
         if let Some(sym) = node.as_symbol_node() {
-            self.check_symbol_node(source, &sym, diagnostics);
+            self.check_symbol_node(source, &sym, diagnostics, corrections);
             return;
         }
 
         // Check CallNode: .to_sym / .intern patterns
         if let Some(call) = node.as_call_node() {
-            self.check_call_node(source, &call, diagnostics);
+            self.check_call_node(source, &call, diagnostics, corrections);
         }
     }
 }
@@ -594,6 +598,7 @@ impl SymbolConversion {
         source: &SourceFile,
         sym: &ruby_prism::SymbolNode<'_>,
         diagnostics: &mut Vec<Diagnostic>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let src = sym.location().as_slice();
         let value = sym.unescaped();
@@ -614,12 +619,23 @@ impl SymbolConversion {
             if let Some(value_str) = hash_key_correction(value) {
                 let loc = sym.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     format!("Unnecessary symbol conversion; use `{value_str}:` instead."),
-                ));
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: format!("{value_str}:"),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
             return;
         }
@@ -676,12 +692,23 @@ impl SymbolConversion {
 
         let loc = sym.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Unnecessary symbol conversion; use `{correction}` instead."),
-        ));
+        );
+        if let Some(corr) = corrections.as_mut() {
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: correction,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+        diagnostics.push(diag);
     }
 
     /// Check a CallNode for .to_sym / .intern on string/symbol/dstr receivers.
@@ -690,6 +717,7 @@ impl SymbolConversion {
         source: &SourceFile,
         call: &ruby_prism::CallNode<'_>,
         diagnostics: &mut Vec<Diagnostic>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let method_name = call.name().as_slice();
 
@@ -717,12 +745,23 @@ impl SymbolConversion {
             };
             let loc = call.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 format!("Unnecessary symbol conversion; use `{correction}` instead."),
-            ));
+            );
+            if let Some(corr) = corrections.as_mut() {
+                corr.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement: correction,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
             return;
         }
 
@@ -735,12 +774,23 @@ impl SymbolConversion {
             };
             let loc = call.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 format!("Unnecessary symbol conversion; use `{correction}` instead."),
-            ));
+            );
+            if let Some(corr) = corrections.as_mut() {
+                corr.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement: correction,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
             return;
         }
 
@@ -764,12 +814,23 @@ impl SymbolConversion {
             let correction = format!(":\"{}\"", inner_str);
             let loc = call.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 format!("Unnecessary symbol conversion; use `{correction}` instead."),
-            ));
+            );
+            if let Some(corr) = corrections.as_mut() {
+                corr.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement: correction,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
         }
     }
 }
@@ -778,6 +839,7 @@ impl SymbolConversion {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(SymbolConversion, "cops/lint/symbol_conversion");
+    crate::cop_autocorrect_fixture_tests!(SymbolConversion, "cops/lint/symbol_conversion");
 
     #[test]
     fn rocket_style_hash_keys_with_non_identifier_start() {

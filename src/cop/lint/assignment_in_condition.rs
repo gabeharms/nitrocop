@@ -826,7 +826,6 @@ fn recurse_children(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

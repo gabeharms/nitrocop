@@ -59,6 +59,10 @@ impl Cop for AmbiguousOperatorPrecedence {
         "Lint/AmbiguousOperatorPrecedence"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -74,13 +78,13 @@ impl Cop for AmbiguousOperatorPrecedence {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        let can_autocorrect = corrections.is_some();
+        let mut pending_corrections = Vec::new();
+
         if let Some(or_node) = node.as_or_node() {
             let is_symbolic = or_node.operator_loc().as_slice() == b"||";
-            // Both symbolic `||` and keyword `or` check for AndNode children
-            // (mixed logical precedence). Only symbolic `||` also checks for
-            // arithmetic CallNode children (mixed arithmetic/logical).
             self.check_logical_children(
                 source,
                 or_node.left(),
@@ -88,17 +92,17 @@ impl Cop for AmbiguousOperatorPrecedence {
                 OR_PREC,
                 is_symbolic,
                 diagnostics,
+                can_autocorrect,
+                &mut pending_corrections,
             );
+            if let Some(corrections) = corrections {
+                corrections.extend(pending_corrections);
+            }
             return;
         }
 
         if let Some(and_node) = node.as_and_node() {
             let is_symbolic = and_node.operator_loc().as_slice() == b"&&";
-            // Symbolic `&&` checks for arithmetic CallNode children.
-            // Keyword `and` has no higher-precedence logical children to check
-            // (it's already the highest keyword logical precedence), so
-            // is_symbolic=false means no children will be flagged here.
-            // Its mixing with `or` is caught when the parent OrNode is visited.
             self.check_logical_children(
                 source,
                 and_node.left(),
@@ -106,11 +110,15 @@ impl Cop for AmbiguousOperatorPrecedence {
                 AND_PREC,
                 is_symbolic,
                 diagnostics,
+                can_autocorrect,
+                &mut pending_corrections,
             );
+            if let Some(corrections) = corrections {
+                corrections.extend(pending_corrections);
+            }
             return;
         }
 
-        // Handle arithmetic/bitwise CallNode with CallNode children of different precedence
         let call = match node.as_call_node() {
             Some(c) => c,
             None => return,
@@ -122,8 +130,6 @@ impl Cop for AmbiguousOperatorPrecedence {
             None => return,
         };
 
-        // Check arguments for higher-precedence operators
-        // e.g., `a + b * c`: outer is `+` (prec 2), arg `b * c` is `*` (prec 1)
         if let Some(args) = call.arguments() {
             for arg in args.arguments().iter() {
                 if let Some(arg_call) = arg.as_call_node() {
@@ -131,32 +137,41 @@ impl Cop for AmbiguousOperatorPrecedence {
                     if let Some(arg_prec) = precedence_level(arg_method) {
                         if arg_prec < outer_prec {
                             let loc = arg_call.location();
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(self.diagnostic(
+                            self.emit_offense(
                                 source,
-                                line,
-                                column,
-                                MSG.to_string(),
-                            ));
+                                loc.start_offset(),
+                                loc.end_offset(),
+                                diagnostics,
+                                can_autocorrect,
+                                &mut pending_corrections,
+                            );
                         }
                     }
                 }
             }
         }
 
-        // Check if receiver is a higher-precedence operator
-        // e.g., `a ** b + c`: outer is `+` (prec 2), recv `a ** b` is `**` (prec 0)
         if let Some(recv) = call.receiver() {
             if let Some(recv_call) = recv.as_call_node() {
                 let recv_method = recv_call.name().as_slice();
                 if let Some(recv_prec) = precedence_level(recv_method) {
                     if recv_prec < outer_prec {
                         let loc = recv_call.location();
-                        let (line, column) = source.offset_to_line_col(loc.start_offset());
-                        diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
+                        self.emit_offense(
+                            source,
+                            loc.start_offset(),
+                            loc.end_offset(),
+                            diagnostics,
+                            can_autocorrect,
+                            &mut pending_corrections,
+                        );
                     }
                 }
             }
+        }
+
+        if let Some(corrections) = corrections {
+            corrections.extend(pending_corrections);
         }
     }
 }
@@ -175,6 +190,8 @@ impl AmbiguousOperatorPrecedence {
         parent_prec: usize,
         check_arithmetic: bool,
         diagnostics: &mut Vec<Diagnostic>,
+        can_autocorrect: bool,
+        corrections: &mut Vec<crate::correction::Correction>,
     ) {
         for child in [left, right] {
             let child_prec = if child.as_and_node().is_some() {
@@ -194,11 +211,48 @@ impl AmbiguousOperatorPrecedence {
             if let Some(cp) = child_prec {
                 if cp < parent_prec {
                     let loc = child.location();
-                    let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
+                    self.emit_offense(
+                        source,
+                        loc.start_offset(),
+                        loc.end_offset(),
+                        diagnostics,
+                        can_autocorrect,
+                        corrections,
+                    );
                 }
             }
         }
+    }
+
+    fn emit_offense(
+        &self,
+        source: &SourceFile,
+        start: usize,
+        end: usize,
+        diagnostics: &mut Vec<Diagnostic>,
+        can_autocorrect: bool,
+        corrections: &mut Vec<crate::correction::Correction>,
+    ) {
+        let (line, column) = source.offset_to_line_col(start);
+        let mut diag = self.diagnostic(source, line, column, MSG.to_string());
+        if can_autocorrect {
+            corrections.push(crate::correction::Correction {
+                start,
+                end: start,
+                replacement: "(".to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            corrections.push(crate::correction::Correction {
+                start: end,
+                end,
+                replacement: ")".to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+        diagnostics.push(diag);
     }
 }
 
@@ -206,6 +260,10 @@ impl AmbiguousOperatorPrecedence {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        AmbiguousOperatorPrecedence,
+        "cops/lint/ambiguous_operator_precedence"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         AmbiguousOperatorPrecedence,
         "cops/lint/ambiguous_operator_precedence"
     );
