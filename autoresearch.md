@@ -107,11 +107,19 @@ Implemented autocorrect in this session:
 - `Style/RedundantArrayFlatten`
 - `Style/MapToSet`
 - `Style/InPatternThen`
+- `Style/RedundantConstantBase`
+- `Style/RedundantRegexpConstructor`
+- `Style/CommandLiteral`
+- `Style/DoubleCopDisableDirective`
+- `Lint/TrailingCommaInAttributeDeclaration`
+- `Style/WhileUntilDo`
+- `Style/BlockComments`
+- `Style/EmptyHeredoc`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **324** (down from 372, -48)
-- `nitrocop_autocorrectable_cops`: **135** (up from 87, +48)
-- Missing by department now: Style (194), Lint (69), Layout (56), Naming (3), Security (1), Migration (1)
+- `missing_core_autocorrect_cops`: **316** (down from 372, -56)
+- `nitrocop_autocorrectable_cops`: **143** (up from 87, +56)
+- Missing by department now: Style (187), Lint (68), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`

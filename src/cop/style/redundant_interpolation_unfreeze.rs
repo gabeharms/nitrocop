@@ -14,6 +14,10 @@ impl Cop for RedundantInterpolationUnfreeze {
         &[CALL_NODE, INTERPOLATED_STRING_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -21,7 +25,7 @@ impl Cop for RedundantInterpolationUnfreeze {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // minimum_target_ruby_version 3.0 — only applies for Ruby 3.0+
         let ruby_version = config
@@ -77,27 +81,41 @@ impl Cop for RedundantInterpolationUnfreeze {
             return;
         }
 
-        // Report at the operator/method location
-        if let Some(msg_loc) = call.message_loc() {
+        let mut diag = if let Some(msg_loc) = call.message_loc() {
             let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            self.diagnostic(
                 source,
                 line,
                 column,
                 "Don't unfreeze interpolated strings as they are already unfrozen.".to_string(),
-            ));
-            return;
+            )
+        } else {
+            // For prefix +, the call_operator is None and message_loc might not exist
+            let loc = call.location();
+            let (line, column) = source.offset_to_line_col(loc.start_offset());
+            self.diagnostic(
+                source,
+                line,
+                column,
+                "Don't unfreeze interpolated strings as they are already unfrozen.".to_string(),
+            )
+        };
+
+        if let Some(ref mut corr) = corrections {
+            let call_loc = call.location();
+            if let Ok(receiver_src) = std::str::from_utf8(receiver.location().as_slice()) {
+                corr.push(crate::correction::Correction {
+                    start: call_loc.start_offset(),
+                    end: call_loc.end_offset(),
+                    replacement: receiver_src.to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
         }
 
-        // For prefix +, the call_operator is None and message_loc might not exist
-        let loc = call.location();
-        let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            column,
-            "Don't unfreeze interpolated strings as they are already unfrozen.".to_string(),
-        ));
+        diagnostics.push(diag);
     }
 }
 
@@ -105,6 +123,10 @@ impl Cop for RedundantInterpolationUnfreeze {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantInterpolationUnfreeze,
+        "cops/style/redundant_interpolation_unfreeze"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantInterpolationUnfreeze,
         "cops/style/redundant_interpolation_unfreeze"
     );
