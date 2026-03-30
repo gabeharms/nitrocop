@@ -4,3 +4,4 @@
 - Evaluate `Security/YAMLLoad` only with strict target-Ruby guards (Ruby <= 3.0 behavior) and real offense parity; avoid metric-only toggles.
 - Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) after low-risk Style/Lint chain/selector wins taper off.
+- Evaluate `Lint/DuplicateRequire` autocorrect only for statement-parent duplicates where full-line removal is syntax-safe; keep wrapped-expression duplicates offense-only.

@@ -40,6 +40,10 @@ impl Cop for DuplicateRequire {
         "Lint/DuplicateRequire"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -51,7 +55,7 @@ impl Cop for DuplicateRequire {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = RequireVisitor {
             cop: self,
@@ -61,9 +65,13 @@ impl Cop for DuplicateRequire {
             required: HashMap::new(),
             current_parent_offset: 0,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -84,6 +92,7 @@ struct RequireVisitor<'a, 'src> {
     /// Start offset of the current parent node being visited.
     current_parent_offset: usize,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
 }
 
 impl RequireVisitor<'_, '_> {
@@ -99,6 +108,33 @@ impl RequireVisitor<'_, '_> {
                 .get(loc.start_offset()..loc.end_offset())?
                 .to_vec(),
         ))
+    }
+
+    fn duplicate_line_removal_range(
+        &self,
+        node: &ruby_prism::CallNode<'_>,
+    ) -> Option<(usize, usize)> {
+        let loc = node.location();
+        let bytes = self.source.as_bytes();
+        let (line, _) = self.source.offset_to_line_col(loc.start_offset());
+        let line_start = self.source.line_start_offset(line);
+        let line_end = self
+            .source
+            .line_col_to_offset(line + 1, 0)
+            .unwrap_or(bytes.len());
+
+        let before = std::str::from_utf8(&bytes[line_start..loc.start_offset()]).ok()?;
+        if !before.trim().is_empty() {
+            return None;
+        }
+
+        let after = std::str::from_utf8(&bytes[loc.end_offset()..line_end]).ok()?;
+        let after_trimmed = after.trim_start();
+        if !(after_trimmed.is_empty() || after_trimmed.starts_with('#')) {
+            return None;
+        }
+
+        Some((line_start, line_end))
     }
 
     fn check_require_call(&mut self, node: &ruby_prism::CallNode<'_>) {
@@ -137,12 +173,24 @@ impl RequireVisitor<'_, '_> {
                             self.required.entry(self.current_parent_offset).or_default();
                         if parent_set.contains(&key) {
                             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                            self.diagnostics.push(self.cop.diagnostic(
+                            let mut diag = self.cop.diagnostic(
                                 self.source,
                                 line,
                                 column,
                                 "Duplicate `require` detected.".to_string(),
-                            ));
+                            );
+
+                            if let Some((start, end)) = self.duplicate_line_removal_range(node) {
+                                self.corrections.push(crate::correction::Correction {
+                                    start,
+                                    end,
+                                    replacement: String::new(),
+                                    cop_name: self.cop.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                            self.diagnostics.push(diag);
                         } else {
                             parent_set.insert(key);
                         }
@@ -185,4 +233,5 @@ impl<'pr> Visit<'pr> for RequireVisitor<'_, '_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(DuplicateRequire, "cops/lint/duplicate_require");
+    crate::cop_autocorrect_fixture_tests!(DuplicateRequire, "cops/lint/duplicate_require");
 }

@@ -19,6 +19,10 @@ impl Cop for RequireRelativeSelfPath {
         "Lint/RequireRelativeSelfPath"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -34,7 +38,7 @@ impl Cop for RequireRelativeSelfPath {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Look for `require_relative 'self_filename'`
         let call = match node.as_call_node() {
@@ -121,12 +125,38 @@ impl Cop for RequireRelativeSelfPath {
         if is_same_dir && required_stem == file_stem {
             let loc = call.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Remove the `require_relative` that requires itself.".to_string(),
-            ));
+            );
+
+            if let Some(corr) = corrections.as_mut() {
+                let source_bytes = source.as_bytes();
+                let mut end = loc.end_offset();
+                if end < source_bytes.len() {
+                    if source_bytes[end] == b'\n' {
+                        end += 1;
+                    } else if source_bytes[end] == b'\r'
+                        && end + 1 < source_bytes.len()
+                        && source_bytes[end + 1] == b'\n'
+                    {
+                        end += 2;
+                    }
+                }
+
+                corr.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end,
+                    replacement: "".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+
+            diagnostics.push(diag);
         }
     }
 }
@@ -135,6 +165,10 @@ impl Cop for RequireRelativeSelfPath {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RequireRelativeSelfPath,
+        "cops/lint/require_relative_self_path"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RequireRelativeSelfPath,
         "cops/lint/require_relative_self_path"
     );
