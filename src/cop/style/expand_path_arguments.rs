@@ -12,6 +12,10 @@ impl Cop for ExpandPathArguments {
         "Style/ExpandPathArguments"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             CALL_NODE,
@@ -29,7 +33,7 @@ impl Cop for ExpandPathArguments {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call_node = match node.as_call_node() {
             Some(c) => c,
@@ -97,12 +101,30 @@ impl Cop for ExpandPathArguments {
         let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
 
         let orig = format!("expand_path('{}', __FILE__)", path_str);
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Use `{}` instead of `{}`.", suggestion, orig,),
-        ));
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            let receiver_src = String::from_utf8_lossy(
+                &source.as_bytes()
+                    [receiver.location().start_offset()..receiver.location().end_offset()],
+            )
+            .to_string();
+            corr.push(crate::correction::Correction {
+                start: call_node.location().start_offset(),
+                end: call_node.location().end_offset(),
+                replacement: format!("{}.{}", receiver_src, suggestion),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -182,4 +204,5 @@ fn normalize_path(path: &str) -> String {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ExpandPathArguments, "cops/style/expand_path_arguments");
+    crate::cop_autocorrect_fixture_tests!(ExpandPathArguments, "cops/style/expand_path_arguments");
 }
