@@ -62,6 +62,10 @@ impl Cop for AmbiguousRange {
         "Lint/AmbiguousRange"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -100,7 +104,7 @@ impl Cop for AmbiguousRange {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let require_parens_for_chains = config.get_bool("RequireParenthesesForMethodChains", false);
 
@@ -114,15 +118,31 @@ impl Cop for AmbiguousRange {
             if !is_acceptable_boundary(&left, require_parens_for_chains) {
                 let loc = left.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(
-                    self.diagnostic(
-                        source,
-                        line,
-                        column,
-                        "Wrap complex range boundaries with parentheses to avoid ambiguity."
-                            .to_string(),
-                    ),
+                let mut diag = self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    "Wrap complex range boundaries with parentheses to avoid ambiguity."
+                        .to_string(),
                 );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.start_offset(),
+                        replacement: "(".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    corr.push(crate::correction::Correction {
+                        start: loc.end_offset(),
+                        end: loc.end_offset(),
+                        replacement: ")".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
 
@@ -131,15 +151,31 @@ impl Cop for AmbiguousRange {
             if !is_acceptable_boundary(&right, require_parens_for_chains) {
                 let loc = right.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(
-                    self.diagnostic(
-                        source,
-                        line,
-                        column,
-                        "Wrap complex range boundaries with parentheses to avoid ambiguity."
-                            .to_string(),
-                    ),
+                let mut diag = self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    "Wrap complex range boundaries with parentheses to avoid ambiguity."
+                        .to_string(),
                 );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.start_offset(),
+                        replacement: "(".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    corr.push(crate::correction::Correction {
+                        start: loc.end_offset(),
+                        end: loc.end_offset(),
+                        replacement: ")".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
     }
@@ -323,4 +359,5 @@ fn is_basic_literal(node: &ruby_prism::Node<'_>) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(AmbiguousRange, "cops/lint/ambiguous_range");
+    crate::cop_autocorrect_fixture_tests!(AmbiguousRange, "cops/lint/ambiguous_range");
 }
