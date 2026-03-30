@@ -71,6 +71,10 @@ impl Cop for NumberConversion {
         "Lint/NumberConversion"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -96,7 +100,7 @@ impl Cop for NumberConversion {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -107,7 +111,15 @@ impl Cop for NumberConversion {
 
         // Try direct conversion method first (e.g., `x.to_i`)
         if let Some(conversion) = CONVERSION_METHODS.iter().find(|(m, _)| *m == method_name) {
-            self.handle_direct_conversion(source, node, &call, conversion, config, diagnostics);
+            self.handle_direct_conversion(
+                source,
+                node,
+                &call,
+                conversion,
+                config,
+                diagnostics,
+                &mut corrections,
+            );
             return;
         }
 
@@ -126,6 +138,7 @@ impl NumberConversion {
         conversion: &(&[u8], &str),
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Must have a receiver
         let receiver = match call.receiver() {
@@ -176,14 +189,27 @@ impl NumberConversion {
 
         let loc = node.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!(
                 "Replace unsafe number conversion with number class parsing, instead of using `{recv_src}.{method_str}`, use stricter `{corrected}`.",
             ),
-        ));
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: corrected,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 
     /// Handle symbol form: `map(&:to_i)`, `try(:to_f)`, `send(:to_c)`, etc.
@@ -321,4 +347,5 @@ fn node_source<'a>(source: &'a SourceFile, node: &ruby_prism::Node<'_>) -> &'a s
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(NumberConversion, "cops/lint/number_conversion");
+    crate::cop_autocorrect_fixture_tests!(NumberConversion, "cops/lint/number_conversion");
 }
