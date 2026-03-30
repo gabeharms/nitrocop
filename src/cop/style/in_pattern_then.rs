@@ -25,6 +25,10 @@ impl Cop for InPatternThen {
         &[IN_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -32,7 +36,7 @@ impl Cop for InPatternThen {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let in_node = match node.as_in_node() {
             Some(n) => n,
@@ -70,7 +74,7 @@ impl Cop for InPatternThen {
 
                 let (line, column) = source.offset_to_line_col(semi_offset);
                 let pattern_src = String::from_utf8_lossy(pattern.location().as_slice());
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
@@ -78,7 +82,20 @@ impl Cop for InPatternThen {
                         "Do not use `in {}`. Use `in {} then` instead.",
                         pattern_src, pattern_src
                     ),
-                ));
+                );
+
+                if let Some(ref mut corr) = corrections {
+                    corr.push(crate::correction::Correction {
+                        start: semi_offset,
+                        end: semi_offset + 1,
+                        replacement: " then".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                diagnostics.push(diag);
             }
         }
     }
@@ -88,4 +105,5 @@ impl Cop for InPatternThen {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(InPatternThen, "cops/style/in_pattern_then");
+    crate::cop_autocorrect_fixture_tests!(InPatternThen, "cops/style/in_pattern_then");
 }
