@@ -18,6 +18,10 @@ impl Cop for VariableInterpolation {
         "Style/VariableInterpolation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -25,15 +29,20 @@ impl Cop for VariableInterpolation {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = VarInterpVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            emit_corrections: corrections.is_some(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -41,6 +50,8 @@ struct VarInterpVisitor<'a> {
     cop: &'a VariableInterpolation,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
 }
 
 impl VarInterpVisitor<'_> {
@@ -51,11 +62,11 @@ impl VarInterpVisitor<'_> {
                 let var = ev.variable();
                 let var_bytes = &self.source.as_bytes()
                     [var.location().start_offset()..var.location().end_offset()];
-                let var_str = String::from_utf8_lossy(var_bytes);
+                let var_str = String::from_utf8_lossy(var_bytes).to_string();
 
                 let loc = var.location();
                 let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                self.diagnostics.push(self.cop.diagnostic(
+                let mut diag = self.cop.diagnostic(
                     self.source,
                     line,
                     column,
@@ -63,7 +74,20 @@ impl VarInterpVisitor<'_> {
                         "Replace interpolated variable `{}` with expression `#{{{}}}`.",
                         var_str, var_str
                     ),
-                ));
+                );
+
+                if self.emit_corrections {
+                    self.corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: format!("{{{var_str}}}"),
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                self.diagnostics.push(diag);
             }
         }
     }
@@ -101,4 +125,8 @@ impl<'pr> Visit<'pr> for VarInterpVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(VariableInterpolation, "cops/style/variable_interpolation");
+    crate::cop_autocorrect_fixture_tests!(
+        VariableInterpolation,
+        "cops/style/variable_interpolation"
+    );
 }
