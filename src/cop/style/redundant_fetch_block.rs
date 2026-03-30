@@ -58,6 +58,10 @@ impl Cop for RedundantFetchBlock {
         "Style/RedundantFetchBlock"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             BLOCK_NODE,
@@ -84,7 +88,7 @@ impl Cop for RedundantFetchBlock {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let safe_for_constants = config.get_bool("SafeForConstants", false);
         // RuboCop only flags string defaults when frozen_string_literal: true.
@@ -206,12 +210,25 @@ impl Cop for RedundantFetchBlock {
 
         let fetch_loc = call.message_loc().unwrap_or_else(|| call.location());
         let (line, column) = source.offset_to_line_col(fetch_loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Use `fetch({key_src}, {value_src})` instead of `fetch({key_src}) {{ {value_src} }}`."),
-        ));
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            corr.push(crate::correction::Correction {
+                start: fetch_loc.start_offset(),
+                end: block_node.location().end_offset(),
+                replacement: format!("fetch({key_src}, {value_src})"),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -224,4 +241,30 @@ mod tests {
         basic = "basic.rb",
         frozen_string_literal_line2 = "frozen_string_literal_line2.rb",
     );
+
+    #[test]
+    fn autocorrect_basic_scenario() {
+        crate::testutil::assert_cop_autocorrect(
+            &RedundantFetchBlock,
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/redundant_fetch_block/offense/basic.rb"
+            ),
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/redundant_fetch_block/corrected/basic.rb"
+            ),
+        );
+    }
+
+    #[test]
+    fn autocorrect_frozen_string_literal_line2_scenario() {
+        crate::testutil::assert_cop_autocorrect(
+            &RedundantFetchBlock,
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/redundant_fetch_block/offense/frozen_string_literal_line2.rb"
+            ),
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/redundant_fetch_block/corrected/frozen_string_literal_line2.rb"
+            ),
+        );
+    }
 }

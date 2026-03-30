@@ -151,11 +151,12 @@ Implemented autocorrect in this session:
 - `Style/ExpandPathArguments`
 - `Style/EmptyClassDefinition`
 - `Style/ModuleMemberExistenceCheck`
+- `Style/RedundantFormat`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **280** (down from 372, -92)
-- `nitrocop_autocorrectable_cops`: **179** (up from 87, +92)
-- Missing by department now: Style (152), Lint (67), Layout (56), Naming (3), Security (1), Migration (1)
+- `missing_core_autocorrect_cops`: **279** (down from 372, -93)
+- `nitrocop_autocorrectable_cops`: **180** (up from 87, +93)
+- Missing by department now: Style (151), Lint (67), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`
