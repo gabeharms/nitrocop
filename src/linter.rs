@@ -196,7 +196,7 @@ pub fn lint_source(
         allowlist,
     );
     let mut sorted = diagnostics;
-    sorted.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+    sorted.sort_unstable_by(|a, b| a.sort_key().cmp(&b.sort_key()));
     let skip_summary = config.compute_skip_summary(registry, tier_map, args.preview);
     LintResult {
         diagnostics: sorted,
@@ -303,7 +303,7 @@ pub fn run_linter(
     });
 
     let mut sorted = diagnostics;
-    sorted.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+    sorted.sort_unstable_by(|a, b| a.sort_key().cmp(&b.sort_key()));
 
     if let Some(ref t) = timers {
         t.print_summary(wall_start.elapsed(), files.len());
