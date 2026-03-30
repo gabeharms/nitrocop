@@ -1,5 +1,5 @@
-- Implement `Lint/PercentSymbolArray` autocorrect by stripping leading `:` and trailing `,` from each `%i/%I` element range (RuboCop-style element-local removals).
-- Evaluate `Lint/AmbiguousRegexpLiteral` for a conservative autocorrect path (only when we can safely parenthesize the call arguments without changing operator intent).
-- Explore `Style/RedundantDoubleSplatHashBraces` and `Style/MapToSet` as next low-branching canonicalization cops.
+- Explore `Style/MapToSet` and `Style/UnpackFirst` as next low-branching canonicalization cops.
+- Evaluate `Lint/AmbiguousRegexpLiteral` for a conservative autocorrect path only when correction boundaries are provably unambiguous.
+- Consider `Style/CommandLiteral` and `Style/RedundantArrayFlatten` if replacements can stay full-node and syntax-safe.
 - Keep Layout backlog in staged batches (spacing cops first, then alignment/indentation) after easy Style/Lint wins taper off.
 - Optional throughput refactor if implementation churn grows: tiny helper for selector/operator/full-call replacements to reduce duplicate correction code.

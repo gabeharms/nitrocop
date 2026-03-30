@@ -38,6 +38,10 @@ impl Cop for UnpackFirst {
         &[CALL_NODE, INTEGER_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -45,7 +49,7 @@ impl Cop for UnpackFirst {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -95,12 +99,34 @@ impl Cop for UnpackFirst {
                             node.location().start_offset() + node.location().as_slice().len();
                         let current = source.byte_slice(msg_loc.start_offset(), outer_end, "");
                         let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-                        diagnostics.push(self.diagnostic(
+                        let mut diag = self.diagnostic(
                             source,
                             line,
                             column,
                             format!("Use `unpack1({})` instead of `{}`.", format_src, current),
-                        ));
+                        );
+
+                        if let Some(ref mut corr) = corrections {
+                            corr.push(crate::correction::Correction {
+                                start: msg_loc.start_offset(),
+                                end: msg_loc.end_offset(),
+                                replacement: "unpack1".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            let unpack_end = unpack_call.location().end_offset();
+                            let outer_end = node.location().end_offset();
+                            corr.push(crate::correction::Correction {
+                                start: unpack_end,
+                                end: outer_end,
+                                replacement: "".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+
+                        diagnostics.push(diag);
                     }
                 }
             }
@@ -112,4 +138,5 @@ impl Cop for UnpackFirst {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(UnpackFirst, "cops/style/unpack_first");
+    crate::cop_autocorrect_fixture_tests!(UnpackFirst, "cops/style/unpack_first");
 }
