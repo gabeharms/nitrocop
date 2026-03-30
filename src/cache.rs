@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -371,11 +372,10 @@ fn systemtime_to_parts(time: Option<SystemTime>) -> (u64, u32) {
 
 /// Compute a stable hash of just the file path (used as cache key).
 fn compute_path_hash(path: &Path) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"nitrocop-path-v2:");
-    hasher.update(path.to_string_lossy().as_bytes());
-    let hash = hasher.finalize();
-    format!("{:x}", hash)[..16].to_string()
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    "nitrocop-path-v3:".hash(&mut hasher);
+    path.to_string_lossy().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Compute SHA-256 of file content.

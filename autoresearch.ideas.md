@@ -1,2 +1,2 @@
 - Investigate larger startup costs (process init/config load/result-cache read) with targeted instrumentation; tried micro-optimizations (session-hash clone/sort, compact JSON output), lazy schema init, and thread-pool refactors all regressed or were noise.
-- Consider lightweight fast-path when `--format json` + warm stat-hit cache: avoid non-essential end-of-run work while preserving output compatibility and parity guarantees.
+- Explore reducing per-file stat-hit materialization overhead (cached diagnostic -> Diagnostic conversion and path cloning) without changing output semantics.
