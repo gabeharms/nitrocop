@@ -14,6 +14,10 @@ impl Cop for MinMax {
         &[ARRAY_NODE, CALL_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -21,7 +25,7 @@ impl Cop for MinMax {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let array_node = match node.as_array_node() {
             Some(a) => a,
@@ -53,12 +57,25 @@ impl Cop for MinMax {
         let loc = array_node.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
         let array_src = std::str::from_utf8(loc.as_slice()).unwrap_or("...");
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Use `{}.minmax` instead of `{}`.", min_recv_src, array_src),
-        ));
+        );
+
+        if let Some(ref mut corr) = corrections {
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: format!("{min_recv_src}.minmax"),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -87,4 +104,5 @@ fn get_receiver_of_method<'a>(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(MinMax, "cops/style/min_max");
+    crate::cop_autocorrect_fixture_tests!(MinMax, "cops/style/min_max");
 }
