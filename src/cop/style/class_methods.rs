@@ -1,6 +1,7 @@
 use ruby_prism::Visit;
 
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
@@ -38,6 +39,10 @@ impl Cop for ClassMethods {
         "Style/ClassMethods"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -45,17 +50,22 @@ impl Cop for ClassMethods {
         _code_map: &CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = ClassMethodsVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            autocorrect_enabled: corrections.is_some(),
             class_names: Vec::new(),
             in_singleton_class_self: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corr) = corrections.as_mut() {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -63,6 +73,8 @@ struct ClassMethodsVisitor<'a, 'src> {
     cop: &'a ClassMethods,
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<Correction>,
+    autocorrect_enabled: bool,
     class_names: Vec<Vec<u8>>,
     in_singleton_class_self: bool,
 }
@@ -130,8 +142,18 @@ impl<'pr> Visit<'pr> for ClassMethodsVisitor<'_, '_> {
                 String::from_utf8_lossy(current_class),
                 String::from_utf8_lossy(method_name.as_slice()),
             );
-            self.diagnostics
-                .push(self.cop.diagnostic(self.source, line, column, msg));
+            let mut diag = self.cop.diagnostic(self.source, line, column, msg);
+            if self.autocorrect_enabled {
+                self.corrections.push(Correction {
+                    start: receiver.location().start_offset(),
+                    end: receiver.location().end_offset(),
+                    replacement: "self".to_string(),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            self.diagnostics.push(diag);
         }
     }
 }
@@ -140,4 +162,5 @@ impl<'pr> Visit<'pr> for ClassMethodsVisitor<'_, '_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ClassMethods, "cops/style/class_methods");
+    crate::cop_autocorrect_fixture_tests!(ClassMethods, "cops/style/class_methods");
 }
