@@ -26,10 +26,10 @@ fi
 
 nitro_tmp="$(mktemp)"
 start_ns="$(ruby -e 'print Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)')"
-"$NITROCOP_BIN" --format json "$TARGET_REPO" >"$nitro_tmp" 2>/dev/null || true
+"$NITROCOP_BIN" "$TARGET_REPO" >"$nitro_tmp" 2>&1 || true
 end_ns="$(ruby -e 'print Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)')"
 
-nitrocop_violations="$(ruby -rjson -e 'raw = STDIN.read; begin; data = JSON.parse(raw); puts data.fetch("metadata", {}).fetch("offense_count", 0); rescue; puts 0; end' <"$nitro_tmp")"
+nitrocop_violations="$(ruby -e 'raw = STDIN.read; m = raw.scan(/(\d+)\s+offenses?\s+detected/).last; puts((m && m[0]) || 0)' <"$nitro_tmp")"
 rm -f "$nitro_tmp"
 
 nitrocop_ms="$(ruby -e 's = ARGV[0].to_i; e = ARGV[1].to_i; ms = (e - s) / 1_000_000.0; printf("%.3f", ms)' "$start_ns" "$end_ns")"
