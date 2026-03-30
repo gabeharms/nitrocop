@@ -175,11 +175,20 @@ Implemented autocorrect in this session:
 - `Lint/DeprecatedOpenSSLConstant`
 - `Lint/AmbiguousRange`
 - `Lint/NumberConversion`
+- `Lint/InheritException`
+- `Lint/ErbNewArguments`
+- `Lint/RedundantTypeConversion`
+- `Lint/RedundantCopEnableDirective`
+- `Lint/HashNewWithKeywordArgumentsAsDefault`
+- `Lint/MixedCaseRange`
+- `Lint/DisjunctiveAssignmentInConstructor`
+- `Lint/RaiseException`
+- `Lint/UselessOr`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **251** (down from 372, -121)
-- `nitrocop_autocorrectable_cops`: **208** (up from 87, +121)
-- Missing by department now: Style (140), Lint (50), Layout (56), Naming (3), Security (1), Migration (1)
+- `missing_core_autocorrect_cops`: **243** (down from 372, -129)
+- `nitrocop_autocorrectable_cops`: **216** (up from 87, +129)
+- Missing by department now: Style (140), Lint (42), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`
