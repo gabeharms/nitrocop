@@ -66,11 +66,110 @@ impl ZeroLengthPredicate {
         }
         None
     }
+
+    fn receiver_empty_predicate(
+        source: &SourceFile,
+        len_call: &ruby_prism::CallNode<'_>,
+    ) -> Option<String> {
+        let recv = len_call.receiver()?;
+        let recv_src = String::from_utf8_lossy(
+            &source.as_bytes()[recv.location().start_offset()..recv.location().end_offset()],
+        )
+        .to_string();
+        Some(format!("{}.empty?", recv_src))
+    }
+
+    fn comparison_replacement(
+        source: &SourceFile,
+        call: &ruby_prism::CallNode<'_>,
+    ) -> Option<String> {
+        let method = call.name().as_slice();
+        let args = call.arguments()?;
+        let arg_list: Vec<_> = args.arguments().iter().collect();
+        if arg_list.len() != 1 {
+            return None;
+        }
+
+        let left = call.receiver()?;
+        let right = &arg_list[0];
+
+        if let Some(len_call) = left.as_call_node() {
+            if Self::is_length_or_size(&left) {
+                let rhs_int = Self::int_value(right)?;
+                let empty = match method {
+                    b"==" => rhs_int == 0,
+                    b"<" => rhs_int == 1,
+                    b"!=" => {
+                        if rhs_int == 0 {
+                            return Some(format!(
+                                "!{}",
+                                Self::receiver_empty_predicate(source, &len_call)?
+                            ));
+                        }
+                        false
+                    }
+                    b">" => {
+                        if rhs_int == 0 {
+                            return Some(format!(
+                                "!{}",
+                                Self::receiver_empty_predicate(source, &len_call)?
+                            ));
+                        }
+                        false
+                    }
+                    _ => false,
+                };
+                if empty {
+                    return Self::receiver_empty_predicate(source, &len_call);
+                }
+                return None;
+            }
+        }
+
+        if let Some(lhs_int) = Self::int_value(&left) {
+            if let Some(len_call) = right.as_call_node() {
+                if Self::is_length_or_size(right) {
+                    let empty = match method {
+                        b"==" => lhs_int == 0,
+                        b">" => lhs_int == 1,
+                        b"!=" => {
+                            if lhs_int == 0 {
+                                return Some(format!(
+                                    "!{}",
+                                    Self::receiver_empty_predicate(source, &len_call)?
+                                ));
+                            }
+                            false
+                        }
+                        b"<" => {
+                            if lhs_int == 0 {
+                                return Some(format!(
+                                    "!{}",
+                                    Self::receiver_empty_predicate(source, &len_call)?
+                                ));
+                            }
+                            false
+                        }
+                        _ => false,
+                    };
+                    if empty {
+                        return Self::receiver_empty_predicate(source, &len_call);
+                    }
+                }
+            }
+        }
+
+        None
+    }
 }
 
 impl Cop for ZeroLengthPredicate {
     fn name(&self) -> &'static str {
         "Style/ZeroLengthPredicate"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -84,7 +183,7 @@ impl Cop for ZeroLengthPredicate {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -100,16 +199,32 @@ impl Cop for ZeroLengthPredicate {
             && !Self::uses_safe_navigation(&call)
         {
             if let Some(receiver) = call.receiver() {
-                if Self::is_length_or_size(&receiver) {
-                    let loc = node.location();
-                    let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    let src = std::str::from_utf8(loc.as_slice()).unwrap_or("");
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        line,
-                        column,
-                        format!("Use `empty?` instead of `{}`.", src),
-                    ));
+                if let Some(len_call) = receiver.as_call_node() {
+                    if Self::is_length_or_size(&receiver) {
+                        let loc = node.location();
+                        let (line, column) = source.offset_to_line_col(loc.start_offset());
+                        let src = std::str::from_utf8(loc.as_slice()).unwrap_or("");
+                        let mut diag = self.diagnostic(
+                            source,
+                            line,
+                            column,
+                            format!("Use `empty?` instead of `{}`.", src),
+                        );
+                        if let Some(replacement) = Self::receiver_empty_predicate(source, &len_call)
+                        {
+                            if let Some(corr) = corrections.as_mut() {
+                                corr.push(crate::correction::Correction {
+                                    start: loc.start_offset(),
+                                    end: loc.end_offset(),
+                                    replacement,
+                                    cop_name: self.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                        }
+                        diagnostics.push(diag);
+                    }
                 }
             }
         }
@@ -117,56 +232,31 @@ impl Cop for ZeroLengthPredicate {
         // Pattern: x.length == 0, x.size == 0, 0 == x.length, x.length < 1, etc.
         if matches!(method_bytes, b"==" | b"!=" | b">" | b"<") && !Self::uses_safe_navigation(&call)
         {
-            if let Some(args) = call.arguments() {
-                let arg_list: Vec<_> = args.arguments().iter().collect();
-                if arg_list.len() == 1 {
-                    if let Some(receiver) = call.receiver() {
-                        // x.length == 0 or x.length < 1
-                        if Self::is_length_or_size(&receiver) {
-                            let arg_val = Self::int_value(&arg_list[0]);
-                            let is_zero_check = match method_bytes {
-                                b"==" => arg_val == Some(0),
-                                b"<" => arg_val == Some(1),
-                                b"!=" | b">" => arg_val == Some(0),
-                                _ => false,
-                            };
-                            if is_zero_check {
-                                let loc = node.location();
-                                let (line, column) = source.offset_to_line_col(loc.start_offset());
-                                let src = std::str::from_utf8(loc.as_slice()).unwrap_or("");
-                                let msg = if method_bytes == b"!=" || method_bytes == b">" {
-                                    format!("Use `!empty?` instead of `{}`.", src)
-                                } else {
-                                    format!("Use `empty?` instead of `{}`.", src)
-                                };
-                                diagnostics.push(self.diagnostic(source, line, column, msg));
-                            }
-                        }
-                        // 0 == x.length, 1 > x.length
-                        if let Some(recv_val) = Self::int_value(&receiver) {
-                            if Self::is_length_or_size(&arg_list[0]) {
-                                let is_zero_check = match method_bytes {
-                                    b"==" => recv_val == 0,
-                                    b">" => recv_val == 1,
-                                    b"!=" | b"<" => recv_val == 0,
-                                    _ => false,
-                                };
-                                if is_zero_check {
-                                    let loc = node.location();
-                                    let (line, column) =
-                                        source.offset_to_line_col(loc.start_offset());
-                                    let src = std::str::from_utf8(loc.as_slice()).unwrap_or("");
-                                    let msg = if method_bytes == b"!=" || method_bytes == b"<" {
-                                        format!("Use `!empty?` instead of `{}`.", src)
-                                    } else {
-                                        format!("Use `empty?` instead of `{}`.", src)
-                                    };
-                                    diagnostics.push(self.diagnostic(source, line, column, msg));
-                                }
-                            }
-                        }
-                    }
+            if let Some(replacement) = Self::comparison_replacement(source, &call) {
+                let loc = node.location();
+                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                let src = std::str::from_utf8(loc.as_slice()).unwrap_or("");
+                let mut diag = self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    if replacement.starts_with('!') {
+                        format!("Use `!empty?` instead of `{}`.", src)
+                    } else {
+                        format!("Use `empty?` instead of `{}`.", src)
+                    },
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
                 }
+                diagnostics.push(diag);
             }
         }
     }
@@ -176,4 +266,5 @@ impl Cop for ZeroLengthPredicate {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ZeroLengthPredicate, "cops/style/zero_length_predicate");
+    crate::cop_autocorrect_fixture_tests!(ZeroLengthPredicate, "cops/style/zero_length_predicate");
 }
