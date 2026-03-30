@@ -14,6 +14,10 @@ impl Cop for RedundantArrayFlatten {
         &[CALL_NODE, NIL_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -21,7 +25,7 @@ impl Cop for RedundantArrayFlatten {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Looking for: x.flatten.join or x.flatten.join(nil)
         let call = match node.as_call_node() {
@@ -84,12 +88,25 @@ impl Cop for RedundantArrayFlatten {
             msg_loc.start_offset()
         };
         let (line, column) = source.offset_to_line_col(dot_start);
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             "Remove the redundant `flatten`.".to_string(),
-        ));
+        );
+
+        if let Some(ref mut corr) = corrections {
+            corr.push(crate::correction::Correction {
+                start: dot_start,
+                end: recv_call.location().end_offset(),
+                replacement: "".to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -97,4 +114,8 @@ impl Cop for RedundantArrayFlatten {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantArrayFlatten, "cops/style/redundant_array_flatten");
+    crate::cop_autocorrect_fixture_tests!(
+        RedundantArrayFlatten,
+        "cops/style/redundant_array_flatten"
+    );
 }
