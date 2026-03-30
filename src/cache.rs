@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
@@ -9,6 +9,29 @@ use sha2::{Digest, Sha256};
 use crate::cli::Args;
 use crate::cop::CopConfig;
 use crate::diagnostic::{Diagnostic, Location, Severity};
+
+static BUILD_SIGNATURE: LazyLock<String> = LazyLock::new(|| {
+    let Ok(exe) = std::env::current_exe() else {
+        return "unknown".to_string();
+    };
+    let Ok(meta) = std::fs::metadata(&exe) else {
+        return exe.to_string_lossy().to_string();
+    };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok());
+    match modified {
+        Some(dur) => format!(
+            "{}:{}:{}:{}",
+            exe.to_string_lossy(),
+            meta.len(),
+            dur.as_secs(),
+            dur.subsec_nanos()
+        ),
+        None => format!("{}:{}", exe.to_string_lossy(), meta.len()),
+    }
+});
 
 /// File-level result cache for incremental linting.
 ///
@@ -384,8 +407,10 @@ pub(crate) fn cache_root_dir() -> PathBuf {
 /// sort keys before hashing rather than relying on serde_json serialization.
 fn compute_session_hash(version: &str, base_configs: &[CopConfig], args: &Args) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"nitrocop-session-v3:");
+    hasher.update(b"nitrocop-session-v4:");
     hasher.update(version.as_bytes());
+    hasher.update(b":build:");
+    hasher.update(BUILD_SIGNATURE.as_bytes());
     hasher.update(b":");
 
     for config in base_configs {

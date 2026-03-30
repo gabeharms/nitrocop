@@ -1,0 +1,2 @@
+- Explore adaptive thread-pool sizing for warm/cache-hit workloads using measurable signals (cache-hit ratio and file count), not a fixed cap tweak. Fixed caps 4 and 6 were already tried and regressed.
+- Add cache-version invalidation tied to binary/build signature to prevent stale cached diagnostics after cop logic changes; this protects parity correctness without relying on `--no-cache` in validation loops.
