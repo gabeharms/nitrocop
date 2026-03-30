@@ -65,82 +65,69 @@ impl FileWrite {
         Some(content)
     }
 
+    fn open_filename_source(open_call: &ruby_prism::CallNode<'_>) -> Option<String> {
+        let open_args = open_call.arguments()?;
+        let open_arg_list: Vec<_> = open_args.arguments().iter().collect();
+        if open_arg_list.is_empty() {
+            return None;
+        }
+        Some(
+            std::str::from_utf8(open_arg_list[0].location().as_slice())
+                .ok()?
+                .to_string(),
+        )
+    }
+
     /// Check if the block body is a single `block_param.write(content)` call
-    /// where the write arg is not a splat.
-    fn is_block_write(block: &ruby_prism::BlockNode<'_>) -> bool {
+    /// where the write arg is not a splat, and return that content source.
+    fn block_write_content(block: &ruby_prism::BlockNode<'_>) -> Option<String> {
         // Must have exactly one block parameter
-        let params = match block.parameters() {
-            Some(p) => p,
-            None => return false,
-        };
-        let block_params = match params.as_block_parameters_node() {
-            Some(bp) => bp,
-            None => return false,
-        };
-        let params_node = match block_params.parameters() {
-            Some(p) => p,
-            None => return false,
-        };
+        let params = block.parameters()?;
+        let block_params = params.as_block_parameters_node()?;
+        let params_node = block_params.parameters()?;
         let requireds: Vec<_> = params_node.requireds().iter().collect();
         if requireds.len() != 1 || params_node.optionals().iter().count() > 0 {
-            return false;
+            return None;
         }
-        let param = match requireds[0].as_required_parameter_node() {
-            Some(p) => p,
-            None => return false,
-        };
+        let param = requireds[0].as_required_parameter_node()?;
         let param_name = param.name().as_slice();
 
         // Body must be a single statement
-        let body = match block.body() {
-            Some(b) => b,
-            None => return false,
-        };
-        let stmts = match body.as_statements_node() {
-            Some(s) => s,
-            None => return false,
-        };
+        let body = block.body()?;
+        let stmts = body.as_statements_node()?;
         let body_nodes: Vec<_> = stmts.body().iter().collect();
         if body_nodes.len() != 1 {
-            return false;
+            return None;
         }
 
         // The statement must be a call to `.write` on the block param
-        let write_call = match body_nodes[0].as_call_node() {
-            Some(c) => c,
-            None => return false,
-        };
+        let write_call = body_nodes[0].as_call_node()?;
         if write_call.name().as_slice() != b"write" {
-            return false;
+            return None;
         }
 
         // Receiver must be the block parameter (local variable read)
-        let recv = match write_call.receiver() {
-            Some(r) => r,
-            None => return false,
-        };
-        let lvar = match recv.as_local_variable_read_node() {
-            Some(l) => l,
-            None => return false,
-        };
+        let recv = write_call.receiver()?;
+        let lvar = recv.as_local_variable_read_node()?;
         if lvar.name().as_slice() != param_name {
-            return false;
+            return None;
         }
 
         // Must have exactly one argument to write, and it must not be a splat
-        let args = match write_call.arguments() {
-            Some(a) => a,
-            None => return false,
-        };
+        let args = write_call.arguments()?;
         let arg_list: Vec<_> = args.arguments().iter().collect();
         if arg_list.len() != 1 {
-            return false;
+            return None;
         }
         if arg_list[0].as_splat_node().is_some() {
-            return false;
+            return None;
         }
 
-        true
+        Some(
+            std::str::from_utf8(arg_list[0].location().as_slice())
+                .ok()?
+                .to_string(),
+        )
     }
 }
 
@@ -158,6 +145,10 @@ impl Cop for FileWrite {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -165,7 +156,7 @@ impl Cop for FileWrite {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -177,16 +168,49 @@ impl Cop for FileWrite {
             if let Some(receiver) = call.receiver() {
                 if let Some(open_call) = receiver.as_call_node() {
                     if let Some(mode) = Self::check_file_open_mode(&open_call) {
-                        let write_method = Self::write_method(&mode);
-                        let loc = call.location();
-                        let (line, column) = source.offset_to_line_col(loc.start_offset());
-                        diagnostics.push(self.diagnostic(
-                            source,
-                            line,
-                            column,
-                            format!("Use `{write_method}`."),
-                        ));
-                        return;
+                        if let Some(file_recv) = open_call.receiver() {
+                            if let Some(filename) = Self::open_filename_source(&open_call) {
+                                if let Some(write_args) = call.arguments() {
+                                    let write_arg_list: Vec<_> =
+                                        write_args.arguments().iter().collect();
+                                    if write_arg_list.len() == 1
+                                        && write_arg_list[0].as_splat_node().is_none()
+                                    {
+                                        if let Ok(content) = std::str::from_utf8(
+                                            write_arg_list[0].location().as_slice(),
+                                        ) {
+                                            let write_method = Self::write_method(&mode);
+                                            let replacement =
+                                                format!("{write_method}({filename}, {content})");
+
+                                            let loc = call.location();
+                                            let (line, column) =
+                                                source.offset_to_line_col(loc.start_offset());
+                                            let mut diag = self.diagnostic(
+                                                source,
+                                                line,
+                                                column,
+                                                format!("Use `{write_method}`."),
+                                            );
+
+                                            if let Some(ref mut corr) = corrections {
+                                                corr.push(crate::correction::Correction {
+                                                    start: file_recv.location().start_offset(),
+                                                    end: call.location().end_offset(),
+                                                    replacement,
+                                                    cop_name: self.name(),
+                                                    cop_index: 0,
+                                                });
+                                                diag.corrected = true;
+                                            }
+
+                                            diagnostics.push(diag);
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -195,18 +219,39 @@ impl Cop for FileWrite {
         // Pattern 2: File.open(filename, 'w') { |f| f.write(content) } — block form
         if call.name().as_slice() == b"open" {
             if let Some(mode) = Self::check_file_open_mode(&call) {
-                if let Some(block) = call.block() {
-                    if let Some(block_node) = block.as_block_node() {
-                        if Self::is_block_write(&block_node) {
-                            let write_method = Self::write_method(&mode);
-                            let loc = call.location();
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(self.diagnostic(
-                                source,
-                                line,
-                                column,
-                                format!("Use `{write_method}`."),
-                            ));
+                if let Some(file_recv) = call.receiver() {
+                    if let Some(filename) = Self::open_filename_source(&call) {
+                        if let Some(block) = call.block() {
+                            if let Some(block_node) = block.as_block_node() {
+                                if let Some(content) = Self::block_write_content(&block_node) {
+                                    let write_method = Self::write_method(&mode);
+                                    let replacement =
+                                        format!("{write_method}({filename}, {content})");
+
+                                    let loc = call.location();
+                                    let (line, column) =
+                                        source.offset_to_line_col(loc.start_offset());
+                                    let mut diag = self.diagnostic(
+                                        source,
+                                        line,
+                                        column,
+                                        format!("Use `{write_method}`."),
+                                    );
+
+                                    if let Some(ref mut corr) = corrections {
+                                        corr.push(crate::correction::Correction {
+                                            start: file_recv.location().start_offset(),
+                                            end: block.location().end_offset(),
+                                            replacement,
+                                            cop_name: self.name(),
+                                            cop_index: 0,
+                                        });
+                                        diag.corrected = true;
+                                    }
+
+                                    diagnostics.push(diag);
+                                }
+                            }
                         }
                     }
                 }
@@ -219,4 +264,5 @@ impl Cop for FileWrite {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(FileWrite, "cops/style/file_write");
+    crate::cop_autocorrect_fixture_tests!(FileWrite, "cops/style/file_write");
 }

@@ -1,0 +1,6 @@
+File.write(filename, content)
+File.binwrite(filename, content)
+File.write(filename, content)
+File.write(filename, content)
+File.binwrite(filename, content)
+File.write(filename, content)
