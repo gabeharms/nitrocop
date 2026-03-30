@@ -22,6 +22,10 @@ impl Cop for DoubleCopDisableDirective {
         "Style/DoubleCopDisableDirective"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -29,7 +33,7 @@ impl Cop for DoubleCopDisableDirective {
         code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Compute line byte offsets for heredoc checking
         let lines: Vec<&[u8]> = source.lines().collect();
@@ -72,12 +76,30 @@ impl Cop for DoubleCopDisableDirective {
             let rest = &line_str[after_first..];
             if rest.contains("# rubocop:disable ") || rest.contains("# rubocop:todo ") {
                 let col = first_pos;
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     i + 1,
                     col,
                     "More than one disable comment on one line.".to_string(),
-                ));
+                );
+
+                if let Some(ref mut corr) = corrections {
+                    let comment_start = line_offsets[i] + first_pos;
+                    let comment_end = line_offsets[i] + line.len();
+                    let merged = line_str[first_pos..]
+                        .replace(" # rubocop:disable ", ", ")
+                        .replace(" # rubocop:todo ", ", ");
+                    corr.push(crate::correction::Correction {
+                        start: comment_start,
+                        end: comment_end,
+                        replacement: merged,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                diagnostics.push(diag);
             }
         }
     }
@@ -87,6 +109,10 @@ impl Cop for DoubleCopDisableDirective {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        DoubleCopDisableDirective,
+        "cops/style/double_cop_disable_directive"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         DoubleCopDisableDirective,
         "cops/style/double_cop_disable_directive"
     );
