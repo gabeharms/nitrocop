@@ -125,9 +125,9 @@ impl FileRead {
         false
     }
 
-    /// Analyze the File.open call and return the offense location + message if it matches.
-    /// Returns (start_offset, end_offset, is_binary) if offense found.
-    fn check_file_open(call: &ruby_prism::CallNode<'_>) -> Option<(usize, usize, bool)> {
+    /// Analyze the File.open call and return offense replacement details when it matches.
+    /// Returns (start_offset, end_offset, replacement).
+    fn check_file_open(call: &ruby_prism::CallNode<'_>) -> Option<(usize, usize, String)> {
         // Must be `open` method
         if call.name().as_slice() != b"open" {
             return None;
@@ -150,6 +150,10 @@ impl FileRead {
             return None;
         }
 
+        let filename = std::str::from_utf8(args[0].location().as_slice())
+            .ok()?
+            .to_string();
+
         // If 2 args, second must be a valid read mode string
         let mut is_binary = false;
         if args.len() == 2 {
@@ -164,12 +168,22 @@ impl FileRead {
             if Self::is_read_block_pass(&block) {
                 let start = file_recv.location().start_offset();
                 let end = call.location().end_offset();
-                return Some((start, end, is_binary));
+                let replacement = if is_binary {
+                    format!("File.binread({filename})")
+                } else {
+                    format!("File.read({filename})")
+                };
+                return Some((start, end, replacement));
             }
             if Self::is_read_block(&block) {
                 let start = file_recv.location().start_offset();
                 let end = block.location().end_offset();
-                return Some((start, end, is_binary));
+                let replacement = if is_binary {
+                    format!("File.binread({filename})")
+                } else {
+                    format!("File.read({filename})")
+                };
+                return Some((start, end, replacement));
             }
             // Has a block but it's not a simple read block — skip
             return None;
@@ -182,7 +196,7 @@ impl FileRead {
     }
 
     /// Check chain form: the current node is `.read` called on `File.open(...)`.
-    fn check_chain_read(call: &ruby_prism::CallNode<'_>) -> Option<(usize, usize, bool)> {
+    fn check_chain_read(call: &ruby_prism::CallNode<'_>) -> Option<(usize, usize, String)> {
         if call.name().as_slice() != b"read" {
             return None;
         }
@@ -214,6 +228,10 @@ impl FileRead {
             return None;
         }
 
+        let filename = std::str::from_utf8(args[0].location().as_slice())
+            .ok()?
+            .to_string();
+
         let mut is_binary = false;
         if args.len() == 2 {
             match Self::is_read_mode(&args[1]) {
@@ -229,7 +247,12 @@ impl FileRead {
 
         let start = file_recv.location().start_offset();
         let end = call.location().end_offset();
-        Some((start, end, is_binary))
+        let replacement = if is_binary {
+            format!("File.binread({filename})")
+        } else {
+            format!("File.read({filename})")
+        };
+        Some((start, end, replacement))
     }
 }
 
@@ -242,6 +265,10 @@ impl Cop for FileRead {
         &[CALL_NODE, CONSTANT_PATH_NODE, CONSTANT_READ_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -249,7 +276,7 @@ impl Cop for FileRead {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -260,14 +287,27 @@ impl Cop for FileRead {
         // and chain form (triggered on `read`)
         let result = Self::check_file_open(&call).or_else(|| Self::check_chain_read(&call));
 
-        if let Some((start, _end, is_binary)) = result {
+        if let Some((start, end, replacement)) = result {
             let (line, column) = source.offset_to_line_col(start);
-            let msg = if is_binary {
+            let msg = if replacement.starts_with("File.binread") {
                 "Use `File.binread`."
             } else {
                 "Use `File.read`."
             };
-            diagnostics.push(self.diagnostic(source, line, column, msg.to_string()));
+            let mut diag = self.diagnostic(source, line, column, msg.to_string());
+
+            if let Some(ref mut corr) = corrections {
+                corr.push(crate::correction::Correction {
+                    start,
+                    end,
+                    replacement,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+
+            diagnostics.push(diag);
         }
     }
 }
@@ -276,4 +316,5 @@ impl Cop for FileRead {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(FileRead, "cops/style/file_read");
+    crate::cop_autocorrect_fixture_tests!(FileRead, "cops/style/file_read");
 }

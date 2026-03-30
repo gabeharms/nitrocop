@@ -1,5 +1,5 @@
-- Explore `Style/CollectionMethods` / `Style/ArrayIntersect` as next chain canonicalization targets if replacements remain localized.
+- Evaluate `Style/FileRead` for whole-expression rewrite to `File.read` / `File.binread` using existing validated pattern boundaries.
+- Evaluate `Style/HashEachMethods` for low-risk selector swaps first (`keys.each`/`values.each`), deferring block-parameter rewrites if needed.
 - Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
-- Evaluate `Style/RedundantStringEscape` and `Style/RedundantRegexpEscape` for token-level escape cleanup opportunities.
 - Keep Layout backlog in staged batches (spacing cops first, then alignment/indentation) after easy Style/Lint wins taper off.
 - Optional throughput refactor if implementation churn grows: tiny helper for selector/operator/full-call replacements to reduce duplicate correction code.
