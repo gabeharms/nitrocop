@@ -21,6 +21,8 @@ impl RedundantStringEscape {
         content: &[u8],
         content_start: usize,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Vec<crate::correction::Correction>,
+        emit_corrections: bool,
     ) {
         let mut i = 0;
 
@@ -52,12 +54,25 @@ impl RedundantStringEscape {
                 if is_redundant {
                     let abs_offset = content_start + i;
                     let (line, column) = source.offset_to_line_col(abs_offset);
-                    diagnostics.push(self.diagnostic(
+                    let mut diag = self.diagnostic(
                         source,
                         line,
                         column,
                         format!("Redundant escape of `{}` in string.", escaped as char),
-                    ));
+                    );
+
+                    if emit_corrections {
+                        corrections.push(crate::correction::Correction {
+                            start: abs_offset,
+                            end: abs_offset + 1,
+                            replacement: String::new(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+
+                    diagnostics.push(diag);
                 }
                 i += 2;
             } else {
@@ -76,6 +91,10 @@ impl Cop for RedundantStringEscape {
         &[STRING_NODE, INTERPOLATED_STRING_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -83,8 +102,11 @@ impl Cop for RedundantStringEscape {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        let mut local_corrections = Vec::new();
+        let emit_corrections = corrections.is_some();
+
         if let Some(s) = node.as_string_node() {
             let opening_loc = match s.opening_loc() {
                 Some(o) => o,
@@ -100,7 +122,14 @@ impl Cop for RedundantStringEscape {
             let content_loc = s.content_loc();
             let content = content_loc.as_slice();
             let content_start = content_loc.start_offset();
-            self.scan_escapes(source, content, content_start, diagnostics);
+            self.scan_escapes(
+                source,
+                content,
+                content_start,
+                diagnostics,
+                &mut local_corrections,
+                emit_corrections,
+            );
         } else if let Some(s) = node.as_interpolated_string_node() {
             let opening_loc = match s.opening_loc() {
                 Some(o) => o,
@@ -120,9 +149,20 @@ impl Cop for RedundantStringEscape {
                     let content_loc = str_part.content_loc();
                     let content = content_loc.as_slice();
                     let content_start = content_loc.start_offset();
-                    self.scan_escapes(source, content, content_start, diagnostics);
+                    self.scan_escapes(
+                        source,
+                        content,
+                        content_start,
+                        diagnostics,
+                        &mut local_corrections,
+                        emit_corrections,
+                    );
                 }
             }
+        }
+
+        if let Some(ref mut corr) = corrections {
+            corr.extend(local_corrections);
         }
     }
 }
@@ -131,4 +171,8 @@ impl Cop for RedundantStringEscape {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantStringEscape, "cops/style/redundant_string_escape");
+    crate::cop_autocorrect_fixture_tests!(
+        RedundantStringEscape,
+        "cops/style/redundant_string_escape"
+    );
 }
