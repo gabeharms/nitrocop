@@ -326,14 +326,14 @@ impl ResultCache {
         }
 
         let entries = self.entries.read().unwrap();
-        let json = match serde_json::to_vec(&*entries) {
-            Ok(j) => j,
+        let bytes = match bincode::serialize(&*entries) {
+            Ok(b) => b,
             Err(_) => return,
         };
         drop(entries);
 
         let tmp_path = self.index_path.with_extension("tmp");
-        if std::fs::write(&tmp_path, &json).is_ok() {
+        if std::fs::write(&tmp_path, &bytes).is_ok() {
             let _ = std::fs::rename(&tmp_path, &self.index_path);
         }
     }
@@ -355,7 +355,9 @@ fn load_index(index_path: &Path) -> HashMap<String, CacheEntry> {
         Ok(d) => d,
         Err(_) => return HashMap::new(),
     };
-    serde_json::from_slice(&data).unwrap_or_default()
+    bincode::deserialize(&data)
+        .or_else(|_| serde_json::from_slice(&data))
+        .unwrap_or_default()
 }
 
 /// Convert SystemTime to (secs, nanos) since UNIX epoch.
