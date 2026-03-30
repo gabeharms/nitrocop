@@ -3199,9 +3199,11 @@ impl ResolvedConfig {
                     enabled = false;
                 }
 
-                // Preview tier gating: preview cops are disabled unless --preview
+                // Preview tier gating: preview cops are disabled unless --preview,
+                // except when AllCops/NewCops is explicitly enabled (RuboCop parity).
                 if enabled
                     && !preview
+                    && self.new_cops != NewCopsPolicy::Enable
                     && tier_map.tier_for(name) == crate::cop::tiers::Tier::Preview
                 {
                     enabled = false;
@@ -3341,7 +3343,10 @@ impl ResolvedConfig {
 
             if registry.get(name.as_str()).is_some() {
                 // Implemented — check if preview-gated
-                if !preview && tier_map.tier_for(name) == crate::cop::tiers::Tier::Preview {
+                if !preview
+                    && self.new_cops != NewCopsPolicy::Enable
+                    && tier_map.tier_for(name) == crate::cop::tiers::Tier::Preview
+                {
                     summary.preview_gated.push(name.clone());
                 }
             } else if self.rubocop_known_cops.contains(name)
