@@ -1450,7 +1450,9 @@ fn load_cached_rubocop_defaults(
 ) -> Option<(ConfigLayer, HashSet<String>)> {
     let cache_path = rubocop_defaults_cache_path(default_config);
     let bytes = std::fs::read(cache_path).ok()?;
-    let cache: RubocopDefaultsCache = serde_json::from_slice(&bytes).ok()?;
+    let cache: RubocopDefaultsCache = bincode::deserialize(&bytes)
+        .or_else(|_| serde_json::from_slice(&bytes))
+        .ok()?;
     if cache.version != RUBOCOP_DEFAULTS_CACHE_VERSION
         || cache.mtime_secs != mtime_secs
         || cache.mtime_nanos != mtime_nanos
@@ -1482,7 +1484,7 @@ fn write_cached_rubocop_defaults(
         layer: layer.clone(),
     };
 
-    let Ok(bytes) = serde_json::to_vec(&cache) else {
+    let Ok(bytes) = bincode::serialize(&cache) else {
         return;
     };
 
@@ -1537,7 +1539,9 @@ fn load_cached_gem_config_layer(
 ) -> Option<(ConfigLayer, Vec<PathBuf>)> {
     let cache_path = gem_config_layer_cache_path(config_path);
     let bytes = std::fs::read(cache_path).ok()?;
-    let cache: GemConfigLayerCache = serde_json::from_slice(&bytes).ok()?;
+    let cache: GemConfigLayerCache = bincode::deserialize(&bytes)
+        .or_else(|_| serde_json::from_slice(&bytes))
+        .ok()?;
     if cache.version != GEM_CONFIG_LAYER_CACHE_VERSION
         || cache.mtime_secs != mtime_secs
         || cache.mtime_nanos != mtime_nanos
@@ -1597,7 +1601,7 @@ fn write_cached_gem_config_layer(
         layer: layer.clone(),
     };
 
-    let Ok(bytes) = serde_json::to_vec(&cache) else {
+    let Ok(bytes) = bincode::serialize(&cache) else {
         return;
     };
 
