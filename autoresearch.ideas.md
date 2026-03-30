@@ -1,5 +1,6 @@
-- Evaluate `Style/MapIntoArray` for a conservative rewrite subset where detected push-into-empty-array patterns can be rewritten to direct map assignment without altering side effects.
-- Evaluate `Style/MapCompactWithConditionalBlock` / `Style/ReverseFind`-adjacent chain cops only where existing matches already provide one-expression canonical rewrites.
+- Evaluate `Style/MapIntoArray` for a conservative subset only (single-assignment `x = []; enum.each { ... x << ... }` patterns without side-effectful accumulator rebinds).
+- Evaluate `Style/MapCompactWithConditionalBlock` only where match already encodes a direct `filter_map`/`map.compact` canonical replacement with no control-flow reshaping.
+- Evaluate `Style/CommentedKeyword` with safety-first corrections (line-comment extraction/removal only where comment boundaries are unambiguous).
 - Evaluate `Security/YAMLLoad` only with strict target-Ruby guards (Ruby <= 3.0 behavior) and real offense parity; avoid metric-only toggles.
 - Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
-- Keep Layout backlog in staged batches (spacing cops first, then alignment/indentation) after easy Style/Lint wins taper off.
+- Keep Layout backlog staged (spacing-first, then alignment/indentation) after low-risk Style/Lint chain/selector wins taper off.

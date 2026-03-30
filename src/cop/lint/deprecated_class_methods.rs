@@ -57,6 +57,10 @@ impl Cop for DeprecatedClassMethods {
         "Lint/DeprecatedClassMethods"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -72,7 +76,7 @@ impl Cop for DeprecatedClassMethods {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -88,7 +92,18 @@ impl Cop for DeprecatedClassMethods {
                 let loc = call.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
                 let message = "`iterator?` is deprecated in favor of `block_given?`.".to_string();
-                diagnostics.push(self.diagnostic(source, line, column, message));
+                let mut diag = self.diagnostic(source, line, column, message);
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: "block_given?".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
                 return;
             }
 
@@ -124,7 +139,18 @@ impl Cop for DeprecatedClassMethods {
                                 call_source, preferred
                             );
                             let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(self.diagnostic(source, line, column, message));
+                            let mut diag = self.diagnostic(source, line, column, message);
+                            if let Some(corr) = corrections.as_mut() {
+                                corr.push(crate::correction::Correction {
+                                    start: loc.start_offset(),
+                                    end: loc.end_offset(),
+                                    replacement: preferred,
+                                    cop_name: self.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                            diagnostics.push(diag);
                         }
                     }
                 }
@@ -152,7 +178,20 @@ impl Cop for DeprecatedClassMethods {
 
                 // Offense range: from receiver start to end of method selector
                 let (line, column) = source.offset_to_line_col(receiver_loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, message));
+                let mut diag = self.diagnostic(source, line, column, message);
+                if let Some(corr) = corrections.as_mut() {
+                    if let Some(msg_loc) = call.message_loc() {
+                        corr.push(crate::correction::Correction {
+                            start: msg_loc.start_offset(),
+                            end: msg_loc.end_offset(),
+                            replacement: "exist?".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                }
+                diagnostics.push(diag);
             }
 
             // ENV.clone / ENV.dup
@@ -169,7 +208,20 @@ impl Cop for DeprecatedClassMethods {
                 let message = format!("`{}` is deprecated in favor of `{}`.", current, prefer);
 
                 let (line, column) = source.offset_to_line_col(receiver_loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, message));
+                let mut diag = self.diagnostic(source, line, column, message);
+                if let Some(corr) = corrections.as_mut() {
+                    if let Some(msg_loc) = call.message_loc() {
+                        corr.push(crate::correction::Correction {
+                            start: msg_loc.start_offset(),
+                            end: msg_loc.end_offset(),
+                            replacement: "to_h".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                }
+                diagnostics.push(diag);
             }
 
             // ENV.freeze
@@ -181,7 +233,18 @@ impl Cop for DeprecatedClassMethods {
                 let message = format!("`{}` is deprecated in favor of `{}`.", current, prefer);
 
                 let (line, column) = source.offset_to_line_col(receiver_loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, message));
+                let mut diag = self.diagnostic(source, line, column, message);
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: call.location().start_offset(),
+                        end: call.location().end_offset(),
+                        replacement: receiver_source.to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
 
             // Socket.gethostbyaddr / Socket.gethostbyname
@@ -216,4 +279,8 @@ impl Cop for DeprecatedClassMethods {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(DeprecatedClassMethods, "cops/lint/deprecated_class_methods");
+    crate::cop_autocorrect_fixture_tests!(
+        DeprecatedClassMethods,
+        "cops/lint/deprecated_class_methods"
+    );
 }
