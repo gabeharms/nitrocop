@@ -1,4 +1,5 @@
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
@@ -31,6 +32,10 @@ impl Cop for ClassEqualityComparison {
         "Style/ClassEqualityComparison"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -38,7 +43,7 @@ impl Cop for ClassEqualityComparison {
         _code_map: &crate::cop::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allowed_methods: Vec<String> = config
             .get_string_array("AllowedMethods")
@@ -54,12 +59,17 @@ impl Cop for ClassEqualityComparison {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            autocorrect_enabled: corrections.is_some(),
             allowed_methods,
             allowed_patterns,
             enclosing_def_name: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corr) = corrections.as_mut() {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -67,9 +77,68 @@ struct ClassEqVisitor<'a> {
     cop: &'a ClassEqualityComparison,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<Correction>,
+    autocorrect_enabled: bool,
     allowed_methods: Vec<String>,
     allowed_patterns: Vec<regex::Regex>,
     enclosing_def_name: Option<Vec<u8>>,
+}
+
+fn node_source(source: &SourceFile, node: &ruby_prism::Node<'_>) -> String {
+    String::from_utf8_lossy(
+        &source.as_bytes()[node.location().start_offset()..node.location().end_offset()],
+    )
+    .to_string()
+}
+
+fn is_constant_path(name: &str) -> bool {
+    let candidate = name.strip_prefix("::").unwrap_or(name);
+    if candidate.is_empty() {
+        return false;
+    }
+    candidate.split("::").all(|seg| {
+        let mut chars = seg.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        first.is_ascii_uppercase() && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+fn build_instance_of_replacement(
+    source: &SourceFile,
+    compare_call: &ruby_prism::CallNode<'_>,
+    recv_call: &ruby_prism::CallNode<'_>,
+    is_class_name_call: bool,
+) -> Option<String> {
+    let receiver_node = if is_class_name_call {
+        recv_call.receiver()?.as_call_node()?.receiver()?
+    } else {
+        recv_call.receiver()?
+    };
+
+    let rhs = compare_call.arguments()?.arguments().iter().next()?;
+    let class_arg = if is_class_name_call {
+        if let Some(str_node) = rhs.as_string_node() {
+            let name = String::from_utf8_lossy(str_node.unescaped()).to_string();
+            if !is_constant_path(&name) {
+                return None;
+            }
+            name
+        } else if rhs.as_constant_read_node().is_some() || rhs.as_constant_path_node().is_some() {
+            node_source(source, &rhs)
+        } else {
+            return None;
+        }
+    } else {
+        node_source(source, &rhs)
+    };
+
+    Some(format!(
+        "{}.instance_of?({})",
+        node_source(source, &receiver_node),
+        class_arg
+    ))
 }
 
 impl<'a, 'pr> Visit<'pr> for ClassEqVisitor<'a> {
@@ -164,12 +233,32 @@ impl<'a, 'pr> Visit<'pr> for ClassEqVisitor<'a> {
                             .message_loc()
                             .unwrap_or_else(|| recv_call.location());
                         let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                        self.diagnostics.push(self.cop.diagnostic(
+                        let mut diag = self.cop.diagnostic(
                             self.source,
                             line,
                             column,
                             "Use `instance_of?` instead of comparing classes.".to_string(),
-                        ));
+                        );
+
+                        if self.autocorrect_enabled {
+                            if let Some(replacement) = build_instance_of_replacement(
+                                self.source,
+                                node,
+                                &recv_call,
+                                is_class_name_call,
+                            ) {
+                                self.corrections.push(Correction {
+                                    start: node.location().start_offset(),
+                                    end: node.location().end_offset(),
+                                    replacement,
+                                    cop_name: self.cop.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                        }
+
+                        self.diagnostics.push(diag);
                     }
                 }
             }
@@ -183,6 +272,10 @@ impl<'a, 'pr> Visit<'pr> for ClassEqVisitor<'a> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        ClassEqualityComparison,
+        "cops/style/class_equality_comparison"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         ClassEqualityComparison,
         "cops/style/class_equality_comparison"
     );
