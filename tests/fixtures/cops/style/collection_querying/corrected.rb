@@ -1,0 +1,11 @@
+x.any?
+
+x.none?
+
+x.any?
+
+x.none?
+
+x.any?
+
+x.one?

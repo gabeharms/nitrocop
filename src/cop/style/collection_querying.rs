@@ -10,6 +10,53 @@ use crate::parse::source::SourceFile;
 /// Note: `x&.count.positive?` IS still flagged (safe-nav on receiver of count is fine).
 pub struct CollectionQuerying;
 
+impl CollectionQuerying {
+    fn add_offense(
+        &self,
+        source: &SourceFile,
+        outer_call: &ruby_prism::CallNode<'_>,
+        count_call: &ruby_prism::CallNode<'_>,
+        suggestion: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
+    ) {
+        let loc = count_call.message_loc().unwrap_or(count_call.location());
+        let (line, column) = source.offset_to_line_col(loc.start_offset());
+        let mut diag = self.diagnostic(
+            source,
+            line,
+            column,
+            format!("Use `{}` instead.", suggestion),
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: suggestion.to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+
+            let remove_start = count_call.location().end_offset();
+            let remove_end = outer_call.location().end_offset();
+            if remove_start < remove_end {
+                corr.push(crate::correction::Correction {
+                    start: remove_start,
+                    end: remove_end,
+                    replacement: String::new(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+            }
+
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
+    }
+}
+
 impl Cop for CollectionQuerying {
     fn name(&self) -> &'static str {
         "Style/CollectionQuerying"
@@ -19,6 +66,10 @@ impl Cop for CollectionQuerying {
         &[BLOCK_ARGUMENT_NODE, CALL_NODE, INTEGER_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -26,7 +77,7 @@ impl Cop for CollectionQuerying {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -64,14 +115,14 @@ impl Cop for CollectionQuerying {
                                 "none?"
                             };
 
-                            let loc = recv_call.message_loc().unwrap_or(recv_call.location());
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(self.diagnostic(
+                            self.add_offense(
                                 source,
-                                line,
-                                column,
-                                format!("Use `{}` instead.", suggestion),
-                            ));
+                                &call,
+                                &recv_call,
+                                suggestion,
+                                diagnostics,
+                                &mut corrections,
+                            );
                         }
                     }
                 }
@@ -112,17 +163,14 @@ impl Cop for CollectionQuerying {
                                             _ => None,
                                         };
                                         if let Some(suggestion) = suggestion {
-                                            let loc = recv_call
-                                                .message_loc()
-                                                .unwrap_or(recv_call.location());
-                                            let (line, column) =
-                                                source.offset_to_line_col(loc.start_offset());
-                                            diagnostics.push(self.diagnostic(
+                                            self.add_offense(
                                                 source,
-                                                line,
-                                                column,
-                                                format!("Use `{}` instead.", suggestion),
-                                            ));
+                                                &call,
+                                                &recv_call,
+                                                suggestion,
+                                                diagnostics,
+                                                &mut corrections,
+                                            );
                                         }
                                     }
                                 }
@@ -159,4 +207,5 @@ fn has_positional_args(call: &ruby_prism::CallNode<'_>) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(CollectionQuerying, "cops/style/collection_querying");
+    crate::cop_autocorrect_fixture_tests!(CollectionQuerying, "cops/style/collection_querying");
 }
