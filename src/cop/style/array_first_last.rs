@@ -74,6 +74,10 @@ impl Cop for ArrayFirstLast {
         false
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -81,7 +85,7 @@ impl Cop for ArrayFirstLast {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if path_has_hidden_component(&source.path) {
             return;
@@ -91,10 +95,15 @@ impl Cop for ArrayFirstLast {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            emit_corrections: corrections.is_some(),
             suppressed_offsets: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -102,6 +111,8 @@ struct ArrayFirstLastVisitor<'a> {
     cop: &'a ArrayFirstLast,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
     /// Selector/message start offsets of `[]` call nodes that should NOT be
     /// flagged because they are a direct child (receiver or argument) of
     /// another `[]/[]=` call. We key off the selector, not `call.location()`,
@@ -361,21 +372,33 @@ impl ArrayFirstLastVisitor<'_> {
                 let loc = call.message_loc().unwrap_or(call.location());
                 let (line, column) = self.source.offset_to_line_col(loc.start_offset());
 
-                if v == 0 {
-                    self.diagnostics.push(self.cop.diagnostic(
-                        self.source,
-                        line,
-                        column,
-                        "Use `first`.".to_string(),
-                    ));
+                let (message, method_name) = if v == 0 {
+                    ("Use `first`.".to_string(), "first")
                 } else if v == -1 {
-                    self.diagnostics.push(self.cop.diagnostic(
-                        self.source,
-                        line,
-                        column,
-                        "Use `last`.".to_string(),
-                    ));
+                    ("Use `last`.".to_string(), "last")
+                } else {
+                    return;
+                };
+
+                let mut diag = self.cop.diagnostic(self.source, line, column, message);
+                if self.emit_corrections {
+                    let replacement = if call.call_operator_loc().is_some() {
+                        method_name.to_string()
+                    } else {
+                        format!(".{method_name}")
+                    };
+
+                    self.corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: call.location().end_offset(),
+                        replacement,
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
                 }
+
+                self.diagnostics.push(diag);
             }
         }
     }
@@ -387,6 +410,7 @@ mod tests {
     use crate::cop::CopConfig;
     use crate::testutil::run_cop_full_internal;
     crate::cop_fixture_tests!(ArrayFirstLast, "cops/style/array_first_last");
+    crate::cop_autocorrect_fixture_tests!(ArrayFirstLast, "cops/style/array_first_last");
 
     fn run(source: &[u8]) -> Vec<crate::diagnostic::Diagnostic> {
         run_cop_full_internal(&ArrayFirstLast, source, CopConfig::default(), "test.rb")
