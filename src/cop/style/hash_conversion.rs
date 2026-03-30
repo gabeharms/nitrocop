@@ -26,6 +26,10 @@ impl Cop for HashConversion {
         "Style/HashConversion"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -33,7 +37,7 @@ impl Cop for HashConversion {
         _code_map: &CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allow_splat = config.get_bool("AllowSplatArgument", true);
 
@@ -41,11 +45,16 @@ impl Cop for HashConversion {
             source,
             cop: self,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            emit_corrections: corrections.is_some(),
             allow_splat,
             hash_bracket_depth: 0,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -53,6 +62,8 @@ struct HashConversionVisitor<'a> {
     source: &'a SourceFile,
     cop: &'a HashConversion,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
     allow_splat: bool,
     /// How many `Hash[...]` calls we are currently nested inside.
     /// When > 0, new `Hash[]` calls are suppressed (RuboCop's ignore_node behavior).
@@ -75,13 +86,35 @@ fn is_hash_bracket_call(call: &ruby_prism::CallNode<'_>) -> bool {
 }
 
 impl<'a> HashConversionVisitor<'a> {
+    fn node_source(node: &ruby_prism::Node<'_>) -> Option<String> {
+        Some(
+            std::str::from_utf8(node.location().as_slice())
+                .ok()?
+                .to_string(),
+        )
+    }
+
+    fn to_h_replacement(arg: &ruby_prism::Node<'_>) -> Option<String> {
+        let source = Self::node_source(arg)?;
+        let needs_parens = source.contains('\n')
+            || arg
+                .as_call_node()
+                .is_some_and(|call| call.arguments().is_some() || call.block().is_some());
+        if needs_parens {
+            Some(format!("({source}).to_h"))
+        } else {
+            Some(format!("{source}.to_h"))
+        }
+    }
+
     fn check_hash_call(&mut self, call: &ruby_prism::CallNode<'_>) {
         let loc = call.location();
         let (line, column) = self.source.offset_to_line_col(loc.start_offset());
 
-        let args = call.arguments();
+        let mut replacement: Option<String> = None;
+        let message: String;
 
-        if let Some(args) = args {
+        if let Some(args) = call.arguments() {
             let arg_list: Vec<_> = args.arguments().iter().collect();
 
             // Check for splat argument
@@ -89,44 +122,53 @@ impl<'a> HashConversionVisitor<'a> {
                 return;
             }
 
-            // Check for keyword hash argument
-            if arg_list.len() == 1 && arg_list[0].as_keyword_hash_node().is_some() {
-                self.diagnostics.push(self.cop.diagnostic(
-                    self.source,
-                    line,
-                    column,
-                    "Prefer literal hash to `Hash[key: value, ...]`.".to_string(),
-                ));
-                return;
-            }
-
             if arg_list.len() == 1 {
-                self.diagnostics.push(self.cop.diagnostic(
-                    self.source,
-                    line,
-                    column,
-                    "Prefer `ary.to_h` to `Hash[ary]`.".to_string(),
-                ));
-                return;
+                if arg_list[0].as_keyword_hash_node().is_some() {
+                    message = "Prefer literal hash to `Hash[key: value, ...]`.".to_string();
+                    replacement = Self::node_source(&arg_list[0]).map(|src| format!("{{{src}}}"));
+                } else {
+                    message = "Prefer `ary.to_h` to `Hash[ary]`.".to_string();
+                    replacement = Self::to_h_replacement(&arg_list[0]);
+                }
+            } else {
+                message = "Prefer literal hash to `Hash[arg1, arg2, ...]`.".to_string();
+                if arg_list.len() % 2 == 0 {
+                    let mut pairs = Vec::new();
+                    for chunk in arg_list.chunks(2) {
+                        let Some(key) = Self::node_source(&chunk[0]) else {
+                            continue;
+                        };
+                        let Some(value) = Self::node_source(&chunk[1]) else {
+                            continue;
+                        };
+                        pairs.push(format!("{key} => {value}"));
+                    }
+                    if pairs.len() * 2 == arg_list.len() {
+                        replacement = Some(format!("{{{}}}", pairs.join(", ")));
+                    }
+                }
             }
-
-            // Multi-argument
-            self.diagnostics.push(self.cop.diagnostic(
-                self.source,
-                line,
-                column,
-                "Prefer literal hash to `Hash[arg1, arg2, ...]`.".to_string(),
-            ));
-            return;
+        } else {
+            // No arguments: Hash[]
+            message = "Prefer literal hash to `Hash[arg1, arg2, ...]`.".to_string();
+            replacement = Some("{}".to_string());
         }
 
-        // No arguments: Hash[]
-        self.diagnostics.push(self.cop.diagnostic(
-            self.source,
-            line,
-            column,
-            "Prefer literal hash to `Hash[arg1, arg2, ...]`.".to_string(),
-        ));
+        let mut diag = self.cop.diagnostic(self.source, line, column, message);
+        if self.emit_corrections {
+            if let Some(replacement) = replacement {
+                self.corrections.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement,
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+        }
+
+        self.diagnostics.push(diag);
     }
 }
 
@@ -151,4 +193,5 @@ impl<'a> Visit<'_> for HashConversionVisitor<'a> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(HashConversion, "cops/style/hash_conversion");
+    crate::cop_autocorrect_fixture_tests!(HashConversion, "cops/style/hash_conversion");
 }
