@@ -911,7 +911,35 @@ fn emit_syntax_diagnostics(
             corrected: false,
         });
     }
+
+    suppress_secondary_syntax_diagnostics(diagnostics)
+}
+
+fn is_recovery_ignoring_message(message: &str) -> bool {
+    // "unexpected label, ignoring it" is often RuboCop's primary syntax
+    // offense equivalent (reported as unexpected token `foo:`), so keep it.
+    message.ends_with(", ignoring it") && message != "unexpected label, ignoring it"
+}
+
+/// Prism can emit multiple diagnostics at the same location during error recovery,
+/// including secondary "..., ignoring it" notices. RuboCop/Parser typically reports
+/// just the primary parser diagnostic for that location. Keep recovery notices only
+/// when there is no primary diagnostic at the same location.
+fn suppress_secondary_syntax_diagnostics(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    let mut loc_has_primary: HashSet<(usize, usize)> = HashSet::new();
+    for diag in &diagnostics {
+        if !is_recovery_ignoring_message(&diag.message) {
+            loc_has_primary.insert((diag.location.line, diag.location.column));
+        }
+    }
+
     diagnostics
+        .into_iter()
+        .filter(|diag| {
+            !is_recovery_ignoring_message(&diag.message)
+                || !loc_has_primary.contains(&(diag.location.line, diag.location.column))
+        })
+        .collect()
 }
 
 /// Run all enabled cops once on a source file. Returns (diagnostics, corrections).
@@ -1415,5 +1443,59 @@ renamed:
     #[test]
     fn encoding_comment_utf8_still_detected() {
         assert!(has_encoding_magic_comment(b"# encoding: utf-8\nx = 1\n"));
+    }
+
+    #[test]
+    fn suppress_secondary_syntax_drops_ignoring_message_when_primary_exists() {
+        let diagnostics = vec![
+            Diagnostic {
+                path: "test.rb".to_string(),
+                location: Location {
+                    line: 1,
+                    column: 10,
+                },
+                severity: Severity::Fatal,
+                cop_name: "Lint/Syntax".to_string(),
+                message: "unexpected ',', expecting end-of-input".to_string(),
+                corrected: false,
+            },
+            Diagnostic {
+                path: "test.rb".to_string(),
+                location: Location {
+                    line: 1,
+                    column: 10,
+                },
+                severity: Severity::Fatal,
+                cop_name: "Lint/Syntax".to_string(),
+                message: "unexpected ',', ignoring it".to_string(),
+                corrected: false,
+            },
+        ];
+
+        let filtered = suppress_secondary_syntax_diagnostics(diagnostics);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].message,
+            "unexpected ',', expecting end-of-input"
+        );
+    }
+
+    #[test]
+    fn suppress_secondary_syntax_keeps_ignoring_when_no_primary_at_location() {
+        let diagnostics = vec![Diagnostic {
+            path: "test.rb".to_string(),
+            location: Location {
+                line: 1,
+                column: 10,
+            },
+            severity: Severity::Fatal,
+            cop_name: "Lint/Syntax".to_string(),
+            message: "unexpected ',', ignoring it".to_string(),
+            corrected: false,
+        }];
+
+        let filtered = suppress_secondary_syntax_diagnostics(diagnostics);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].message, "unexpected ',', ignoring it");
     }
 }
