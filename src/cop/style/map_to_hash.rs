@@ -49,6 +49,10 @@ impl Cop for MapToHash {
         "Style/MapToHash"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE]
     }
@@ -60,7 +64,7 @@ impl Cop for MapToHash {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // RuboCop: minimum_target_ruby_version 2.6
         if target_ruby_version(config) < 2.6 {
@@ -112,12 +116,65 @@ impl Cop for MapToHash {
             .message_loc()
             .unwrap_or_else(|| recv_call.location());
         let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Pass a block to `to_h` instead of calling `{method_str}{dot}to_h`."),
-        ));
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            let to_h_msg_loc = call.message_loc().unwrap_or_else(|| call.location());
+            corr.push(crate::correction::Correction {
+                start: msg_loc.start_offset(),
+                end: msg_loc.end_offset(),
+                replacement: "to_h".to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            if let Some(op_loc) = call.call_operator_loc() {
+                corr.push(crate::correction::Correction {
+                    start: op_loc.start_offset(),
+                    end: to_h_msg_loc.end_offset(),
+                    replacement: "".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+            }
+
+            // `map { |(k, v)| ... }.to_h` -> `to_h { |k, v| ... }`
+            if let Some(block) = recv_call.block().and_then(|b| b.as_block_node()) {
+                if let Some(params) = block
+                    .parameters()
+                    .and_then(|p| p.as_block_parameters_node())
+                {
+                    if let Some(inner) = params.parameters() {
+                        let reqs: Vec<_> = inner.requireds().iter().collect();
+                        if reqs.len() == 1 {
+                            if let Some(multi) = reqs[0].as_multi_target_node() {
+                                let loc = multi.location();
+                                let src = String::from_utf8_lossy(
+                                    &source.as_bytes()[loc.start_offset()..loc.end_offset()],
+                                )
+                                .to_string();
+                                if src.starts_with('(') && src.ends_with(')') && src.len() >= 2 {
+                                    corr.push(crate::correction::Correction {
+                                        start: loc.start_offset(),
+                                        end: loc.end_offset(),
+                                        replacement: src[1..src.len() - 1].to_string(),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -125,4 +182,5 @@ impl Cop for MapToHash {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(MapToHash, "cops/style/map_to_hash");
+    crate::cop_autocorrect_fixture_tests!(MapToHash, "cops/style/map_to_hash");
 }
