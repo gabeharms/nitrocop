@@ -147,11 +147,15 @@ Implemented autocorrect in this session:
 - `Style/HashTransformKeys`
 - `Style/HashTransformValues`
 - `Style/ExactRegexpMatch`
+- `Style/ClassEqualityComparison`
+- `Style/ExpandPathArguments`
+- `Style/EmptyClassDefinition`
+- `Style/ModuleMemberExistenceCheck`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **284** (down from 372, -88)
-- `nitrocop_autocorrectable_cops`: **175** (up from 87, +88)
-- Missing by department now: Style (156), Lint (67), Layout (56), Naming (3), Security (1), Migration (1)
+- `missing_core_autocorrect_cops`: **280** (down from 372, -92)
+- `nitrocop_autocorrectable_cops`: **179** (up from 87, +92)
+- Missing by department now: Style (152), Lint (67), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`

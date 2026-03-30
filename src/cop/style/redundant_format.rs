@@ -404,6 +404,10 @@ impl Cop for RedundantFormat {
         "Style/RedundantFormat"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             CALL_NODE,
@@ -422,7 +426,7 @@ impl Cop for RedundantFormat {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -482,12 +486,23 @@ impl Cop for RedundantFormat {
                 let arg_src = std::str::from_utf8(arg.location().as_slice()).unwrap_or("");
                 let loc = call.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     format!("Use `{arg_src}` directly instead of `{method_str}`."),
-                ));
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: arg_src.to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
                 return;
             }
 
@@ -496,18 +511,36 @@ impl Cop for RedundantFormat {
                 let arg_src = std::str::from_utf8(arg.location().as_slice()).unwrap_or("");
                 let loc = call.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     format!("Use `{arg_src}` directly instead of `{method_str}`."),
-                ));
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: arg_src.to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
                 return;
             }
         }
 
         // Multi-arg: format('%s %s', 'foo', 'bar') — detect unnecessary fields
-        self.detect_unnecessary_fields(source, &call, &arg_list, method_str, diagnostics);
+        self.detect_unnecessary_fields(
+            source,
+            &call,
+            &arg_list,
+            method_str,
+            diagnostics,
+            &mut corrections,
+        );
     }
 }
 
@@ -519,6 +552,7 @@ impl RedundantFormat {
         arg_list: &[ruby_prism::Node<'_>],
         method_str: &str,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if arg_list.len() < 2 {
             return;
@@ -627,12 +661,23 @@ impl RedundantFormat {
 
         let loc = call.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Use `{}` directly instead of `{}`.", quoted, method_str),
-        ));
+        );
+        if let Some(corr) = corrections.as_mut() {
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: quoted.clone(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+        diagnostics.push(diag);
     }
 }
 
@@ -640,4 +685,5 @@ impl RedundantFormat {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantFormat, "cops/style/redundant_format");
+    crate::cop_autocorrect_fixture_tests!(RedundantFormat, "cops/style/redundant_format");
 }

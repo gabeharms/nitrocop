@@ -1,5 +1,5 @@
-- Evaluate `Style/ClassEqualityComparison` for conservative whole-expression rewrites to `instance_of?`, starting with direct constant RHS cases before string-name conversions.
-- Evaluate `Style/ExpandPathArguments` and nearby path-shape cops only where replacement boundaries are explicit and one-expression scoped.
-- Evaluate `Security/YAMLLoad` with strict target-Ruby guards (Ruby <= 3.0 behavior) before enabling any correction; avoid metric-only toggles.
+- Evaluate `Style/EachWithObject` for a conservative rewrite subset (`inject/reduce` with clear accumulator return and no reassignment), keeping block-shape handling strict.
+- Evaluate `Style/RedundantFetchBlock` with scenario-fixture autocorrect coverage if replacement boundaries stay selector-to-block-end and literal/default-only.
+- Evaluate `Security/YAMLLoad` only with strict target-Ruby guards (Ruby <= 3.0 behavior) and real offense parity; avoid metric-only toggles.
 - Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
 - Keep Layout backlog in staged batches (spacing cops first, then alignment/indentation) after easy Style/Lint wins taper off.
