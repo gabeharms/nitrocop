@@ -54,6 +54,10 @@ impl Cop for RedundantCopEnableDirective {
         "Lint/RedundantCopEnableDirective"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -65,7 +69,7 @@ impl Cop for RedundantCopEnableDirective {
         code_map: &CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut disabled: HashMap<String, usize> = HashMap::new();
 
@@ -109,16 +113,22 @@ impl Cop for RedundantCopEnableDirective {
                     }
                 }
                 "enable" => {
-                    for cop in cops {
+                    let mut unnecessary_count = 0usize;
+                    let mut line_diag_indexes = Vec::new();
+
+                    for cop in &cops {
                         if cop == "all" {
                             if !decrement_all(&mut disabled) {
+                                unnecessary_count += 1;
                                 let col = find_cop_column(line_str, cop.as_str());
-                                diagnostics.push(self.diagnostic(
+                                let diag = self.diagnostic(
                                     source,
                                     i + 1,
                                     col,
                                     "Unnecessary enabling of all cops.".to_string(),
-                                ));
+                                );
+                                diagnostics.push(diag);
+                                line_diag_indexes.push(diagnostics.len() - 1);
                             }
                             continue;
                         }
@@ -128,13 +138,58 @@ impl Cop for RedundantCopEnableDirective {
                             !was_disabled && department_disable_matches(&disabled, cop.as_str());
 
                         if !was_disabled && !dept_was_disabled {
+                            unnecessary_count += 1;
                             let col = find_cop_column(line_str, cop.as_str());
-                            diagnostics.push(self.diagnostic(
+                            let diag = self.diagnostic(
                                 source,
                                 i + 1,
                                 col,
                                 format!("Unnecessary enabling of {}.", cop),
-                            ));
+                            );
+                            diagnostics.push(diag);
+                            line_diag_indexes.push(diagnostics.len() - 1);
+                        }
+                    }
+
+                    if unnecessary_count == cops.len() && unnecessary_count > 0 {
+                        if let Some(corr) = corrections.as_mut() {
+                            let line_is_inline = !line_str[..hash_pos].trim().is_empty();
+
+                            let (start, end) = if line_is_inline {
+                                let mut inline_start = hash_pos;
+                                if inline_start > 0 && line[inline_start - 1] == b' ' {
+                                    inline_start -= 1;
+                                }
+                                (byte_offset + inline_start, byte_offset + line.len())
+                            } else {
+                                let source_bytes = source.as_bytes();
+                                let mut end = byte_offset + line.len();
+                                if end < source_bytes.len() {
+                                    if source_bytes[end] == b'\n' {
+                                        end += 1;
+                                    } else if source_bytes[end] == b'\r'
+                                        && end + 1 < source_bytes.len()
+                                        && source_bytes[end + 1] == b'\n'
+                                    {
+                                        end += 2;
+                                    }
+                                }
+                                (byte_offset, end)
+                            };
+
+                            corr.push(crate::correction::Correction {
+                                start,
+                                end,
+                                replacement: "".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+
+                            for diag_idx in line_diag_indexes {
+                                if let Some(diag) = diagnostics.get_mut(diag_idx) {
+                                    diag.corrected = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -363,6 +418,10 @@ fn strip_rubocop_prefix(s: &str) -> Option<&str> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantCopEnableDirective,
+        "cops/lint/redundant_cop_enable_directive"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantCopEnableDirective,
         "cops/lint/redundant_cop_enable_directive"
     );

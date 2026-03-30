@@ -40,6 +40,10 @@ impl Cop for DeprecatedConstants {
         "Lint/DeprecatedConstants"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -55,7 +59,7 @@ impl Cop for DeprecatedConstants {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Handle ConstantReadNode (bare constants like NIL, TRUE, FALSE)
         if let Some(const_read) = node.as_constant_read_node() {
@@ -65,10 +69,21 @@ impl Cop for DeprecatedConstants {
                 Err(_) => return,
             };
 
-            if let Some(msg) = deprecated_message(name_str, config) {
+            if let Some((msg, alternative)) = deprecated_details(name_str, config) {
                 let loc = const_read.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, msg));
+                let mut diag = self.diagnostic(source, line, column, msg);
+                if let (Some(corr), Some(alt)) = (corrections.as_mut(), alternative) {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: alt,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
 
@@ -81,9 +96,20 @@ impl Cop for DeprecatedConstants {
                 Err(_) => return,
             };
 
-            if let Some(msg) = deprecated_message(name_str, config) {
+            if let Some((msg, alternative)) = deprecated_details(name_str, config) {
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, msg));
+                let mut diag = self.diagnostic(source, line, column, msg);
+                if let (Some(corr), Some(alt)) = (corrections.as_mut(), alternative) {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: alt,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
     }
@@ -151,7 +177,7 @@ fn deprecated_info(constant_name: &str, config: &CopConfig) -> Option<Deprecated
     None
 }
 
-fn deprecated_message(constant_name: &str, config: &CopConfig) -> Option<String> {
+fn deprecated_details(constant_name: &str, config: &CopConfig) -> Option<(String, Option<String>)> {
     let info = deprecated_info(constant_name, config)?;
 
     if let Some(version) = &info.deprecated_version {
@@ -161,24 +187,27 @@ fn deprecated_message(constant_name: &str, config: &CopConfig) -> Option<String>
         }
     }
 
-    match (info.alternative, info.deprecated_version) {
-        (Some(alternative), Some(version)) => Some(format!(
+    let msg = match (&info.alternative, &info.deprecated_version) {
+        (Some(alternative), Some(version)) => format!(
             "Use `{alternative}` instead of `{constant_name}`, deprecated since Ruby {version}."
-        )),
+        ),
         (Some(alternative), None) => {
-            Some(format!("Use `{alternative}` instead of `{constant_name}`."))
+            format!("Use `{alternative}` instead of `{constant_name}`.")
         }
-        (None, Some(version)) => Some(format!(
-            "Do not use `{constant_name}`, deprecated since Ruby {version}."
-        )),
-        (None, None) => Some(format!("Do not use `{constant_name}`.")),
-    }
+        (None, Some(version)) => {
+            format!("Do not use `{constant_name}`, deprecated since Ruby {version}.")
+        }
+        (None, None) => format!("Do not use `{constant_name}`."),
+    };
+
+    Some((msg, info.alternative))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(DeprecatedConstants, "cops/lint/deprecated_constants");
+    crate::cop_autocorrect_fixture_tests!(DeprecatedConstants, "cops/lint/deprecated_constants");
 
     #[test]
     fn flags_cbase_configured_constant_paths() {
