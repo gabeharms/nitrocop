@@ -1017,15 +1017,11 @@ fn lint_source_once(
 
     let mut prepared_override: Option<Arc<PreparedOverrideConfig>> = None;
     if has_dir_overrides {
-        let cache_key = source
-            .path
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .to_path_buf();
+        let parent_dir = source.path.parent().unwrap_or_else(|| Path::new(""));
 
         prepared_override = FILE_OVERRIDE_CONFIG_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if let Some(existing) = cache.get(&cache_key) {
+            if let Some(existing) = cache.get(parent_dir) {
                 return existing.clone();
             }
 
@@ -1038,7 +1034,7 @@ fn lint_source_once(
                     ))
                 });
 
-            cache.insert(cache_key, prepared.clone());
+            cache.insert(parent_dir.to_path_buf(), prepared.clone());
             prepared
         });
     }
