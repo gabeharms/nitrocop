@@ -36,6 +36,10 @@ impl Cop for FileTouch {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -43,7 +47,7 @@ impl Cop for FileTouch {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -108,7 +112,8 @@ impl Cop for FileTouch {
             [arg_list[0].location().start_offset()..arg_list[0].location().end_offset()];
         let fname_str = String::from_utf8_lossy(fname_src);
 
-        diagnostics.push(self.diagnostic(
+        let replacement = format!("FileUtils.touch({fname_str})");
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
@@ -116,7 +121,20 @@ impl Cop for FileTouch {
                 "Use `FileUtils.touch({})` instead of `File.open` in append mode with empty block.",
                 fname_str
             ),
-        ));
+        );
+
+        if let Some(ref mut corr) = corrections {
+            corr.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: block.location().end_offset(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -124,4 +142,5 @@ impl Cop for FileTouch {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(FileTouch, "cops/style/file_touch");
+    crate::cop_autocorrect_fixture_tests!(FileTouch, "cops/style/file_touch");
 }
