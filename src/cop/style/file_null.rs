@@ -14,6 +14,10 @@ impl Cop for FileNull {
         "Style/FileNull"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -21,7 +25,7 @@ impl Cop for FileNull {
         _code_map: &crate::cop::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // First pass: check if the file contains any "/dev/null" string
         // (needed for bare "NUL" detection)
@@ -35,10 +39,27 @@ impl Cop for FileNull {
             source,
             cop: self,
             diagnostics: Vec::new(),
+            offense_ranges: Vec::new(),
             contain_dev_null,
             parent_stack: Vec::new(),
         };
         visitor.visit(&root);
+
+        if let Some(ref mut corr) = corrections {
+            for &(start, end) in &visitor.offense_ranges {
+                corr.push(crate::correction::Correction {
+                    start,
+                    end,
+                    replacement: "File::NULL".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+            }
+            for diag in &mut visitor.diagnostics {
+                diag.corrected = true;
+            }
+        }
+
         diagnostics.extend(visitor.diagnostics);
     }
 }
@@ -79,6 +100,7 @@ struct FileNullVisitor<'a> {
     source: &'a SourceFile,
     cop: &'a FileNull,
     diagnostics: Vec<Diagnostic>,
+    offense_ranges: Vec<(usize, usize)>,
     contain_dev_null: bool,
     parent_stack: Vec<ParentKind>,
 }
@@ -130,6 +152,8 @@ impl<'a, 'pr> Visit<'pr> for FileNullVisitor<'a> {
                 column,
                 format!("Use `File::NULL` instead of `{}`.", matched_str),
             ));
+            self.offense_ranges
+                .push((loc.start_offset(), loc.end_offset()));
         }
     }
 }
@@ -138,4 +162,5 @@ impl<'a, 'pr> Visit<'pr> for FileNullVisitor<'a> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(FileNull, "cops/style/file_null");
+    crate::cop_autocorrect_fixture_tests!(FileNull, "cops/style/file_null");
 }
