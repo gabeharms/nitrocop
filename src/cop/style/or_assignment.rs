@@ -10,6 +10,13 @@ use crate::parse::source::SourceFile;
 pub struct OrAssignment;
 
 impl OrAssignment {
+    fn node_source(source: &SourceFile, node: &ruby_prism::Node<'_>) -> String {
+        String::from_utf8_lossy(
+            &source.as_bytes()[node.location().start_offset()..node.location().end_offset()],
+        )
+        .to_string()
+    }
+
     /// Get variable name from a local/instance/class/global variable write node
     fn get_write_name(node: &ruby_prism::Node<'_>) -> Option<Vec<u8>> {
         if let Some(lv) = node.as_local_variable_write_node() {
@@ -44,16 +51,18 @@ impl OrAssignment {
         None
     }
 
-    /// Check for `x = x || y` pattern — local variable or-assign
+    /// Check for `x = x || y` or `x = x ? x : y` patterns.
     fn check_or_assign(
         cop: &OrAssignment,
         source: &SourceFile,
         node: &ruby_prism::Node<'_>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) -> Vec<Diagnostic> {
         let write_name = match Self::get_write_name(node) {
             Some(n) => n,
             None => return Vec::new(),
         };
+        let write_name_str = String::from_utf8_lossy(&write_name).to_string();
 
         // Get the value being assigned
         let value = if let Some(lv) = node.as_local_variable_write_node() {
@@ -68,19 +77,35 @@ impl OrAssignment {
             return Vec::new();
         };
 
+        let loc = node.location();
+        let (line, column) = source.offset_to_line_col(loc.start_offset());
+
         // Check if the value is `x || y` where x is the same variable
         if let Some(or_node) = value.as_or_node() {
             let left = or_node.left();
             if let Some(read_name) = Self::get_read_name(&left) {
                 if read_name == write_name {
-                    let loc = node.location();
-                    let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    return vec![cop.diagnostic(
+                    let mut diag = cop.diagnostic(
                         source,
                         line,
                         column,
                         "Use the double pipe equals operator `||=` instead.".to_string(),
-                    )];
+                    );
+                    if let Some(corr) = corrections.as_mut() {
+                        corr.push(crate::correction::Correction {
+                            start: loc.start_offset(),
+                            end: loc.end_offset(),
+                            replacement: format!(
+                                "{} ||= {}",
+                                write_name_str,
+                                Self::node_source(source, &or_node.right())
+                            ),
+                            cop_name: cop.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                    return vec![diag];
                 }
             }
         }
@@ -96,18 +121,44 @@ impl OrAssignment {
                         if true_nodes.len() == 1 {
                             if let Some(true_name) = Self::get_read_name(&true_nodes[0]) {
                                 if true_name == write_name {
-                                    let loc = node.location();
-                                    let (line, column) =
-                                        source.offset_to_line_col(loc.start_offset());
-                                    return vec![
-                                        cop.diagnostic(
-                                            source,
-                                            line,
-                                            column,
-                                            "Use the double pipe equals operator `||=` instead."
-                                                .to_string(),
-                                        ),
-                                    ];
+                                    let else_value_src = if_node.subsequent().and_then(|sub| {
+                                        sub.as_else_node().and_then(|else_node| {
+                                            else_node.statements().and_then(|stmts| {
+                                                let values: Vec<_> = stmts.body().iter().collect();
+                                                if values.len() == 1 {
+                                                    Some(Self::node_source(source, &values[0]))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        })
+                                    });
+
+                                    let mut diag = cop.diagnostic(
+                                        source,
+                                        line,
+                                        column,
+                                        "Use the double pipe equals operator `||=` instead."
+                                            .to_string(),
+                                    );
+
+                                    if let Some(default_value_src) = else_value_src {
+                                        if let Some(corr) = corrections.as_mut() {
+                                            corr.push(crate::correction::Correction {
+                                                start: loc.start_offset(),
+                                                end: loc.end_offset(),
+                                                replacement: format!(
+                                                    "{} ||= {}",
+                                                    write_name_str, default_value_src
+                                                ),
+                                                cop_name: cop.name(),
+                                                cop_index: 0,
+                                            });
+                                            diag.corrected = true;
+                                        }
+                                    }
+
+                                    return vec![diag];
                                 }
                             }
                         }
@@ -140,6 +191,10 @@ impl Cop for OrAssignment {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -147,9 +202,9 @@ impl Cop for OrAssignment {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        diagnostics.extend(Self::check_or_assign(self, source, node));
+        diagnostics.extend(Self::check_or_assign(self, source, node, &mut corrections));
     }
 }
 
@@ -157,4 +212,5 @@ impl Cop for OrAssignment {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(OrAssignment, "cops/style/or_assignment");
+    crate::cop_autocorrect_fixture_tests!(OrAssignment, "cops/style/or_assignment");
 }
