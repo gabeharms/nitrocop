@@ -47,6 +47,10 @@ impl Cop for ModuleMemberExistenceCheck {
         "Style/ModuleMemberExistenceCheck"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE]
     }
@@ -58,7 +62,7 @@ impl Cop for ModuleMemberExistenceCheck {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allowed_methods = config.get_string_array("AllowedMethods");
 
@@ -126,12 +130,54 @@ impl Cop for ModuleMemberExistenceCheck {
             .message_loc()
             .unwrap_or_else(|| recv_call.location());
         let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            column,
-            format!("Use `{predicate}` instead."),
-        ));
+        let mut diag = self.diagnostic(source, line, column, format!("Use `{predicate}` instead."));
+
+        if let Some(corr) = corrections.as_mut() {
+            let outer_arg_src = String::from_utf8_lossy(
+                &source.as_bytes()[outer_arg_list[0].location().start_offset()
+                    ..outer_arg_list[0].location().end_offset()],
+            )
+            .to_string();
+
+            let inherit_src = recv_call
+                .arguments()
+                .and_then(|args| args.arguments().iter().next())
+                .map(|arg| {
+                    String::from_utf8_lossy(
+                        &source.as_bytes()
+                            [arg.location().start_offset()..arg.location().end_offset()],
+                    )
+                    .to_string()
+                });
+
+            let replacement = if receiver_has_inherit_param {
+                match recv_call
+                    .arguments()
+                    .and_then(|args| args.arguments().iter().next())
+                {
+                    Some(arg) if arg.as_true_node().is_none() => {
+                        format!(
+                            "{predicate}({outer_arg_src}, {})",
+                            inherit_src.unwrap_or_default()
+                        )
+                    }
+                    _ => format!("{predicate}({outer_arg_src})"),
+                }
+            } else {
+                format!("{predicate}({outer_arg_src})")
+            };
+
+            corr.push(crate::correction::Correction {
+                start: msg_loc.start_offset(),
+                end: call.location().end_offset(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -139,6 +185,10 @@ impl Cop for ModuleMemberExistenceCheck {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        ModuleMemberExistenceCheck,
+        "cops/style/module_member_existence_check"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         ModuleMemberExistenceCheck,
         "cops/style/module_member_existence_check"
     );
