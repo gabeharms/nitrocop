@@ -1,3 +1,3 @@
-- `Lint/NonDeterministicRequireOrder`: investigate conservative local reordering/autocorrect only for contiguous duplicate-order-safe `require` groups already flagged by the cop.
+- `Style/ItBlockParameter`: add conservative autocorrect for `_1`-based offenses (`Use `it` block parameter.`) by replacing `_1` reads with `it` while preserving existing style gating and Ruby version checks.
 - `Style/Semicolon`: consider expanding autocorrect beyond current conservative subset to expression-separator lines only if newline rewrites can be made robust without structural regressions.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.

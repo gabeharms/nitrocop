@@ -1,0 +1,12 @@
+Dir["./lib/**/*.rb"].sort.each do |file|
+  require file
+end
+
+Dir.glob(Rails.root.join('test', '*.rb')).sort.each do |file|
+  require file
+end
+
+Dir['./lib/**/*.rb'].sort.each do |file|
+  puts file
+  require file
+end
