@@ -166,6 +166,10 @@ impl Cop for RedundantSelfAssignment {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -173,7 +177,7 @@ impl Cop for RedundantSelfAssignment {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Pattern 1: Variable assignment — x = x.method (lvar, ivar, cvar, gvar)
         if let Some((var_name, read_type)) = get_write_var_name(node) {
@@ -185,7 +189,7 @@ impl Cop for RedundantSelfAssignment {
                             if method_returning_self(method_name) {
                                 let loc = node.location();
                                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                                diagnostics.push(self.diagnostic(
+                                let mut diag = self.diagnostic(
                                     source,
                                     line,
                                     column,
@@ -194,7 +198,23 @@ impl Cop for RedundantSelfAssignment {
                                         String::from_utf8_lossy(method_name),
                                         String::from_utf8_lossy(var_name),
                                     ),
-                                ));
+                                );
+
+                                if let Some(corr) = corrections.as_deref_mut() {
+                                    let replacement = std::str::from_utf8(call.location().as_slice())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    corr.push(crate::correction::Correction {
+                                        start: node.location().start_offset(),
+                                        end: node.location().end_offset(),
+                                        replacement,
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    diag.corrected = true;
+                                }
+
+                                diagnostics.push(diag);
                                 return;
                             }
                         }
@@ -278,7 +298,7 @@ impl Cop for RedundantSelfAssignment {
             if nodes_equal(&lhs_receiver, &rhs_obj, source.as_bytes()) {
                 let loc = node.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
@@ -287,7 +307,23 @@ impl Cop for RedundantSelfAssignment {
                         String::from_utf8_lossy(method_name),
                         String::from_utf8_lossy(attr_name),
                     ),
-                ));
+                );
+
+                if let Some(corr) = corrections.as_deref_mut() {
+                    let replacement = std::str::from_utf8(rhs_call.location().as_slice())
+                        .unwrap_or("")
+                        .to_string();
+                    corr.push(crate::correction::Correction {
+                        start: node.location().start_offset(),
+                        end: node.location().end_offset(),
+                        replacement,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                diagnostics.push(diag);
             }
         }
     }
@@ -297,6 +333,10 @@ impl Cop for RedundantSelfAssignment {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantSelfAssignment,
+        "cops/style/redundant_self_assignment"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantSelfAssignment,
         "cops/style/redundant_self_assignment"
     );
