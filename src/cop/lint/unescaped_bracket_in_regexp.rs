@@ -23,6 +23,10 @@ impl Cop for UnescapedBracketInRegexp {
         "Lint/UnescapedBracketInRegexp"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -46,7 +50,7 @@ impl Cop for UnescapedBracketInRegexp {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if let Some(regexp) = node.as_regular_expression_node() {
             let content_loc = regexp.content_loc();
@@ -60,6 +64,7 @@ impl Cop for UnescapedBracketInRegexp {
                 is_extended_regex(regexp.closing_loc().as_slice()),
                 &mut state,
                 diagnostics,
+                corrections.as_deref_mut(),
             );
             return;
         }
@@ -81,6 +86,7 @@ impl Cop for UnescapedBracketInRegexp {
                         extended,
                         &mut state,
                         diagnostics,
+                        corrections.as_deref_mut(),
                     );
                 } else {
                     // Interpolation can change what an escaped character would bind to, but
@@ -119,6 +125,7 @@ fn scan_regex_segment(
     extended: bool,
     state: &mut RegexScanState,
     diagnostics: &mut Vec<Diagnostic>,
+    mut corrections: Option<&mut Vec<crate::correction::Correction>>,
 ) {
     for (i, byte) in content.iter().copied().enumerate() {
         if state.in_comment {
@@ -190,12 +197,25 @@ fn scan_regex_segment(
                 if state.saw_token {
                     let offset = content_start + i;
                     let (line, column) = source.offset_to_line_col(offset);
-                    diagnostics.push(cop.diagnostic(
+                    let mut diag = cop.diagnostic(
                         source,
                         line,
                         column,
                         "Regular expression has `]` without escape.".to_string(),
-                    ));
+                    );
+
+                    if let Some(corr) = corrections.as_mut() {
+                        corr.push(crate::correction::Correction {
+                            start: offset,
+                            end: offset + 1,
+                            replacement: r"\]".to_string(),
+                            cop_name: cop.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+
+                    diagnostics.push(diag);
                 }
                 state.saw_token = true;
             }
@@ -210,6 +230,10 @@ fn scan_regex_segment(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        UnescapedBracketInRegexp,
+        "cops/lint/unescaped_bracket_in_regexp"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         UnescapedBracketInRegexp,
         "cops/lint/unescaped_bracket_in_regexp"
     );
