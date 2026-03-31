@@ -102,7 +102,8 @@ impl Cop for TrailingBodyOnMethodDefinition {
                     if let Some(semi_offset) =
                         find_body_separator(source.as_bytes(), def_loc.end_offset(), body_start)
                     {
-                        let indent = " ".repeat(source.offset_to_line_col(def_loc.start_offset()).1 + 2);
+                        let indent =
+                            " ".repeat(source.offset_to_line_col(def_loc.start_offset()).1 + 2);
                         corr.push(crate::correction::Correction {
                             start: semi_offset,
                             end: body_start,

@@ -183,13 +183,16 @@ impl Cop for YAMLFileRead {
             let mut corrected_args = Vec::with_capacity(arg_list.len());
             let file_path_loc = file_path_arg.location();
             corrected_args.push(
-                String::from_utf8_lossy(&bytes[file_path_loc.start_offset()..file_path_loc.end_offset()])
-                    .to_string(),
+                String::from_utf8_lossy(
+                    &bytes[file_path_loc.start_offset()..file_path_loc.end_offset()],
+                )
+                .to_string(),
             );
             for arg in arg_list.iter().skip(1) {
                 let arg_loc = arg.location();
                 corrected_args.push(
-                    String::from_utf8_lossy(&bytes[arg_loc.start_offset()..arg_loc.end_offset()]).to_string(),
+                    String::from_utf8_lossy(&bytes[arg_loc.start_offset()..arg_loc.end_offset()])
+                        .to_string(),
                 );
             }
 

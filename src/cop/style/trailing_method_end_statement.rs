@@ -150,7 +150,9 @@ impl Cop for TrailingMethodEndStatement {
                     replace_start -= 1;
                 }
 
-                let def_indent = source.offset_to_line_col(def_node.def_keyword_loc().start_offset()).1;
+                let def_indent = source
+                    .offset_to_line_col(def_node.def_keyword_loc().start_offset())
+                    .1;
                 corr.push(crate::correction::Correction {
                     start: replace_start,
                     end: end_start,

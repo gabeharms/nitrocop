@@ -198,19 +198,20 @@ impl Cop for SelectByRegexp {
             None => return,
         };
 
-        let (regexp_start, regexp_end, negated_match) = if let Some(stmts) = body.as_statements_node() {
-            let body_nodes: Vec<_> = stmts.body().into_iter().collect();
-            if body_nodes.len() != 1 {
-                return;
-            }
+        let (regexp_start, regexp_end, negated_match) =
+            if let Some(stmts) = body.as_statements_node() {
+                let body_nodes: Vec<_> = stmts.body().into_iter().collect();
+                if body_nodes.len() != 1 {
+                    return;
+                }
 
-            match Self::regexp_match_arg(&body_nodes[0], &block_arg_name) {
-                Some(result) => result,
-                None => return,
-            }
-        } else {
-            return;
-        };
+                match Self::regexp_match_arg(&body_nodes[0], &block_arg_name) {
+                    Some(result) => result,
+                    None => return,
+                }
+            } else {
+                return;
+            };
 
         let replacement = match method_bytes {
             b"select" | b"filter" | b"find_all" => {
@@ -248,7 +249,8 @@ impl Cop for SelectByRegexp {
             let regexp_source = source.byte_slice(regexp_start, regexp_end, "");
             let replacement_source = if let Some(receiver) = call.receiver() {
                 let recv_loc = receiver.location();
-                let recv_source = source.byte_slice(recv_loc.start_offset(), recv_loc.end_offset(), "");
+                let recv_source =
+                    source.byte_slice(recv_loc.start_offset(), recv_loc.end_offset(), "");
                 let op = if let Some(op_loc) = call.call_operator_loc() {
                     source.byte_slice(op_loc.start_offset(), op_loc.end_offset(), "")
                 } else {

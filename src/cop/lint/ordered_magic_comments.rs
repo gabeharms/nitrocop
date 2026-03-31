@@ -109,8 +109,10 @@ impl Cop for OrderedMagicComments {
                         line_range_without_newline(source, fsl_line),
                         line_range_without_newline(source, enc_line),
                     ) {
-                        let fsl_text = String::from_utf8_lossy(&source.as_bytes()[fsl_start..fsl_end]);
-                        let enc_text = String::from_utf8_lossy(&source.as_bytes()[enc_start..enc_end]);
+                        let fsl_text =
+                            String::from_utf8_lossy(&source.as_bytes()[fsl_start..fsl_end]);
+                        let enc_text =
+                            String::from_utf8_lossy(&source.as_bytes()[enc_start..enc_end]);
 
                         corr.push(crate::correction::Correction {
                             start: fsl_start,
@@ -274,7 +276,9 @@ mod tests {
     fn autocorrect_basic_scenario() {
         crate::testutil::assert_cop_autocorrect(
             &OrderedMagicComments,
-            include_bytes!("../../../tests/fixtures/cops/lint/ordered_magic_comments/offense/basic.rb"),
+            include_bytes!(
+                "../../../tests/fixtures/cops/lint/ordered_magic_comments/offense/basic.rb"
+            ),
             b"# encoding: ascii\n# frozen_string_literal: true\np 'hello'\n",
         );
     }
@@ -283,7 +287,9 @@ mod tests {
     fn autocorrect_with_coding_scenario() {
         crate::testutil::assert_cop_autocorrect(
             &OrderedMagicComments,
-            include_bytes!("../../../tests/fixtures/cops/lint/ordered_magic_comments/offense/with_coding.rb"),
+            include_bytes!(
+                "../../../tests/fixtures/cops/lint/ordered_magic_comments/offense/with_coding.rb"
+            ),
             b"# coding: utf-8\n# frozen_string_literal: true\nx = 1\n",
         );
     }
@@ -292,7 +298,9 @@ mod tests {
     fn autocorrect_with_shebang_scenario() {
         crate::testutil::assert_cop_autocorrect(
             &OrderedMagicComments,
-            include_bytes!("../../../tests/fixtures/cops/lint/ordered_magic_comments/offense/with_shebang.rb"),
+            include_bytes!(
+                "../../../tests/fixtures/cops/lint/ordered_magic_comments/offense/with_shebang.rb"
+            ),
             b"#!/usr/bin/env ruby\n# encoding: utf-8\n# frozen_string_literal: true\nputs 'hi'\n",
         );
     }

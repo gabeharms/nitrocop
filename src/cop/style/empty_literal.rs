@@ -252,15 +252,22 @@ impl Cop for EmptyLiteral {
         let (msg, replacement) = match const_name.as_slice() {
             b"Array" if method_bytes == b"new" || method_bytes == b"[]" => {
                 let src = String::from_utf8_lossy(call_node.location().as_slice());
-                (format!("Use array literal `[]` instead of `{}`.", src), "[]")
+                (
+                    format!("Use array literal `[]` instead of `{}`.", src),
+                    "[]",
+                )
             }
             b"Hash" if method_bytes == b"new" || method_bytes == b"[]" => {
                 let src = String::from_utf8_lossy(call_node.location().as_slice());
-                (format!("Use hash literal `{{}}` instead of `{}`.", src), "{}")
+                (
+                    format!("Use hash literal `{{}}` instead of `{}`.", src),
+                    "{}",
+                )
             }
-            b"String" if method_bytes == b"new" => {
-                ("Use string literal `''` instead of `String.new`.".to_string(), "''")
-            }
+            b"String" if method_bytes == b"new" => (
+                "Use string literal `''` instead of `String.new`.".to_string(),
+                "''",
+            ),
             _ => return,
         };
 

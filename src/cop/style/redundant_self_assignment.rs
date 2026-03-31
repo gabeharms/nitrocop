@@ -201,9 +201,10 @@ impl Cop for RedundantSelfAssignment {
                                 );
 
                                 if let Some(corr) = corrections.as_deref_mut() {
-                                    let replacement = std::str::from_utf8(call.location().as_slice())
-                                        .unwrap_or("")
-                                        .to_string();
+                                    let replacement =
+                                        std::str::from_utf8(call.location().as_slice())
+                                            .unwrap_or("")
+                                            .to_string();
                                     corr.push(crate::correction::Correction {
                                         start: node.location().start_offset(),
                                         end: node.location().end_offset(),

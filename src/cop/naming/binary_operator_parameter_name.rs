@@ -160,7 +160,8 @@ impl<'pr> Visit<'pr> for ParamReadFinder {
     fn visit_local_variable_read_node(&mut self, node: &ruby_prism::LocalVariableReadNode<'pr>) {
         if node.name().as_slice() == self.old_name.as_slice() {
             let loc = node.location();
-            self.replacements.push((loc.start_offset(), loc.end_offset()));
+            self.replacements
+                .push((loc.start_offset(), loc.end_offset()));
         }
     }
 
