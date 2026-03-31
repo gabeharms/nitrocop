@@ -1,4 +1,5 @@
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
@@ -21,6 +22,10 @@ impl Cop for ReturnNil {
         "Style/ReturnNil"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -32,7 +37,7 @@ impl Cop for ReturnNil {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "return");
         let mut visitor = ReturnNilVisitor {
@@ -40,10 +45,15 @@ impl Cop for ReturnNil {
             source,
             enforced_style,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            autocorrect_enabled: corrections.is_some(),
             block_stack: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corr) = corrections.as_mut() {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -60,6 +70,8 @@ struct ReturnNilVisitor<'a, 'src> {
     source: &'src SourceFile,
     enforced_style: &'a str,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<Correction>,
+    autocorrect_enabled: bool,
     block_stack: Vec<BlockContext>,
 }
 
@@ -101,12 +113,25 @@ impl<'pr> Visit<'pr> for ReturnNilVisitor<'_, '_> {
                     if arg_list.len() == 1 && arg_list[0].as_nil_node().is_some() {
                         let loc = node.location();
                         let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                        self.diagnostics.push(self.cop.diagnostic(
+                        let mut diag = self.cop.diagnostic(
                             self.source,
                             line,
                             column,
                             "Use `return` instead of `return nil`.".to_string(),
-                        ));
+                        );
+
+                        if self.autocorrect_enabled {
+                            self.corrections.push(Correction {
+                                start: loc.start_offset(),
+                                end: loc.end_offset(),
+                                replacement: "return".to_string(),
+                                cop_name: self.cop.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+
+                        self.diagnostics.push(diag);
                     }
                 }
             }
@@ -115,12 +140,25 @@ impl<'pr> Visit<'pr> for ReturnNilVisitor<'_, '_> {
                 if node.arguments().is_none() {
                     let loc = node.location();
                     let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                    self.diagnostics.push(self.cop.diagnostic(
+                    let mut diag = self.cop.diagnostic(
                         self.source,
                         line,
                         column,
                         "Use `return nil` instead of `return`.".to_string(),
-                    ));
+                    );
+
+                    if self.autocorrect_enabled {
+                        self.corrections.push(Correction {
+                            start: loc.start_offset(),
+                            end: loc.end_offset(),
+                            replacement: "return nil".to_string(),
+                            cop_name: self.cop.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+
+                    self.diagnostics.push(diag);
                 }
             }
             _ => {}
@@ -235,4 +273,5 @@ impl<'pr> Visit<'pr> for ReturnNilVisitor<'_, '_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ReturnNil, "cops/style/return_nil");
+    crate::cop_autocorrect_fixture_tests!(ReturnNil, "cops/style/return_nil");
 }

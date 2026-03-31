@@ -1,4 +1,4 @@
-- Revisit `Lint/NumberConversion` symbol/block-pass autocorrect only if non-metric goals require it; current implementation path was tested and discarded for no primary-metric gain.
-- Extend `Style/DigChain` autocorrect to fully collapse longer dig chains in one pass (currently pairwise collapse per autocorrect iteration).
-- Keep Layout backlog staged (spacing-first, then alignment/indentation) after low-risk Style/Lint chain/selector wins taper off.
-- Extend `Style/ClassMethodsDefinitions` autocorrect from current defs-only subset to mixed `class << self` blocks (e.g., `attr_reader` + public defs) with comment/visibility-preserving extraction.
+- `Style/Semicolon`: add conservative autocorrect for unambiguous semicolon cases (leading/trailing/`...; }`) while skipping structural/single-line-definition cases where RuboCop delegates to other cops.
+- `Style/ReturnNilInPredicateMethodDefinition`: evaluate bounded rewrite support for predicate methods that `return nil` explicitly, if fixtures allow a local replacement strategy.
+- `Lint/RedundantRegexpQuantifiers`: investigate token-local quantifier simplifications as a low-risk Lint candidate after current Style pass.
+- Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.
