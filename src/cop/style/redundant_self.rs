@@ -133,6 +133,10 @@ impl Cop for RedundantSelf {
         "Style/RedundantSelf"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -140,17 +144,21 @@ impl Cop for RedundantSelf {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = RedundantSelfVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
             local_scopes: vec![HashSet::new()],
             allowed_self_methods: HashSet::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(c) = corrections {
+            c.extend(visitor.corrections);
+        }
     }
 }
 
@@ -158,6 +166,7 @@ struct RedundantSelfVisitor<'a> {
     cop: &'a RedundantSelf,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
     /// Stack of local variable scopes. Each method/block introduces a new scope.
     local_scopes: Vec<HashSet<Vec<u8>>>,
     /// Method names where `self.x` is allowed because `self.x = ...` or
@@ -415,12 +424,21 @@ impl<'pr> Visit<'pr> for RedundantSelfVisitor<'_> {
                             let self_loc = receiver.location();
                             let (line, column) =
                                 self.source.offset_to_line_col(self_loc.start_offset());
-                            self.diagnostics.push(self.cop.diagnostic(
+                            let mut diagnostic = self.cop.diagnostic(
                                 self.source,
                                 line,
                                 column,
                                 "Redundant `self` detected.".to_string(),
-                            ));
+                            );
+                            self.corrections.push(crate::correction::Correction {
+                                start: self_loc.start_offset(),
+                                end: call_op.end_offset(),
+                                replacement: String::new(),
+                                cop_name: self.cop.name(),
+                                cop_index: 0,
+                            });
+                            diagnostic.corrected = true;
+                            self.diagnostics.push(diagnostic);
                         }
                     }
                 }
@@ -529,4 +547,5 @@ impl<'pr> Visit<'pr> for RedundantSelfVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantSelf, "cops/style/redundant_self");
+    crate::cop_autocorrect_fixture_tests!(RedundantSelf, "cops/style/redundant_self");
 }
