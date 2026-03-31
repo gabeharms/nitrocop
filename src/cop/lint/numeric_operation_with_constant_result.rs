@@ -30,6 +30,10 @@ impl Cop for NumericOperationWithConstantResult {
         "Lint/NumericOperationWithConstantResult"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -45,7 +49,7 @@ impl Cop for NumericOperationWithConstantResult {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if let Some(op_assign) = node.as_local_variable_operator_write_node() {
             let operator = op_assign.binary_operator().as_slice();
@@ -60,12 +64,25 @@ impl Cop for NumericOperationWithConstantResult {
             if has_constant_result {
                 let loc = op_assign.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     "Numeric operation with a constant result detected.".to_string(),
-                ));
+                );
+                if let Some(corrections) = corrections.as_mut() {
+                    let result = if operator == b"*" { "0" } else { "1" };
+                    let lhs = std::str::from_utf8(op_assign.name().as_slice()).unwrap_or("x");
+                    corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: format!("{lhs} = {result}"),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
             return;
         }
@@ -122,12 +139,24 @@ impl Cop for NumericOperationWithConstantResult {
 
         let loc = call.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             "Numeric operation with a constant result detected.".to_string(),
-        ));
+        );
+        if let Some(corrections) = corrections.as_mut() {
+            let replacement = if method_name == b"*" { "0" } else { "1" };
+            corrections.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: replacement.to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+        diagnostics.push(diag);
     }
 }
 
@@ -170,6 +199,10 @@ fn is_same_bare_method(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        NumericOperationWithConstantResult,
+        "cops/lint/numeric_operation_with_constant_result"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         NumericOperationWithConstantResult,
         "cops/lint/numeric_operation_with_constant_result"
     );
