@@ -43,6 +43,10 @@ impl Cop for Next {
         "Style/Next"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -50,7 +54,7 @@ impl Cop for Next {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "skip_modifier_ifs");
         let min_body_length = config.get_usize("MinBodyLength", 3);
@@ -61,9 +65,14 @@ impl Cop for Next {
             style,
             min_body_length,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            autocorrect_enabled: corrections.is_some(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corr) = corrections.as_mut() {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -73,9 +82,83 @@ struct NextVisitor<'a> {
     style: &'a str,
     min_body_length: usize,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    autocorrect_enabled: bool,
 }
 
 impl NextVisitor<'_> {
+    fn block_body_replacement(
+        &self,
+        body_stmts: &ruby_prism::StatementsNode<'_>,
+        indent: &str,
+    ) -> Option<String> {
+        let mut out = Vec::new();
+        for stmt in body_stmts.body().iter() {
+            let src = self.source.byte_slice(
+                stmt.location().start_offset(),
+                stmt.location().end_offset(),
+                "",
+            );
+            for line in src.lines() {
+                if line.trim().is_empty() {
+                    out.push(String::new());
+                } else {
+                    out.push(format!("{indent}{}", line.trim_start()));
+                }
+            }
+        }
+        Some(out.join("\n"))
+    }
+
+    fn leading_indent(&self, offset: usize) -> String {
+        let bytes = self.source.as_bytes();
+        let mut line_start = offset;
+        while line_start > 0 && bytes[line_start - 1] != b'\n' {
+            line_start -= 1;
+        }
+        let mut i = line_start;
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+        }
+        self.source.byte_slice(line_start, i, "").to_string()
+    }
+
+    fn build_next_replacement_from_if(
+        &self,
+        if_node: &ruby_prism::IfNode<'_>,
+        invert: bool,
+    ) -> Option<String> {
+        let body = if_node.statements()?;
+        let predicate = self.source.byte_slice(
+            if_node.predicate().location().start_offset(),
+            if_node.predicate().location().end_offset(),
+            "",
+        );
+        let keyword = if invert { "if" } else { "unless" };
+        let indent = self.leading_indent(if_node.location().start_offset());
+        let body_text = self.block_body_replacement(&body, &indent)?;
+        let next_indent = indent.strip_suffix("  ").unwrap_or(&indent).to_string();
+        Some(format!(
+            "{next_indent}next {keyword} {predicate}\n{body_text}"
+        ))
+    }
+
+    fn build_next_replacement_from_unless(
+        &self,
+        unless_node: &ruby_prism::UnlessNode<'_>,
+    ) -> Option<String> {
+        let body = unless_node.statements()?;
+        let predicate = self.source.byte_slice(
+            unless_node.predicate().location().start_offset(),
+            unless_node.predicate().location().end_offset(),
+            "",
+        );
+        let indent = self.leading_indent(unless_node.location().start_offset());
+        let body_text = self.block_body_replacement(&body, &indent)?;
+        let next_indent = indent.strip_suffix("  ").unwrap_or(&indent).to_string();
+        Some(format!("{next_indent}next if {predicate}\n{body_text}"))
+    }
+
     fn check_block_body(&mut self, body: &ruby_prism::Node<'_>) {
         let stmts = match body.as_statements_node() {
             Some(s) => s,
@@ -124,12 +207,28 @@ impl NextVisitor<'_> {
 
             if let Some(kw_loc) = if_node.if_keyword_loc() {
                 let (line, column) = self.source.offset_to_line_col(kw_loc.start_offset());
-                self.diagnostics.push(self.cop.diagnostic(
+                let mut diag = self.cop.diagnostic(
                     self.source,
                     line,
                     column,
                     "Use `next` to skip iteration.".to_string(),
-                ));
+                );
+
+                if self.autocorrect_enabled {
+                    if let Some(replacement) = self.build_next_replacement_from_if(&if_node, false)
+                    {
+                        self.corrections.push(crate::correction::Correction {
+                            start: if_node.location().start_offset(),
+                            end: if_node.location().end_offset(),
+                            replacement,
+                            cop_name: self.cop.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                }
+
+                self.diagnostics.push(diag);
             }
         } else if let Some(unless_node) = stmt.as_unless_node() {
             // Skip if it has an else branch
@@ -160,12 +259,27 @@ impl NextVisitor<'_> {
 
             let kw_loc = unless_node.keyword_loc();
             let (line, column) = self.source.offset_to_line_col(kw_loc.start_offset());
-            self.diagnostics.push(self.cop.diagnostic(
+            let mut diag = self.cop.diagnostic(
                 self.source,
                 line,
                 column,
                 "Use `next` to skip iteration.".to_string(),
-            ));
+            );
+
+            if self.autocorrect_enabled {
+                if let Some(replacement) = self.build_next_replacement_from_unless(&unless_node) {
+                    self.corrections.push(crate::correction::Correction {
+                        start: unless_node.location().start_offset(),
+                        end: unless_node.location().end_offset(),
+                        replacement,
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+            }
+
+            self.diagnostics.push(diag);
         }
     }
 }
@@ -214,4 +328,5 @@ impl<'pr> Visit<'pr> for NextVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(Next, "cops/style/next");
+    crate::cop_autocorrect_fixture_tests!(Next, "cops/style/next");
 }

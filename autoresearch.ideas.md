@@ -1,3 +1,3 @@
-- `Style/Next`: investigate bounded autocorrect for wrapped iterator `if/unless` offenses where body shape allows deterministic `next` rewriting without changing branch semantics.
+- `Style/YodaCondition`: investigate conservative operand-swap autocorrect for simple equality/comparison yoda conditions where both sides are side-effect-safe expressions.
 - `Style/Semicolon`: consider expanding autocorrect beyond current conservative subset to expression-separator lines only if newline rewrites can be made robust without structural regressions.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.
