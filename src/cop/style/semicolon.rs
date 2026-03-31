@@ -72,6 +72,10 @@ impl Cop for Semicolon {
         "Style/Semicolon"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -79,7 +83,7 @@ impl Cop for Semicolon {
         code_map: &CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let bytes = source.as_bytes();
         if !bytes.contains(&b';') {
@@ -157,23 +161,45 @@ impl Cop for Semicolon {
             // Note: comments after the semicolon do NOT make it trailing — RuboCop's token-based
             // approach sees the comment token as the last token, masking the semicolon.
             if is_trailing_semicolon(bytes, i) {
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     "Do not use semicolons to terminate expressions.".to_string(),
-                ));
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: i,
+                        end: i + 1,
+                        replacement: String::new(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
                 continue;
             }
 
             // Check if leading: nothing meaningful before the semicolon on this line.
             if is_leading_semicolon(bytes, i) {
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     "Do not use semicolons to terminate expressions.".to_string(),
-                ));
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: i,
+                        end: i + 1,
+                        replacement: String::new(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
                 continue;
             }
 
@@ -183,24 +209,46 @@ impl Cop for Semicolon {
             // - String interpolation: `"#{foo;}"`
             // RuboCop catches these via token position checks (tokens[-2] is `}`, tokens[-3] is `;`).
             if is_semicolon_before_closing_brace(bytes, i, code_map) {
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     "Do not use semicolons to terminate expressions.".to_string(),
-                ));
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: i,
+                        end: i + 1,
+                        replacement: String::new(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
                 continue;
             }
 
             // Check if semicolon is directly after `#{` in string interpolation
             // (only whitespace between `{` and `;`). Catches `"#{;foo}"`.
             if is_semicolon_after_interpolation_open(bytes, i) {
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     "Do not use semicolons to terminate expressions.".to_string(),
-                ));
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: i,
+                        end: i + 1,
+                        replacement: String::new(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
                 continue;
             }
         }
@@ -435,4 +483,5 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(Semicolon, "cops/style/semicolon");
+    crate::cop_autocorrect_fixture_tests!(Semicolon, "cops/style/semicolon");
 }
