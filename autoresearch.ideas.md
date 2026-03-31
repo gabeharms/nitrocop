@@ -1,6 +1,4 @@
-- `Lint/UnescapedBracketInRegexp`: token-local autocorrect by escaping offense-matched bare `]` as `\]` in regex content segments.
-- `Lint/EmptyConditionalBody`: evaluate conservative autocorrect (`if cond; end` -> `if cond
-  nil
-end`) only if RuboCop parity and fixture safety are clear.
-- `Naming/MemoizedInstanceVariableName`: consider a conservative subset that renames only simple `@ivar ||=` mismatches in method tail positions with same-scope reads.
+- `Naming/MemoizedInstanceVariableName`: conservative subset — rename only simple method-local `@ivar ||=` mismatches with same-scope ivar reads, skip dynamic ivar access and nested scopes.
+- `Style/IfWithSemicolon`: evaluate bounded autocorrect by replacing offense `;` then-keyword span with newline + preserved indentation only when replacement is unambiguous.
+- `Style/MethodCallWithArgsParentheses`: conservative omit-style token removal for clearly safe parenthesized calls (`foo(bar)` -> `foo bar`) where existing ambiguity guards already pass.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.
