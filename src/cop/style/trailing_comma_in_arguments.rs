@@ -117,6 +117,10 @@ impl Cop for TrailingCommaInArguments {
         "Style/TrailingCommaInArguments"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[BLOCK_ARGUMENT_NODE, CALL_NODE]
     }
@@ -128,7 +132,7 @@ impl Cop for TrailingCommaInArguments {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call_node = match node.as_call_node() {
             Some(c) => c,
@@ -209,12 +213,23 @@ impl Cop for TrailingCommaInArguments {
                     if let Some(comma_offset) = search_range.iter().position(|&b| b == b',') {
                         let abs_offset = last_end + comma_offset;
                         let (line, column) = source.offset_to_line_col(abs_offset);
-                        diagnostics.push(self.diagnostic(
+                        let mut diag = self.diagnostic(
                             source,
                             line,
                             column,
                             "Avoid comma after the last parameter of a method call.".to_string(),
-                        ));
+                        );
+                        if let Some(corr) = corrections.as_mut() {
+                            corr.push(crate::correction::Correction {
+                                start: abs_offset,
+                                end: abs_offset + 1,
+                                replacement: "".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+                        diagnostics.push(diag);
                     }
                 }
                 return;
@@ -269,15 +284,24 @@ impl Cop for TrailingCommaInArguments {
                 };
                 if is_multiline && !has_comma && all_on_own_line {
                     let (line, column) = source.offset_to_line_col(last_end);
-                    diagnostics.push(
-                        self.diagnostic(
-                            source,
-                            line,
-                            column,
-                            "Put a comma after the last parameter of a multiline method call."
-                                .to_string(),
-                        ),
+                    let mut diag = self.diagnostic(
+                        source,
+                        line,
+                        column,
+                        "Put a comma after the last parameter of a multiline method call."
+                            .to_string(),
                     );
+                    if let Some(corr) = corrections.as_mut() {
+                        corr.push(crate::correction::Correction {
+                            start: last_end,
+                            end: last_end,
+                            replacement: ",".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                    diagnostics.push(diag);
                 }
             }
             _ => {
@@ -286,12 +310,23 @@ impl Cop for TrailingCommaInArguments {
                     if let Some(comma_offset) = search_range.iter().position(|&b| b == b',') {
                         let abs_offset = last_end + comma_offset;
                         let (line, column) = source.offset_to_line_col(abs_offset);
-                        diagnostics.push(self.diagnostic(
+                        let mut diag = self.diagnostic(
                             source,
                             line,
                             column,
                             "Avoid comma after the last parameter of a method call.".to_string(),
-                        ));
+                        );
+                        if let Some(corr) = corrections.as_mut() {
+                            corr.push(crate::correction::Correction {
+                                start: abs_offset,
+                                end: abs_offset + 1,
+                                replacement: "".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+                        diagnostics.push(diag);
                     }
                 }
             }
@@ -305,6 +340,10 @@ mod tests {
     use crate::testutil::run_cop_full_with_config;
 
     crate::cop_fixture_tests!(
+        TrailingCommaInArguments,
+        "cops/style/trailing_comma_in_arguments"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         TrailingCommaInArguments,
         "cops/style/trailing_comma_in_arguments"
     );

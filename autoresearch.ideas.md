@@ -1,3 +1,3 @@
 - `Style/Semicolon`: consider expanding autocorrect beyond current conservative subset to offense-matched expression-separator lines only if newline rewrites can be made robust without structural regressions.
-- `Style/TrailingCommaInArguments`: investigate conservative autocorrect for simple trailing-comma insertion/removal cases where argument layout is already unambiguous in fixtures.
+- `Style/TrailingCommaInArrayLiteral`: investigate conservative autocorrect for straightforward trailing-comma add/remove cases mirrored by existing fixture patterns.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.
