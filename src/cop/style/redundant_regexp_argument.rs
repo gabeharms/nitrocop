@@ -52,6 +52,10 @@ impl Cop for RedundantRegexpArgument {
         "Style/RedundantRegexpArgument"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE]
     }
@@ -63,7 +67,7 @@ impl Cop for RedundantRegexpArgument {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -117,12 +121,26 @@ impl Cop for RedundantRegexpArgument {
 
         let loc = arg_list[0].location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             line,
             column,
             "Use string `\"` instead of regexp `/` as the argument.".to_string(),
-        ));
+        );
+
+        if let Some(corrs) = corrections.as_mut() {
+            let replacement = regexp_content_to_string_literal(content);
+            corrs.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -178,10 +196,45 @@ fn is_literal_char(b: u8) -> bool {
     )
 }
 
+fn regexp_content_to_string_literal(content: &[u8]) -> String {
+    let mut decoded: Vec<u8> = Vec::with_capacity(content.len());
+    let mut i = 0;
+
+    while i < content.len() {
+        if content[i] == b'\\' && i + 1 < content.len() {
+            i += 1;
+            decoded.push(content[i]);
+        } else {
+            decoded.push(content[i]);
+        }
+        i += 1;
+    }
+
+    let mut out = String::from("\"");
+    for &b in &decoded {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            b'"' => out.push_str("\\\""),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x0B => out.push_str("\\v"),
+            0x0C => out.push_str("\\f"),
+            _ => out.push(char::from(b)),
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantRegexpArgument,
+        "cops/style/redundant_regexp_argument"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantRegexpArgument,
         "cops/style/redundant_regexp_argument"
     );
