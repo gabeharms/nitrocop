@@ -24,6 +24,10 @@ impl Cop for NestedParenthesizedCalls {
         "Style/NestedParenthesizedCalls"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE]
     }
@@ -35,7 +39,7 @@ impl Cop for NestedParenthesizedCalls {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allowed_methods = config.get_string_array("AllowedMethods");
 
@@ -112,12 +116,36 @@ impl Cop for NestedParenthesizedCalls {
             let inner_src = std::str::from_utf8(inner_call.location().as_slice()).unwrap_or("");
             let loc = inner_call.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 format!("Add parentheses to nested method call `{inner_src}`."),
-            ));
+            );
+            if let Some(corrections) = corrections.as_mut() {
+                if let (Some(msg_loc), Some(inner_args)) =
+                    (inner_call.message_loc(), inner_call.arguments())
+                {
+                    if let Some(first_arg) = inner_args.arguments().iter().next() {
+                        corrections.push(crate::correction::Correction {
+                            start: msg_loc.end_offset(),
+                            end: first_arg.location().start_offset(),
+                            replacement: "(".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        corrections.push(crate::correction::Correction {
+                            start: loc.end_offset(),
+                            end: loc.end_offset(),
+                            replacement: ")".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                }
+            }
+            diagnostics.push(diag);
         }
     }
 }
@@ -126,6 +154,10 @@ impl Cop for NestedParenthesizedCalls {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        NestedParenthesizedCalls,
+        "cops/style/nested_parenthesized_calls"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         NestedParenthesizedCalls,
         "cops/style/nested_parenthesized_calls"
     );
