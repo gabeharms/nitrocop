@@ -21,6 +21,10 @@ impl Cop for UselessDefaultValueArgument {
         "Lint/UselessDefaultValueArgument"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -36,7 +40,7 @@ impl Cop for UselessDefaultValueArgument {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -92,12 +96,23 @@ impl Cop for UselessDefaultValueArgument {
 
             let default_loc = arg_list[1].location();
             let (line, column) = source.offset_to_line_col(default_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Block supersedes default value argument.".to_string(),
-            ));
+            );
+            if let Some(corrections) = corrections.as_mut() {
+                corrections.push(crate::correction::Correction {
+                    start: arg_list[0].location().end_offset(),
+                    end: default_loc.end_offset(),
+                    replacement: String::new(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
         } else if method_name == b"new" {
             // Check for Array.new(size, default) { block }
             let receiver = match call.receiver() {
@@ -125,12 +140,23 @@ impl Cop for UselessDefaultValueArgument {
 
             let default_loc = arg_list[1].location();
             let (line, column) = source.offset_to_line_col(default_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Block supersedes default value argument.".to_string(),
-            ));
+            );
+            if let Some(corrections) = corrections.as_mut() {
+                corrections.push(crate::correction::Correction {
+                    start: arg_list[0].location().end_offset(),
+                    end: default_loc.end_offset(),
+                    replacement: String::new(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+            diagnostics.push(diag);
         }
     }
 }
@@ -139,6 +165,10 @@ impl Cop for UselessDefaultValueArgument {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        UselessDefaultValueArgument,
+        "cops/lint/useless_default_value_argument"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         UselessDefaultValueArgument,
         "cops/lint/useless_default_value_argument"
     );
