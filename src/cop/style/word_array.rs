@@ -169,6 +169,10 @@ impl Cop for WordArray {
         "Style/WordArray"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -176,7 +180,7 @@ impl Cop for WordArray {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let min_size = config.get_usize("MinSize", 2);
         let enforced_style = config.get_str("EnforcedStyle", "percent");
@@ -197,9 +201,14 @@ impl Cop for WordArray {
             in_matrix_of_complex_content: false,
             in_ambiguous_block_context: false,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            emit_corrections: corrections.is_some(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -213,6 +222,8 @@ struct WordArrayVisitor<'a, 'src, 'pr> {
     /// True when inside direct arguments of a non-parenthesized call with a block.
     in_ambiguous_block_context: bool,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
 }
 
 impl<'pr> WordArrayVisitor<'_, '_, 'pr> {
@@ -259,12 +270,48 @@ impl<'pr> WordArrayVisitor<'_, '_, 'pr> {
         }
 
         let (line, column) = self.source.offset_to_line_col(opening.start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diag = self.cop.diagnostic(
             self.source,
             line,
             column,
             "Use `%w` or `%W` for an array of words.".to_string(),
-        ));
+        );
+
+        if self.emit_corrections
+            && let Some(replacement) = self.build_percent_word_array(node)
+        {
+            self.corrections.push(crate::correction::Correction {
+                start: node.location().start_offset(),
+                end: node.location().end_offset(),
+                replacement,
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        self.diagnostics.push(diag);
+    }
+
+    fn build_percent_word_array(&self, node: &ruby_prism::ArrayNode<'pr>) -> Option<String> {
+        let mut words: Vec<String> = Vec::with_capacity(node.elements().len());
+        for elem in node.elements().iter() {
+            let string_node = elem.as_string_node()?;
+            let word = std::str::from_utf8(string_node.unescaped()).ok()?;
+            if word.is_empty() || word.chars().any(char::is_whitespace) {
+                return None;
+            }
+            words.push(word.to_string());
+        }
+
+        let delimiters = [("[", "]"), ("(", ")"), ("{", "}"), ("<", ">")];
+        let (open, close) = delimiters.iter().find(|(_, close)| {
+            !words
+                .iter()
+                .any(|word| word.contains(*close) || word.contains('\n') || word.contains('\t'))
+        })?;
+
+        Some(format!("%w{open}{}{close}", words.join(" ")))
     }
 
     /// Check if a call node represents an ambiguous block context:
@@ -350,6 +397,7 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(WordArray, "cops/style/word_array");
+    crate::cop_autocorrect_fixture_tests!(WordArray, "cops/style/word_array");
 
     #[test]
     fn config_min_size_5() {
