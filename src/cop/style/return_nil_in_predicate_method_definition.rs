@@ -1,6 +1,7 @@
 use ruby_prism::Visit;
 
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -11,6 +12,10 @@ impl Cop for ReturnNilInPredicateMethodDefinition {
         "Style/ReturnNilInPredicateMethodDefinition"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -18,7 +23,7 @@ impl Cop for ReturnNilInPredicateMethodDefinition {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allowed_methods = config
             .get_string_array("AllowedMethods")
@@ -31,11 +36,16 @@ impl Cop for ReturnNilInPredicateMethodDefinition {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            autocorrect_enabled: corrections.is_some(),
             allowed_methods,
             allowed_patterns,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corr) = corrections.as_mut() {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -43,6 +53,8 @@ struct PredicateReturnVisitor<'a> {
     cop: &'a ReturnNilInPredicateMethodDefinition,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<Correction>,
+    autocorrect_enabled: bool,
     allowed_methods: Vec<String>,
     allowed_patterns: Vec<String>,
 }
@@ -78,12 +90,25 @@ impl<'pr> Visit<'pr> for PredicateReturnVisitor<'_> {
 
             for ret_loc in finder.returns {
                 let (line, column) = self.source.offset_to_line_col(ret_loc.0);
-                self.diagnostics.push(self.cop.diagnostic(
+                let mut diag = self.cop.diagnostic(
                     self.source,
                     line,
                     column,
                     "Avoid using `return nil` or `return` in predicate methods.".to_string(),
-                ));
+                );
+
+                if self.autocorrect_enabled {
+                    self.corrections.push(Correction {
+                        start: ret_loc.0,
+                        end: ret_loc.1,
+                        replacement: "return false".to_string(),
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                self.diagnostics.push(diag);
             }
         }
 
@@ -120,6 +145,10 @@ impl<'pr> Visit<'pr> for ReturnFinder {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        ReturnNilInPredicateMethodDefinition,
+        "cops/style/return_nil_in_predicate_method_definition"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         ReturnNilInPredicateMethodDefinition,
         "cops/style/return_nil_in_predicate_method_definition"
     );
