@@ -241,8 +241,8 @@ impl InfiniteLoopVisitor<'_> {
                     || bytes[abs - 1] == b'\n'
                     || bytes[abs - 1] == b' '
                     || bytes[abs - 1] == b'\t';
-                let next_ok = abs + 3 >= bytes.len()
-                    || matches!(bytes[abs + 3], b'\n' | b' ' | b'\t' | b';');
+                let next_ok =
+                    abs + 3 >= bytes.len() || matches!(bytes[abs + 3], b'\n' | b' ' | b'\t' | b';');
                 if prev_ok && next_ok {
                     return Some(abs);
                 }

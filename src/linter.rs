@@ -1278,8 +1278,8 @@ fn lint_source_once(
         && !has_except_redundant_disable
     {
         let redundant_disable_idx = registry.cop_index(REDUNDANT_DISABLE_COP);
-        let cop_enabled = redundant_disable_idx
-            .is_some_and(|idx| active_filters.is_cop_match(idx, &source.path));
+        let cop_enabled =
+            redundant_disable_idx.is_some_and(|idx| active_filters.is_cop_match(idx, &source.path));
 
         if cop_enabled {
             let can_autocorrect_redundant_disable = redundant_disable_idx.is_some_and(|idx| {

@@ -98,7 +98,8 @@ impl Cop for TrailingBodyOnClass {
                     if let Some(semi_offset) =
                         find_body_separator(source.as_bytes(), class_kw.end_offset(), body_start)
                     {
-                        let indent = " ".repeat(source.offset_to_line_col(class_kw.start_offset()).1 + 2);
+                        let indent =
+                            " ".repeat(source.offset_to_line_col(class_kw.start_offset()).1 + 2);
                         corr.push(crate::correction::Correction {
                             start: semi_offset,
                             end: body_start,
@@ -143,7 +144,8 @@ impl Cop for TrailingBodyOnClass {
                     if let Some(semi_offset) =
                         find_body_separator(source.as_bytes(), kw_loc.end_offset(), body_start)
                     {
-                        let indent = " ".repeat(source.offset_to_line_col(kw_loc.start_offset()).1 + 2);
+                        let indent =
+                            " ".repeat(source.offset_to_line_col(kw_loc.start_offset()).1 + 2);
                         corr.push(crate::correction::Correction {
                             start: semi_offset,
                             end: body_start,

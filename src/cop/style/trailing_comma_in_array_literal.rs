@@ -254,9 +254,7 @@ impl Cop for TrailingCommaInArrayLiteral {
                 }
             }
             _ => {
-                if has_comma
-                    && let Some(abs_offset) = find_comma_offset()
-                {
+                if has_comma && let Some(abs_offset) = find_comma_offset() {
                     push_remove_diagnostic(
                         self,
                         source,

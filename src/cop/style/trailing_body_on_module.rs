@@ -100,7 +100,8 @@ impl Cop for TrailingBodyOnModule {
                 if let Some(semi_offset) =
                     find_body_separator(source.as_bytes(), module_kw.end_offset(), body_start)
                 {
-                    let indent = " ".repeat(source.offset_to_line_col(module_kw.start_offset()).1 + 2);
+                    let indent =
+                        " ".repeat(source.offset_to_line_col(module_kw.start_offset()).1 + 2);
                     corr.push(crate::correction::Correction {
                         start: semi_offset,
                         end: body_start,
@@ -120,5 +121,8 @@ impl Cop for TrailingBodyOnModule {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(TrailingBodyOnModule, "cops/style/trailing_body_on_module");
-    crate::cop_autocorrect_fixture_tests!(TrailingBodyOnModule, "cops/style/trailing_body_on_module");
+    crate::cop_autocorrect_fixture_tests!(
+        TrailingBodyOnModule,
+        "cops/style/trailing_body_on_module"
+    );
 }

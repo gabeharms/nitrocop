@@ -43,6 +43,7 @@ struct AccessModifierVisitor<'a> {
     allow_modifiers_on_attrs: bool,
     allow_modifiers_on_alias_method: bool,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
     /// true when the current scope is a class/module/sclass body (not a block)
     in_class_body: bool,
 }
@@ -113,6 +114,7 @@ struct ModifierInfo<'a> {
     method_name: &'a str,
     is_inline: bool,
     start_offset: usize,
+    inline_def_start: Option<usize>,
 }
 
 impl AccessModifierVisitor<'_> {
@@ -144,6 +146,10 @@ impl AccessModifierVisitor<'_> {
                     method_name,
                     is_inline,
                     start_offset: offset,
+                    inline_def_start: call
+                        .arguments()
+                        .and_then(|a| a.arguments().iter().next())
+                        .and_then(|arg| arg.as_def_node().map(|d| d.location().start_offset())),
                 })
             })
             .collect();
@@ -159,7 +165,7 @@ impl AccessModifierVisitor<'_> {
 
                     if !has_right_sibling_same {
                         let (line, column) = self.source.offset_to_line_col(info.start_offset);
-                        self.diagnostics.push(self.cop.diagnostic(
+                        let mut diagnostic = self.cop.diagnostic(
                             self.source,
                             line,
                             column,
@@ -167,7 +173,21 @@ impl AccessModifierVisitor<'_> {
                                 "`{}` should not be inlined in method definitions.",
                                 info.method_name
                             ),
-                        ));
+                        );
+
+                        if let Some(def_start) = info.inline_def_start {
+                            let indent = indentation_at(self.source, info.start_offset);
+                            self.corrections.push(crate::correction::Correction {
+                                start: info.start_offset,
+                                end: def_start,
+                                replacement: format!("{}\n{}", info.method_name, indent),
+                                cop_name: self.cop.name(),
+                                cop_index: 0,
+                            });
+                            diagnostic.corrected = true;
+                        }
+
+                        self.diagnostics.push(diagnostic);
                     }
                 }
             }
@@ -300,6 +320,10 @@ impl Cop for AccessModifierDeclarations {
         "Style/AccessModifierDeclarations"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -307,7 +331,7 @@ impl Cop for AccessModifierDeclarations {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "group");
         let allow_modifiers_on_symbols = config.get_bool("AllowModifiersOnSymbols", true);
@@ -322,18 +346,41 @@ impl Cop for AccessModifierDeclarations {
             allow_modifiers_on_attrs,
             allow_modifiers_on_alias_method,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
             in_class_body: true,
         };
 
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(c) = corrections {
+            c.extend(visitor.corrections);
+        }
     }
+}
+
+fn indentation_at(source: &SourceFile, offset: usize) -> String {
+    let bytes = source.as_bytes();
+    let mut line_start = offset;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+
+    let mut i = line_start;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+
+    String::from_utf8_lossy(&bytes[line_start..i]).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        AccessModifierDeclarations,
+        "cops/style/access_modifier_declarations"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         AccessModifierDeclarations,
         "cops/style/access_modifier_declarations"
     );

@@ -341,7 +341,8 @@ impl Cop for InverseMethods {
                 );
 
                 if let Some(corrs) = corrections.as_mut() {
-                    if let Some(replacement) = Self::replace_call_selector(&inner_call, source, inv) {
+                    if let Some(replacement) = Self::replace_call_selector(&inner_call, source, inv)
+                    {
                         corrs.push(crate::correction::Correction {
                             start: loc.start_offset(),
                             end: loc.end_offset(),
@@ -371,7 +372,8 @@ impl Cop for InverseMethods {
                     );
 
                     if let Some(corrs) = corrections.as_mut() {
-                        if let Some(replacement) = Self::replace_call_selector(&inner_call, source, inv)
+                        if let Some(replacement) =
+                            Self::replace_call_selector(&inner_call, source, inv)
                         {
                             corrs.push(crate::correction::Correction {
                                 start: loc.start_offset(),

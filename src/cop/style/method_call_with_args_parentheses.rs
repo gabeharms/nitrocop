@@ -193,6 +193,10 @@ impl Cop for MethodCallWithArgsParentheses {
         false
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -200,7 +204,7 @@ impl Cop for MethodCallWithArgsParentheses {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "require_parentheses");
         let ignore_macros = config.get_bool("IgnoreMacros", true);
@@ -217,6 +221,7 @@ impl Cop for MethodCallWithArgsParentheses {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
             enforced_style,
             ignore_macros,
             allowed_methods: allowed_methods.as_deref(),
@@ -235,6 +240,9 @@ impl Cop for MethodCallWithArgsParentheses {
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(c) = corrections {
+            c.extend(visitor.corrections);
+        }
     }
 }
 
@@ -242,6 +250,7 @@ struct ParenVisitor<'a> {
     cop: &'a MethodCallWithArgsParentheses,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
     enforced_style: &'a str,
     ignore_macros: bool,
     allowed_methods: Option<&'a [String]>,
@@ -363,12 +372,38 @@ impl ParenVisitor<'_> {
         let (line, column) = self
             .source
             .offset_to_line_col(call.location().start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diagnostic = self.cop.diagnostic(
             self.source,
             line,
             column,
             "Use parentheses for method calls with arguments.".to_string(),
-        ));
+        );
+
+        if let (Some(args), Some(message_loc)) = (call.arguments(), call.message_loc()) {
+            let args_loc = args.location();
+            let name_end = message_loc.end_offset();
+            let arg_start = args_loc.start_offset();
+            let arg_end = args_loc.end_offset();
+            if name_end <= arg_start {
+                self.corrections.push(crate::correction::Correction {
+                    start: name_end,
+                    end: arg_start,
+                    replacement: "(".to_string(),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                self.corrections.push(crate::correction::Correction {
+                    start: arg_end,
+                    end: arg_end,
+                    replacement: ")".to_string(),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+        }
+
+        self.diagnostics.push(diagnostic);
     }
 
     fn check_omit_parentheses(&mut self, call: &ruby_prism::CallNode<'_>) {
@@ -718,12 +753,38 @@ impl ParenVisitor<'_> {
         let (line, column) = self
             .source
             .offset_to_line_col(node.keyword_loc().start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diagnostic = self.cop.diagnostic(
             self.source,
             line,
             column,
             "Use parentheses for method calls with arguments.".to_string(),
-        ));
+        );
+
+        if let Some(args) = node.arguments() {
+            let args_loc = args.location();
+            let keyword_end = node.keyword_loc().end_offset();
+            let arg_start = args_loc.start_offset();
+            let arg_end = args_loc.end_offset();
+            if keyword_end <= arg_start {
+                self.corrections.push(crate::correction::Correction {
+                    start: keyword_end,
+                    end: arg_start,
+                    replacement: "(".to_string(),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                self.corrections.push(crate::correction::Correction {
+                    start: arg_end,
+                    end: arg_end,
+                    replacement: ")".to_string(),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+        }
+
+        self.diagnostics.push(diagnostic);
     }
 
     /// Check yield node in omit_parentheses mode.
@@ -1416,6 +1477,10 @@ mod tests {
     use crate::testutil::{run_cop_full, run_cop_full_with_config};
 
     crate::cop_fixture_tests!(
+        MethodCallWithArgsParentheses,
+        "cops/style/method_call_with_args_parentheses"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         MethodCallWithArgsParentheses,
         "cops/style/method_call_with_args_parentheses"
     );
