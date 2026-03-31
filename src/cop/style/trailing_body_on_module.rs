@@ -10,6 +10,13 @@ use crate::parse::source::SourceFile;
 /// TrailingBodyOnClass.
 pub struct TrailingBodyOnModule;
 
+fn find_body_separator(bytes: &[u8], header_start: usize, body_start: usize) -> Option<usize> {
+    if body_start > bytes.len() || header_start >= body_start {
+        return None;
+    }
+    (header_start..body_start).find(|&i| bytes[i] == b';')
+}
+
 /// Get the line and column of the first actual statement in a body node.
 /// For BeginNode (implicit begin wrapping rescue/ensure), the node's own
 /// location may start on the module keyword line, so we drill into
@@ -45,6 +52,10 @@ impl Cop for TrailingBodyOnModule {
         &[MODULE_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -52,7 +63,7 @@ impl Cop for TrailingBodyOnModule {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let module_node = match node.as_module_node() {
             Some(m) => m,
@@ -77,12 +88,30 @@ impl Cop for TrailingBodyOnModule {
         }
 
         if mod_line == body_line {
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 body_line,
                 body_column,
                 "Place the first line of module body on its own line.".to_string(),
-            ));
+            );
+            if let Some(ref mut corr) = corrections {
+                let module_kw = module_node.module_keyword_loc();
+                let body_start = body.location().start_offset();
+                if let Some(semi_offset) =
+                    find_body_separator(source.as_bytes(), module_kw.end_offset(), body_start)
+                {
+                    let indent = " ".repeat(source.offset_to_line_col(module_kw.start_offset()).1 + 2);
+                    corr.push(crate::correction::Correction {
+                        start: semi_offset,
+                        end: body_start,
+                        replacement: format!("\n{indent}"),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+            }
+            diagnostics.push(diag);
         }
     }
 }
@@ -91,4 +120,5 @@ impl Cop for TrailingBodyOnModule {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(TrailingBodyOnModule, "cops/style/trailing_body_on_module");
+    crate::cop_autocorrect_fixture_tests!(TrailingBodyOnModule, "cops/style/trailing_body_on_module");
 }
