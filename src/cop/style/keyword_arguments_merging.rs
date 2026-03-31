@@ -42,6 +42,10 @@ impl Cop for KeywordArgumentsMerging {
         &[ASSOC_SPLAT_NODE, CALL_NODE, KEYWORD_HASH_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -49,7 +53,7 @@ impl Cop for KeywordArgumentsMerging {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -84,12 +88,55 @@ impl Cop for KeywordArgumentsMerging {
                                 let receiver = merge_call.receiver().unwrap();
                                 let (line, column) =
                                     source.offset_to_line_col(receiver.location().start_offset());
-                                diagnostics.push(self.diagnostic(
+                                let mut diagnostic = self.diagnostic(
                                     source,
                                     line,
                                     column,
-                                    "Provide additional arguments directly rather than using `merge`.".to_string(),
-                                ));
+                                    "Provide additional arguments directly rather than using `merge`."
+                                        .to_string(),
+                                );
+
+                                if let Some(corrs) = corrections.as_mut() {
+                                    let receiver_src =
+                                        String::from_utf8_lossy(receiver.location().as_slice());
+                                    let mut replacement = format!("**{}", receiver_src);
+                                    if let Some(merge_args) = merge_call.arguments() {
+                                        let merge_arg_sources: Vec<String> = merge_args
+                                            .arguments()
+                                            .iter()
+                                            .map(|arg| {
+                                                let src = String::from_utf8_lossy(
+                                                    arg.location().as_slice(),
+                                                )
+                                                .to_string();
+                                                if arg.as_assoc_node().is_some()
+                                                    || arg.as_assoc_splat_node().is_some()
+                                                    || arg.as_keyword_hash_node().is_some()
+                                                    || arg.as_hash_node().is_some()
+                                                {
+                                                    src
+                                                } else {
+                                                    format!("**{}", src)
+                                                }
+                                            })
+                                            .collect();
+                                        if !merge_arg_sources.is_empty() {
+                                            replacement.push_str(", ");
+                                            replacement.push_str(&merge_arg_sources.join(", "));
+                                        }
+                                    }
+
+                                    corrs.push(crate::correction::Correction {
+                                        start: splat.location().start_offset(),
+                                        end: splat.location().end_offset(),
+                                        replacement,
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    diagnostic.corrected = true;
+                                }
+
+                                diagnostics.push(diagnostic);
                             }
                         }
                     }
@@ -103,6 +150,10 @@ impl Cop for KeywordArgumentsMerging {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        KeywordArgumentsMerging,
+        "cops/style/keyword_arguments_merging"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         KeywordArgumentsMerging,
         "cops/style/keyword_arguments_merging"
     );
