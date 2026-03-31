@@ -18,6 +18,10 @@ impl Cop for Sample {
         "Style/Sample"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE]
     }
@@ -29,7 +33,7 @@ impl Cop for Sample {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -132,12 +136,27 @@ impl Cop for Sample {
                         "sample".to_string()
                     };
 
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     format!("Use `{}` instead of `{}`.", correct, incorrect),
-                ));
+                );
+
+                if let Some(corr) = corrections.as_mut() {
+                    if let Some(shuffle_selector) = shuffle_call.message_loc() {
+                        corr.push(crate::correction::Correction {
+                            start: shuffle_selector.start_offset(),
+                            end: loc.end_offset(),
+                            replacement: correct.clone(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                }
+
+                diagnostics.push(diag);
             }
         }
     }
@@ -147,4 +166,5 @@ impl Cop for Sample {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(Sample, "cops/style/sample");
+    crate::cop_autocorrect_fixture_tests!(Sample, "cops/style/sample");
 }
