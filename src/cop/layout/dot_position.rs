@@ -1,5 +1,6 @@
 use crate::cop::node_type::CALL_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -16,6 +17,10 @@ impl Cop for DotPosition {
         "Layout/DotPosition"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE]
     }
@@ -27,7 +32,7 @@ impl Cop for DotPosition {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "leading");
 
@@ -76,35 +81,71 @@ impl Cop for DotPosition {
             return;
         }
 
-        let dot_str = std::str::from_utf8(dot_loc.as_slice()).unwrap_or(".");
+        let dot_text = String::from_utf8_lossy(dot_loc.as_slice()).into_owned();
 
         match style {
             "trailing" => {
                 // Dot should be on the same line as the receiver (trailing)
                 if dot_line != recv_line {
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         dot_line,
                         dot_col,
                         format!(
                             "Place the `{}` on the previous line, together with the method call receiver.",
-                            dot_str
+                            dot_text
                         ),
-                    ));
+                    );
+                    if let Some(corrections) = corrections.as_mut() {
+                        corrections.push(Correction {
+                            start: receiver.location().end_offset(),
+                            end: receiver.location().end_offset(),
+                            replacement: dot_text.clone(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        corrections.push(Correction {
+                            start: dot_loc.start_offset(),
+                            end: dot_loc.end_offset(),
+                            replacement: String::new(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+                    diagnostics.push(diagnostic);
                 }
             }
             _ => {
                 // "leading" (default): dot should be on the same line as the method name
                 if dot_line != msg_line {
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         dot_line,
                         dot_col,
                         format!(
                             "Place the `{}` on the next line, together with the method name.",
-                            dot_str
+                            dot_text
                         ),
-                    ));
+                    );
+                    if let Some(corrections) = corrections.as_mut() {
+                        corrections.push(Correction {
+                            start: msg_loc.start_offset(),
+                            end: msg_loc.start_offset(),
+                            replacement: dot_text.clone(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        corrections.push(Correction {
+                            start: dot_loc.start_offset(),
+                            end: dot_loc.end_offset(),
+                            replacement: String::new(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+                    diagnostics.push(diagnostic);
                 }
             }
         }
@@ -116,4 +157,24 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(DotPosition, "cops/layout/dot_position");
+    crate::cop_autocorrect_fixture_tests!(DotPosition, "cops/layout/dot_position");
+
+    #[test]
+    fn autocorrect_trailing_style_moves_dot_up() {
+        use std::collections::HashMap;
+
+        let config = CopConfig {
+            options: HashMap::from([(
+                "EnforcedStyle".into(),
+                serde_yml::Value::String("trailing".into()),
+            )]),
+            ..CopConfig::default()
+        };
+
+        let source = b"foo\n  .bar\n";
+        let (_diagnostics, corrections) =
+            crate::testutil::run_cop_autocorrect_with_config(&DotPosition, source, config);
+        let corrected = crate::correction::CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"foo.\n  bar\n");
+    }
 }
