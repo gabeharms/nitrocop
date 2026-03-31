@@ -13,6 +13,10 @@ impl Cop for EachForSimpleLoop {
         "Style/EachForSimpleLoop"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             BLOCK_NODE,
@@ -32,9 +36,8 @@ impl Cop for EachForSimpleLoop {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        // Look for CallNode with .each and a block
         let call_node = match node.as_call_node() {
             Some(c) => c,
             None => return,
@@ -44,7 +47,6 @@ impl Cop for EachForSimpleLoop {
             return;
         }
 
-        // Must have a block
         let block = match call_node.block() {
             Some(b) => b,
             None => return,
@@ -55,11 +57,9 @@ impl Cop for EachForSimpleLoop {
             None => return,
         };
 
-        // Block must have no parameters (empty args) or no params node at all
         if let Some(params) = block_node.parameters() {
             if let Some(bp) = params.as_block_parameters_node() {
                 if let Some(inner_params) = bp.parameters() {
-                    // Check all param lists are empty
                     let has_params = !inner_params.requireds().is_empty()
                         || !inner_params.optionals().is_empty()
                         || inner_params.rest().is_some()
@@ -72,18 +72,15 @@ impl Cop for EachForSimpleLoop {
                     }
                 }
             } else {
-                // Some other parameter type - skip
                 return;
             }
         }
 
-        // Receiver must be a parenthesized range: (0..n) or (1..n)
         let receiver = match call_node.receiver() {
             Some(r) => r,
             None => return,
         };
 
-        // Unwrap parentheses
         let parens = match receiver.as_parentheses_node() {
             Some(p) => p,
             None => return,
@@ -94,7 +91,6 @@ impl Cop for EachForSimpleLoop {
             None => return,
         };
 
-        // The body may be a RangeNode directly or wrapped in a StatementsNode
         let range_node = if let Some(r) = parens_body.as_range_node() {
             r
         } else if let Some(stmts) = parens_body.as_statements_node() {
@@ -110,43 +106,80 @@ impl Cop for EachForSimpleLoop {
             return;
         };
 
-        // Left side must be an integer literal
         let left = match range_node.left() {
             Some(l) => l,
             None => return,
         };
-
-        if left.as_integer_node().is_none() {
-            return;
-        }
-
-        // Right side must be an integer literal
         let right = match range_node.right() {
             Some(r) => r,
             None => return,
         };
 
-        if right.as_integer_node().is_none() {
+        if left.as_integer_node().is_none() || right.as_integer_node().is_none() {
             return;
         }
 
-        // Check if left is 0 (for inclusive range) or args are empty
-        // We flag all cases with integer ranges and empty block params
         let (line, column) = source.offset_to_line_col(receiver.location().start_offset());
-        diagnostics.push(
-            self.diagnostic(
-                source,
-                line,
-                column,
-                "Use `Integer#times` for a simple loop which iterates a fixed number of times."
-                    .to_string(),
-            ),
+        let mut diag = self.diagnostic(
+            source,
+            line,
+            column,
+            "Use `Integer#times` for a simple loop which iterates a fixed number of times."
+                .to_string(),
         );
+
+        if let (Some(left_value), Some(right_value)) = (
+            parse_integer_literal(source, &left),
+            parse_integer_literal(source, &right),
+        ) {
+            let iterations = if range_node.is_exclude_end() {
+                right_value - left_value
+            } else {
+                right_value - left_value + 1
+            }
+            .max(0);
+
+            if let Some(corr) = corrections.as_mut() {
+                corr.push(crate::correction::Correction {
+                    start: receiver.location().start_offset(),
+                    end: receiver.location().end_offset(),
+                    replacement: iterations.to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+
+                if let Some(msg_loc) = call_node.message_loc() {
+                    corr.push(crate::correction::Correction {
+                        start: msg_loc.start_offset(),
+                        end: msg_loc.end_offset(),
+                        replacement: "times".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                }
+                diag.corrected = true;
+            }
+        }
+
+        diagnostics.push(diag);
     }
+}
+
+fn parse_integer_literal(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<i64> {
+    let int_node = node.as_integer_node()?;
+    let raw = source
+        .byte_slice(
+            int_node.location().start_offset(),
+            int_node.location().end_offset(),
+            "",
+        )
+        .replace('_', "");
+    raw.parse::<i64>().ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(EachForSimpleLoop, "cops/style/each_for_simple_loop");
+    crate::cop_autocorrect_fixture_tests!(EachForSimpleLoop, "cops/style/each_for_simple_loop");
 }
