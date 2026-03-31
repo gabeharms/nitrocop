@@ -9,6 +9,10 @@ impl Cop for LineEndConcatenation {
         "Style/LineEndConcatenation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -16,7 +20,7 @@ impl Cop for LineEndConcatenation {
         code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let lines: Vec<&str> = source
             .lines()
@@ -114,8 +118,9 @@ impl Cop for LineEndConcatenation {
 
             let col = trimmed.len() - op_len;
             let line_num = i + 1;
+            let op_start = line_offsets[i] + col;
 
-            diagnostics.push(self.diagnostic(
+            let mut diagnostic = self.diagnostic(
                 source,
                 line_num,
                 col,
@@ -123,7 +128,20 @@ impl Cop for LineEndConcatenation {
                     "Use `\\` instead of `{}` to concatenate multiline strings.",
                     op
                 ),
-            ));
+            );
+
+            if let Some(corrs) = corrections.as_mut() {
+                corrs.push(crate::correction::Correction {
+                    start: op_start,
+                    end: op_start + op_len,
+                    replacement: "\\".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+
+            diagnostics.push(diagnostic);
         }
     }
 }
@@ -186,4 +204,8 @@ impl LineEndConcatenation {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(LineEndConcatenation, "cops/style/line_end_concatenation");
+    crate::cop_autocorrect_fixture_tests!(
+        LineEndConcatenation,
+        "cops/style/line_end_concatenation"
+    );
 }
