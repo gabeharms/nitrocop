@@ -338,11 +338,8 @@ impl RedundantCondition {
         // No-else pattern: `if cond; cond; end` → "This condition is not needed."
         if else_stmts.is_none() {
             if Self::nodes_equal(source, condition, true_value) {
-                let mut diag = self.make_diagnostic_at(
-                    source,
-                    kw_offset,
-                    "This condition is not needed.",
-                );
+                let mut diag =
+                    self.make_diagnostic_at(source, kw_offset, "This condition is not needed.");
                 if let Some(corr) = corrections.as_mut() {
                     corr.push(crate::correction::Correction {
                         start: if_node_loc.start_offset(),
@@ -375,7 +372,8 @@ impl RedundantCondition {
 
         // Pattern 1: condition == true_branch
         if Self::nodes_equal(source, condition, true_value) {
-            let mut diag = self.make_diagnostic_at(source, kw_offset, "Use double pipes `||` instead.");
+            let mut diag =
+                self.make_diagnostic_at(source, kw_offset, "Use double pipes `||` instead.");
             if let Some(corr) = corrections.as_mut() {
                 let else_body: Vec<_> = else_stmts_unwrapped.body().into_iter().collect();
                 if else_body.len() == 1 {

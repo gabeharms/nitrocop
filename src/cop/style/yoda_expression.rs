@@ -138,10 +138,12 @@ impl<'pr> Visit<'pr> for YodaVisitor<'_> {
                                 let lhs_loc = receiver.location();
                                 let rhs_loc = arg_list[0].location();
                                 let lhs = String::from_utf8_lossy(
-                                    &self.source.as_bytes()[lhs_loc.start_offset()..lhs_loc.end_offset()],
+                                    &self.source.as_bytes()
+                                        [lhs_loc.start_offset()..lhs_loc.end_offset()],
                                 );
                                 let rhs = String::from_utf8_lossy(
-                                    &self.source.as_bytes()[rhs_loc.start_offset()..rhs_loc.end_offset()],
+                                    &self.source.as_bytes()
+                                        [rhs_loc.start_offset()..rhs_loc.end_offset()],
                                 );
                                 self.corrections.push(crate::correction::Correction {
                                     start,
