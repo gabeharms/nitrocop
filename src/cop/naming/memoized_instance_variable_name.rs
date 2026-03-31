@@ -120,6 +120,7 @@ impl MemoizedInstanceVariableName {
         method_name_str: &str,
         leading_underscore_style: &str,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Extract value before or_write is moved into check_or_write
         let value = or_write.value();
@@ -129,6 +130,7 @@ impl MemoizedInstanceVariableName {
             base_name,
             method_name_str,
             leading_underscore_style,
+            corrections,
         ));
         // Check nested ||= in the value: @a ||= @b ||= expr
         if let Some(inner) = value.as_instance_variable_or_write_node() {
@@ -139,6 +141,7 @@ impl MemoizedInstanceVariableName {
                 method_name_str,
                 leading_underscore_style,
                 diagnostics,
+                corrections,
             );
         }
     }
@@ -150,6 +153,7 @@ impl MemoizedInstanceVariableName {
         base_name: &str,
         method_name_str: &str,
         leading_underscore_style: &str,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) -> Vec<Diagnostic> {
         let ivar_name = or_write.name().as_slice();
         let ivar_str = std::str::from_utf8(ivar_name).unwrap_or("");
@@ -179,14 +183,31 @@ impl MemoizedInstanceVariableName {
         if !matches {
             let loc = or_write.name_loc();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            return vec![self.diagnostic(
+            let mut diagnostic = self.diagnostic(
                 source,
                 line,
                 column,
                 format!(
                     "Memoized variable `@{ivar_base}` does not match method name `{method_name_str}`."
                 ),
-            )];
+            );
+
+            let suggested = match leading_underscore_style {
+                "required" => format!("_{base_name}"),
+                _ => base_name.strip_prefix('_').unwrap_or(base_name).to_string(),
+            };
+            if let Some(corrs) = corrections.as_mut() {
+                corrs.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement: format!("@{suggested}"),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+
+            return vec![diagnostic];
         }
 
         Vec::new()
@@ -201,6 +222,7 @@ impl MemoizedInstanceVariableName {
         call_node: ruby_prism::CallNode<'_>,
         enforced_style: &str,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Extract method name from first argument (symbol or string)
         let args = match call_node.arguments() {
@@ -257,6 +279,7 @@ impl MemoizedInstanceVariableName {
                 base_name,
                 method_name_str,
                 enforced_style,
+                corrections,
             ));
             return;
         }
@@ -280,6 +303,7 @@ impl MemoizedInstanceVariableName {
                 base_name,
                 method_name_str,
                 enforced_style,
+                corrections,
             ));
             return;
         }
@@ -293,6 +317,7 @@ impl MemoizedInstanceVariableName {
                     base_name,
                     method_name_str,
                     enforced_style,
+                    corrections,
                 ));
                 return;
             }
@@ -308,6 +333,7 @@ impl MemoizedInstanceVariableName {
                     base_name,
                     method_name_str,
                     enforced_style,
+                    corrections,
                 ));
             }
         }
@@ -323,6 +349,7 @@ impl MemoizedInstanceVariableName {
         base_name: &str,
         method_name_str: &str,
         enforced_style: &str,
+        corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
     ) -> Vec<Diagnostic> {
         let matches = match enforced_style {
             "required" => {
@@ -348,12 +375,29 @@ impl MemoizedInstanceVariableName {
 
         let suggested = match enforced_style {
             "required" => format!("_{base_name}"),
-            _ => base_name.to_string(),
+            _ => base_name.strip_prefix('_').unwrap_or(base_name).to_string(),
         };
 
         let msg = format!(
             "Memoized variable `@{ivar_base}` does not match method name `{method_name_str}`. Use `@{suggested}` instead."
         );
+
+        let mut push_diag =
+            |loc: ruby_prism::Location<'_>, message: String, diags: &mut Vec<Diagnostic>| {
+                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                let mut diag = self.diagnostic(source, line, column, message);
+                if let Some(corrs) = corrections.as_mut() {
+                    corrs.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: format!("@{suggested}"),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diags.push(diag);
+            };
 
         // Collect all ivar locations from the defined? pattern:
         // 1. defined?(@ivar) — the ivar inside defined?
@@ -369,9 +413,7 @@ impl MemoizedInstanceVariableName {
                     if let Some(args) = call.arguments() {
                         for arg in args.arguments().iter() {
                             if arg.as_instance_variable_read_node().is_some() {
-                                let loc = arg.location();
-                                let (line, column) = source.offset_to_line_col(loc.start_offset());
-                                diags.push(self.diagnostic(source, line, column, msg.clone()));
+                                push_diag(arg.location(), msg.clone(), &mut diags);
                             }
                         }
                     }
@@ -381,9 +423,7 @@ impl MemoizedInstanceVariableName {
             if let Some(defined) = if_node.predicate().as_defined_node() {
                 let value = defined.value();
                 if value.as_instance_variable_read_node().is_some() {
-                    let loc = value.location();
-                    let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diags.push(self.diagnostic(source, line, column, msg.clone()));
+                    push_diag(value.location(), msg.clone(), &mut diags);
                 }
             }
 
@@ -394,10 +434,7 @@ impl MemoizedInstanceVariableName {
                         if let Some(args) = ret.arguments() {
                             for arg in args.arguments().iter() {
                                 if arg.as_instance_variable_read_node().is_some() {
-                                    let loc = arg.location();
-                                    let (line, column) =
-                                        source.offset_to_line_col(loc.start_offset());
-                                    diags.push(self.diagnostic(source, line, column, msg.clone()));
+                                    push_diag(arg.location(), msg.clone(), &mut diags);
                                 }
                             }
                         }
@@ -409,9 +446,7 @@ impl MemoizedInstanceVariableName {
         // The last node should be @ivar = ...
         let last = &body_nodes[body_nodes.len() - 1];
         if let Some(ivar_write) = last.as_instance_variable_write_node() {
-            let loc = ivar_write.name_loc();
-            let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diags.push(self.diagnostic(source, line, column, msg));
+            push_diag(ivar_write.name_loc(), msg, &mut diags);
         }
 
         diags
@@ -730,6 +765,10 @@ impl Cop for MemoizedInstanceVariableName {
         "Naming/MemoizedInstanceVariableName"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             CALL_NODE,
@@ -748,7 +787,7 @@ impl Cop for MemoizedInstanceVariableName {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyleForLeadingUnderscores", "disallowed");
 
@@ -757,7 +796,13 @@ impl Cop for MemoizedInstanceVariableName {
             let method = call_node.name().as_slice();
             let method_str = std::str::from_utf8(method).unwrap_or("");
             if method_str == "define_method" || method_str == "define_singleton_method" {
-                self.check_dynamic_method(source, call_node, enforced_style, diagnostics);
+                self.check_dynamic_method(
+                    source,
+                    call_node,
+                    enforced_style,
+                    diagnostics,
+                    &mut corrections,
+                );
             }
             return;
         }
@@ -802,6 +847,7 @@ impl Cop for MemoizedInstanceVariableName {
                 method_name_str,
                 enforced_style,
                 diagnostics,
+                &mut corrections,
             );
             return;
         }
@@ -816,6 +862,7 @@ impl Cop for MemoizedInstanceVariableName {
                     method_name_str,
                     enforced_style,
                     diagnostics,
+                    &mut corrections,
                 );
             }
             return;
@@ -841,6 +888,7 @@ impl Cop for MemoizedInstanceVariableName {
                 method_name_str,
                 enforced_style,
                 diagnostics,
+                &mut corrections,
             );
             return;
         }
@@ -867,6 +915,7 @@ impl Cop for MemoizedInstanceVariableName {
                     method_name_str,
                     enforced_style,
                     diagnostics,
+                    &mut corrections,
                 );
                 if diagnostics.len() > count_before {
                     // Parser structural equality: scan body for sibling ||= nodes
@@ -915,6 +964,7 @@ impl Cop for MemoizedInstanceVariableName {
                     base_name,
                     method_name_str,
                     enforced_style,
+                    &mut corrections,
                 ));
             }
         }
@@ -1013,6 +1063,24 @@ mod tests {
             diags.len(),
             1,
             "Should flag @script ||= in method with block calls before it"
+        );
+    }
+
+    #[test]
+    fn autocorrect_simple_or_write_renames_ivar() {
+        crate::testutil::assert_cop_autocorrect(
+            &MemoizedInstanceVariableName,
+            b"def foo\n  @bar ||= compute\n  ^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@bar` does not match method name `foo`.\nend\n",
+            b"def foo\n  @foo ||= compute\nend\n",
+        );
+    }
+
+    #[test]
+    fn autocorrect_defined_pattern_renames_all_ivar_occurrences() {
+        crate::testutil::assert_cop_autocorrect(
+            &MemoizedInstanceVariableName,
+            b"def issue_token!\n  return @token if defined?(@token)\n                            ^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@token` does not match method name `issue_token!`. Use `@issue_token` instead.\n         ^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@token` does not match method name `issue_token!`. Use `@issue_token` instead.\n  @token = create_token\n  ^^^^^^ Naming/MemoizedInstanceVariableName: Memoized variable `@token` does not match method name `issue_token!`. Use `@issue_token` instead.\nend\n",
+            b"def issue_token!\n  return @issue_token if defined?(@issue_token)\n  @issue_token = create_token\nend\n",
         );
     }
 
