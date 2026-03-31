@@ -1,3 +1,3 @@
-- `Style/StringConcatenation`: conservative mode candidate — bounded rewrite for simple two-part string-plus-expression cases to interpolation while skipping heredoc/percent/multiline chain edge cases.
+- `Style/SafeNavigation`: conservative subset candidate — start with simple `foo && foo.bar` / `foo ? foo.bar : nil` style rewrites where receiver/source equality is exact and side-effect risk is already excluded by current offense guards.
 - `Lint/HeredocMethodCallPosition`: defer for now; naive location-based suffix move corrupted heredoc structure. Revisit with robust line/parser-aware opener/body/terminator reconstruction before retrying.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.
