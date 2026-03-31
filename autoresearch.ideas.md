@@ -1,5 +1,4 @@
-- Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
-- Extend `Lint/NumberConversion` autocorrect to symbol/block-pass forms (`map(&:to_i)`, `try(:to_f)`) only after implementing syntax-safe parenthesis/block rewrites.
+- Revisit `Lint/NumberConversion` symbol/block-pass autocorrect only if non-metric goals require it; current implementation path was tested and discarded for no primary-metric gain.
 - Extend `Style/DigChain` autocorrect to fully collapse longer dig chains in one pass (currently pairwise collapse per autocorrect iteration).
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) after low-risk Style/Lint chain/selector wins taper off.
 - Extend `Style/ClassMethodsDefinitions` autocorrect from current defs-only subset to mixed `class << self` blocks (e.g., `attr_reader` + public defs) with comment/visibility-preserving extraction.
