@@ -55,6 +55,10 @@ impl Cop for RedundantSort {
         "Style/RedundantSort"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE, INTEGER_NODE]
     }
@@ -66,7 +70,7 @@ impl Cop for RedundantSort {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -152,7 +156,7 @@ impl Cop for RedundantSort {
         // (RuboCop highlights from the sort method name through the accessor)
         let loc = sort_call.message_loc().unwrap_or(sort_call.location());
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             line,
             column,
@@ -160,7 +164,32 @@ impl Cop for RedundantSort {
                 "Use `{}` instead of `{}...{}`.",
                 suggestion, sorter, accessor_display
             ),
-        ));
+        );
+
+        if let Some(corrs) = corrections.as_mut() {
+            if let Some(sort_message_loc) = sort_call.message_loc() {
+                corrs.push(crate::correction::Correction {
+                    start: sort_message_loc.start_offset(),
+                    end: sort_message_loc.end_offset(),
+                    replacement: suggestion.to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+
+                let sort_loc = sort_call.location();
+                let outer_loc = call.location();
+                corrs.push(crate::correction::Correction {
+                    start: sort_loc.end_offset(),
+                    end: outer_loc.end_offset(),
+                    replacement: String::new(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+        }
+
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -168,4 +197,5 @@ impl Cop for RedundantSort {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantSort, "cops/style/redundant_sort");
+    crate::cop_autocorrect_fixture_tests!(RedundantSort, "cops/style/redundant_sort");
 }
