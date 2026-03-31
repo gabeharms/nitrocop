@@ -47,6 +47,10 @@ impl Cop for MapIntoArray {
         "Style/MapIntoArray"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -54,12 +58,13 @@ impl Cop for MapIntoArray {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = MapIntoArrayVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -70,6 +75,7 @@ struct MapIntoArrayVisitor<'a> {
     cop: &'a MapIntoArray,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Option<&'a mut Vec<crate::correction::Correction>>,
 }
 
 /// Check if a node is an empty array expression: `[]`, `Array.new`, `Array.new([])`,
@@ -201,7 +207,7 @@ impl MapIntoArrayVisitor<'_> {
             let var_name = lvar.name();
 
             // Check that the push argument is suitable (not a splat, etc.)
-            if let Some(args) = push_call.arguments() {
+            let (push_arg_start, push_arg_end) = if let Some(args) = push_call.arguments() {
                 let arg_list: Vec<_> = args.arguments().iter().collect();
                 if arg_list.len() != 1 {
                     continue;
@@ -210,9 +216,13 @@ impl MapIntoArrayVisitor<'_> {
                 if arg_list[0].as_splat_node().is_some() {
                     continue;
                 }
+                (
+                    arg_list[0].location().start_offset(),
+                    arg_list[0].location().end_offset(),
+                )
             } else {
                 continue;
-            }
+            };
 
             // Now check: is there a preceding `var = []` (or Array.new etc.) in the same scope?
             let mut found_empty_array_init = false;
@@ -276,12 +286,51 @@ impl MapIntoArrayVisitor<'_> {
 
             let loc = call.location();
             let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-            self.diagnostics.push(self.cop.diagnostic(
+            let mut diag = self.cop.diagnostic(
                 self.source,
                 line,
                 column,
                 "Use `map` instead of `each` to map elements into an array.".to_string(),
-            ));
+            );
+
+            if let Some(corrections) = self.corrections.as_mut() {
+                if let Some(each_receiver) = call.receiver() {
+                    let each_receiver_src = self
+                        .source
+                        .byte_slice(
+                            each_receiver.location().start_offset(),
+                            each_receiver.location().end_offset(),
+                            "",
+                        )
+                        .to_string();
+                    let arg_src = self
+                        .source
+                        .byte_slice(push_arg_start, push_arg_end, "")
+                        .to_string();
+                    let param_name = block_node
+                        .parameters()
+                        .and_then(|p| p.as_block_parameters_node())
+                        .and_then(|bp| bp.parameters())
+                        .and_then(|pl| pl.requireds().iter().next())
+                        .and_then(|n| n.as_required_parameter_node())
+                        .and_then(|p| std::str::from_utf8(p.name().as_slice()).ok())
+                        .unwrap_or("_1");
+                    let var_name = std::str::from_utf8(var_name_slice).unwrap_or("dest");
+
+                    corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: format!(
+                            "{var_name} = {each_receiver_src}.map {{ |{param_name}| {arg_src} }}"
+                        ),
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+            }
+
+            self.diagnostics.push(diag);
         }
     }
 }
@@ -611,4 +660,5 @@ fn references_variable(node: &ruby_prism::Node<'_>, var_name: &[u8]) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(MapIntoArray, "cops/style/map_into_array");
+    crate::cop_autocorrect_fixture_tests!(MapIntoArray, "cops/style/map_into_array");
 }

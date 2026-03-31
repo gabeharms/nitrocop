@@ -1,4 +1,3 @@
-- Evaluate `Style/MapIntoArray` for a conservative subset only (single-assignment `x = []; enum.each { ... x << ... }` patterns without side-effectful accumulator rebinds).
 - Evaluate `Style/MapCompactWithConditionalBlock` only where match already encodes a direct `filter_map`/`map.compact` canonical replacement with no control-flow reshaping.
 - Evaluate `Security/YAMLLoad` only with strict target-Ruby guards (Ruby <= 3.0 behavior) and real offense parity; avoid metric-only toggles.
 - Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
