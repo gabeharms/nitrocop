@@ -1,4 +1,4 @@
-- `Style/IfWithSemicolon`: bounded rewrite candidate — replace offense `;` then-keyword span with newline + preserved indentation only when separator ownership is unambiguous.
 - `Style/RedundantCondition`: conservative subset — only autocorrect `if cond ... else ... end` patterns where condition source equals if-branch expression (`cond || else_expr`) and no-else `if cond; cond; end` to `cond`.
-- `Style/AccessModifierDeclarations`: start with inline-style group modifiers (`private`/`protected`/`public` without args) and conservative line-local rewrites before touching sibling-sensitive group-mode behavior.
+- `Style/StringConcatenation`: conservative mode candidate — bounded rewrite for simple two-part string-plus-expression cases to interpolation while skipping heredoc/percent/multiline chain edge cases.
+- `Naming/MemoizedInstanceVariableName`: token-local rename candidate — offense ivar name replacement plus same-scope ivar read/write updates, skipping dynamic ivar access/metaprogramming.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.

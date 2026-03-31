@@ -18,6 +18,10 @@ impl Cop for ElseLayout {
         &[ELSE_NODE, IF_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -25,7 +29,7 @@ impl Cop for ElseLayout {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let if_node = match node.as_if_node() {
             Some(n) => n,
@@ -60,7 +64,7 @@ impl Cop for ElseLayout {
         };
 
         let else_kw_loc = else_node.else_keyword_loc();
-        let (else_line, _) = source.offset_to_line_col(else_kw_loc.start_offset());
+        let (else_line, else_col) = source.offset_to_line_col(else_kw_loc.start_offset());
 
         // Check if there's a statement on the same line as else
         let statements = match else_node.statements() {
@@ -85,15 +89,27 @@ impl Cop for ElseLayout {
         let (stmt_line, stmt_col) = source.offset_to_line_col(first_loc.start_offset());
 
         if stmt_line == else_line {
-            diagnostics.push(
-                self.diagnostic(
-                    source,
-                    stmt_line,
-                    stmt_col,
-                    "Odd `else` layout detected. Code on the same line as `else` is not allowed."
-                        .to_string(),
-                ),
+            let mut diagnostic = self.diagnostic(
+                source,
+                stmt_line,
+                stmt_col,
+                "Odd `else` layout detected. Code on the same line as `else` is not allowed."
+                    .to_string(),
             );
+
+            if let Some(corrs) = corrections.as_mut() {
+                let indent = " ".repeat(else_col + 2);
+                corrs.push(crate::correction::Correction {
+                    start: else_kw_loc.end_offset(),
+                    end: first_loc.start_offset(),
+                    replacement: format!("\n{indent}"),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+
+            diagnostics.push(diagnostic);
         }
     }
 }
@@ -102,4 +118,5 @@ impl Cop for ElseLayout {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ElseLayout, "cops/lint/else_layout");
+    crate::cop_autocorrect_fixture_tests!(ElseLayout, "cops/lint/else_layout");
 }
