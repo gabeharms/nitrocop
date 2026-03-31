@@ -10,6 +10,10 @@ impl Cop for DataInheritance {
         "Style/DataInheritance"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             CALL_NODE,
@@ -26,7 +30,7 @@ impl Cop for DataInheritance {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let class_node = match node.as_class_node() {
             Some(c) => c,
@@ -43,12 +47,60 @@ impl Cop for DataInheritance {
         if is_data_define(&superclass) {
             let loc = superclass.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Don't extend an instance initialized by `Data.define`. Use a block to customize the class.".to_string(),
-            ));
+            );
+
+            if let Some(corrections) = corrections.as_mut() {
+                let class_name =
+                    std::str::from_utf8(class_node.name().as_slice()).unwrap_or("ClassName");
+                let super_src = source.byte_slice(loc.start_offset(), loc.end_offset(), "");
+                let replacement = if let Some(body) = class_node.body() {
+                    let body_src = source.byte_slice(
+                        body.location().start_offset(),
+                        body.location().end_offset(),
+                        "",
+                    );
+                    if body_src.trim().is_empty() {
+                        format!("{class_name} = {super_src}")
+                    } else {
+                        let mut lines = body_src.lines();
+                        let indented_body = if let Some(first_line) = lines.next() {
+                            let mut out = String::new();
+                            if first_line.is_empty() {
+                                out.push_str("  ");
+                            } else {
+                                out.push_str("  ");
+                                out.push_str(first_line);
+                            }
+                            for line in lines {
+                                out.push('\n');
+                                out.push_str(line);
+                            }
+                            out
+                        } else {
+                            String::new()
+                        };
+                        format!("{class_name} = {super_src} do\n{indented_body}\nend")
+                    }
+                } else {
+                    format!("{class_name} = {super_src}")
+                };
+
+                corrections.push(crate::correction::Correction {
+                    start: class_node.location().start_offset(),
+                    end: class_node.location().end_offset(),
+                    replacement,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+
+            diagnostics.push(diag);
         }
     }
 }
@@ -83,4 +135,5 @@ fn is_data_const(node: &ruby_prism::Node<'_>) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(DataInheritance, "cops/style/data_inheritance");
+    crate::cop_autocorrect_fixture_tests!(DataInheritance, "cops/style/data_inheritance");
 }
