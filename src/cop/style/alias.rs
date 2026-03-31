@@ -42,6 +42,10 @@ impl Cop for Alias {
         "Style/Alias"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -49,7 +53,7 @@ impl Cop for Alias {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "prefer_alias");
         let mut visitor = AliasVisitor {
@@ -59,6 +63,7 @@ impl Cop for Alias {
             scope_stack: vec![ScopeType::Lexical],
             def_depth: 0,
             diagnostics: Vec::new(),
+            corrections,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -74,6 +79,7 @@ struct AliasVisitor<'a, 'src> {
     /// RuboCop's `alias_method_possible?` returns false when any `:def` ancestor exists.
     def_depth: u32,
     diagnostics: Vec<Diagnostic>,
+    corrections: Option<&'a mut Vec<crate::correction::Correction>>,
 }
 
 impl AliasVisitor<'_, '_> {
@@ -155,37 +161,49 @@ impl Visit<'_> for AliasVisitor<'_, '_> {
     fn visit_alias_method_node(&mut self, node: &ruby_prism::AliasMethodNode<'_>) {
         let scope = self.current_scope();
 
-        if self.enforced_style == "prefer_alias_method" {
-            if self.alias_method_possible() {
-                let loc = node.location();
-                let kw_slice = &self.source.content[loc.start_offset()..];
-                if kw_slice.starts_with(b"alias ") || kw_slice.starts_with(b"alias\t") {
-                    let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                    self.diagnostics.push(self.cop.diagnostic(
-                        self.source,
-                        line,
-                        column,
-                        "Use `alias_method` instead of `alias`.".to_string(),
-                    ));
-                }
-            }
+        let should_flag = if self.enforced_style == "prefer_alias_method" {
+            self.alias_method_possible()
         } else {
-            // prefer_alias style: if inside dynamic scope (def or block),
-            // flag alias to use alias_method instead
-            if scope == ScopeType::Dynamic && self.alias_method_possible() {
-                let loc = node.location();
-                let kw_slice = &self.source.content[loc.start_offset()..];
-                if kw_slice.starts_with(b"alias ") || kw_slice.starts_with(b"alias\t") {
-                    let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                    self.diagnostics.push(self.cop.diagnostic(
-                        self.source,
-                        line,
-                        column,
-                        "Use `alias_method` instead of `alias`.".to_string(),
-                    ));
-                }
+            scope == ScopeType::Dynamic && self.alias_method_possible()
+        };
+
+        if !should_flag {
+            return;
+        }
+
+        let loc = node.location();
+        let kw_slice = &self.source.content[loc.start_offset()..];
+        if !(kw_slice.starts_with(b"alias ") || kw_slice.starts_with(b"alias\t")) {
+            return;
+        }
+
+        let (line, column) = self.source.offset_to_line_col(loc.start_offset());
+        let mut diag = self.cop.diagnostic(
+            self.source,
+            line,
+            column,
+            "Use `alias_method` instead of `alias`.".to_string(),
+        );
+
+        if let Some(corrections) = self.corrections.as_mut() {
+            if let (Some(new_sym), Some(old_sym)) = (
+                node.new_name().as_symbol_node(),
+                node.old_name().as_symbol_node(),
+            ) {
+                let new_name = std::str::from_utf8(new_sym.unescaped()).unwrap_or("new_name");
+                let old_name = std::str::from_utf8(old_sym.unescaped()).unwrap_or("old_name");
+                corrections.push(crate::correction::Correction {
+                    start: loc.start_offset(),
+                    end: loc.end_offset(),
+                    replacement: format!("alias_method :{new_name}, :{old_name}"),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
             }
         }
+
+        self.diagnostics.push(diag);
     }
 
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'_>) {
@@ -198,12 +216,39 @@ impl Visit<'_> for AliasVisitor<'_, '_> {
             {
                 let msg_loc = node.message_loc().unwrap_or_else(|| node.location());
                 let (line, column) = self.source.offset_to_line_col(msg_loc.start_offset());
-                self.diagnostics.push(self.cop.diagnostic(
+                let mut diag = self.cop.diagnostic(
                     self.source,
                     line,
                     column,
                     "Use `alias` instead of `alias_method`.".to_string(),
-                ));
+                );
+
+                if let Some(corrections) = self.corrections.as_mut() {
+                    if let Some(args) = node.arguments() {
+                        let arg_list: Vec<_> = args.arguments().iter().collect();
+                        if arg_list.len() == 2 {
+                            if let (Some(new_sym), Some(old_sym)) =
+                                (arg_list[0].as_symbol_node(), arg_list[1].as_symbol_node())
+                            {
+                                let new_name =
+                                    std::str::from_utf8(new_sym.unescaped()).unwrap_or("new_name");
+                                let old_name =
+                                    std::str::from_utf8(old_sym.unescaped()).unwrap_or("old_name");
+                                let call_loc = node.location();
+                                corrections.push(crate::correction::Correction {
+                                    start: call_loc.start_offset(),
+                                    end: call_loc.end_offset(),
+                                    replacement: format!("alias :{new_name} :{old_name}"),
+                                    cop_name: self.cop.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                        }
+                    }
+                }
+
+                self.diagnostics.push(diag);
             }
         }
 
@@ -228,4 +273,5 @@ impl Visit<'_> for AliasVisitor<'_, '_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(Alias, "cops/style/alias");
+    crate::cop_autocorrect_fixture_tests!(Alias, "cops/style/alias");
 }
