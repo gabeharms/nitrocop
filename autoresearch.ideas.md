@@ -1,8 +1,7 @@
 - Evaluate `Style/MapIntoArray` for a conservative subset only (single-assignment `x = []; enum.each { ... x << ... }` patterns without side-effectful accumulator rebinds).
 - Evaluate `Style/MapCompactWithConditionalBlock` only where match already encodes a direct `filter_map`/`map.compact` canonical replacement with no control-flow reshaping.
-- Evaluate `Style/CommentedKeyword` with safety-first corrections (line-comment extraction/removal only where comment boundaries are unambiguous).
 - Evaluate `Security/YAMLLoad` only with strict target-Ruby guards (Ruby <= 3.0 behavior) and real offense parity; avoid metric-only toggles.
 - Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
 - Extend `Lint/NumberConversion` autocorrect to symbol/block-pass forms (`map(&:to_i)`, `try(:to_f)`) only after implementing syntax-safe parenthesis/block rewrites.
-- Evaluate `Lint/AmbiguousOperator` for warning-to-node mapping robust enough to add safe parenthesizing without changing operator semantics.
+- Extend `Style/DigChain` autocorrect to fully collapse longer dig chains in one pass (currently pairwise collapse per autocorrect iteration).
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) after low-risk Style/Lint chain/selector wins taper off.

@@ -184,11 +184,22 @@ Implemented autocorrect in this session:
 - `Lint/DisjunctiveAssignmentInConstructor`
 - `Lint/RaiseException`
 - `Lint/UselessOr`
+- `Lint/Loop`
+- `Lint/AssignmentInCondition`
+- `Lint/AmbiguousOperatorPrecedence`
+- `Lint/SymbolConversion`
+- `Lint/AmbiguousOperator`
+- `Style/CommentedKeyword`
+- `Style/PercentLiteralDelimiters`
+- `Style/FloatDivision`
+- `Style/DigChain`
+- `Style/RandomWithOffset`
+- `Style/OperatorMethodCall`
 
 Current progress snapshot:
-- `missing_core_autocorrect_cops`: **243** (down from 372, -129)
-- `nitrocop_autocorrectable_cops`: **216** (up from 87, +129)
-- Missing by department now: Style (140), Lint (42), Layout (56), Naming (3), Security (1), Migration (1)
+- `missing_core_autocorrect_cops`: **232** (down from 372, -140)
+- `nitrocop_autocorrectable_cops`: **227** (up from 87, +140)
+- Missing by department now: Style (134), Lint (37), Layout (56), Naming (3), Security (1), Migration (1)
 
 Repeatable successful pattern:
 1. Add `supports_autocorrect()`

@@ -11,6 +11,10 @@ impl Cop for SignalException {
         "Style/SignalException"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -18,9 +22,11 @@ impl Cop for SignalException {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "only_raise");
+
+        let base_len = diagnostics.len();
 
         let mut visitor = SignalExceptionVisitor {
             cop: self,
@@ -32,12 +38,46 @@ impl Cop for SignalException {
         };
         visitor.visit(&parse_result.node());
 
-        // Emit raise diagnostics unconditionally (only_fail style)
         diagnostics.extend(visitor.raise_diagnostics);
-
-        // Only emit fail diagnostics if no custom fail method is defined
         if !visitor.custom_fail_defined {
             diagnostics.extend(visitor.pending_fail_diagnostics);
+        }
+
+        if let Some(corr) = corrections.as_mut() {
+            for diag in diagnostics.iter_mut().skip(base_len) {
+                let Some(start) =
+                    source.line_col_to_offset(diag.location.line, diag.location.column)
+                else {
+                    continue;
+                };
+
+                let (old, new) = if diag
+                    .message
+                    .contains("Use `raise` instead of `fail` to rethrow exceptions.")
+                {
+                    ("fail", "raise")
+                } else if diag
+                    .message
+                    .contains("Use `fail` instead of `raise` to rethrow exceptions.")
+                {
+                    ("raise", "fail")
+                } else {
+                    continue;
+                };
+
+                if source.byte_slice(start, start + old.len(), "") != old {
+                    continue;
+                }
+
+                corr.push(crate::correction::Correction {
+                    start,
+                    end: start + old.len(),
+                    replacement: new.to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
         }
     }
 }
@@ -106,6 +146,7 @@ mod tests {
     use crate::testutil::run_cop_full_with_config;
 
     crate::cop_fixture_tests!(SignalException, "cops/style/signal_exception");
+    crate::cop_autocorrect_fixture_tests!(SignalException, "cops/style/signal_exception");
 
     #[test]
     fn config_only_fail() {
