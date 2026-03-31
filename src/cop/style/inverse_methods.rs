@@ -185,11 +185,78 @@ impl InverseMethods {
         ruby_prism::Visit::visit(&mut finder, &body);
         finder.found
     }
+
+    fn replace_call_selector(
+        call: &ruby_prism::CallNode<'_>,
+        source: &SourceFile,
+        replacement: &str,
+    ) -> Option<String> {
+        let message_loc = call.message_loc()?;
+        let call_loc = call.location();
+        let prefix = source.byte_slice(call_loc.start_offset(), message_loc.start_offset(), "");
+        let suffix = source.byte_slice(message_loc.end_offset(), call_loc.end_offset(), "");
+        Some(format!("{prefix}{replacement}{suffix}"))
+    }
+
+    fn invert_negated_expr(
+        node: &ruby_prism::Node<'_>,
+        source: &SourceFile,
+        inverse_map: &HashMap<Vec<u8>, String>,
+    ) -> Option<String> {
+        if let Some(call) = node.as_call_node() {
+            let method = call.name().as_slice();
+            if method == b"!" {
+                let receiver = call.receiver()?;
+                let recv_loc = receiver.location();
+                return Some(
+                    source
+                        .byte_slice(recv_loc.start_offset(), recv_loc.end_offset(), "")
+                        .to_string(),
+                );
+            }
+
+            let replacement = inverse_map.get(method)?;
+            return Self::replace_call_selector(&call, source, replacement);
+        }
+
+        if let Some(parens) = node.as_parentheses_node() {
+            let body = parens.body()?;
+            let stmts = body.as_statements_node()?;
+            let body_nodes: Vec<_> = stmts.body().iter().collect();
+            let last = body_nodes.last()?;
+            return Self::invert_negated_expr(last, source, inverse_map);
+        }
+
+        None
+    }
+
+    fn last_negated_expr_correction(
+        block: &ruby_prism::BlockNode<'_>,
+        source: &SourceFile,
+        inverse_map: &HashMap<Vec<u8>, String>,
+    ) -> Option<(usize, usize, String)> {
+        let body = block.body()?;
+        let stmts = body.as_statements_node()?;
+        let body_nodes: Vec<_> = stmts.body().iter().collect();
+        let last = body_nodes.last()?;
+
+        if !Self::is_negated_expr(last) {
+            return None;
+        }
+
+        let replacement = Self::invert_negated_expr(last, source, inverse_map)?;
+        let loc = last.location();
+        Some((loc.start_offset(), loc.end_offset(), replacement))
+    }
 }
 
 impl Cop for InverseMethods {
     fn name(&self) -> &'static str {
         "Style/InverseMethods"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -203,7 +270,7 @@ impl Cop for InverseMethods {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -266,12 +333,27 @@ impl Cop for InverseMethods {
                 let inner_name = std::str::from_utf8(inner_method).unwrap_or("method");
                 let loc = call.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     line,
                     column,
                     format!("Use `{}` instead of inverting `{}`.", inv, inner_name),
-                ));
+                );
+
+                if let Some(corrs) = corrections.as_mut() {
+                    if let Some(replacement) = Self::replace_call_selector(&inner_call, source, inv) {
+                        corrs.push(crate::correction::Correction {
+                            start: loc.start_offset(),
+                            end: loc.end_offset(),
+                            replacement,
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+                }
+
+                diagnostics.push(diagnostic);
             }
 
             // Check InverseBlocks (block methods: !foo.select { } -> foo.reject { })
@@ -281,12 +363,28 @@ impl Cop for InverseMethods {
                     let inner_name = std::str::from_utf8(inner_method).unwrap_or("method");
                     let loc = call.location();
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         line,
                         column,
                         format!("Use `{}` instead of inverting `{}`.", inv, inner_name),
-                    ));
+                    );
+
+                    if let Some(corrs) = corrections.as_mut() {
+                        if let Some(replacement) = Self::replace_call_selector(&inner_call, source, inv)
+                        {
+                            corrs.push(crate::correction::Correction {
+                                start: loc.start_offset(),
+                                end: loc.end_offset(),
+                                replacement,
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diagnostic.corrected = true;
+                        }
+                    }
+
+                    diagnostics.push(diagnostic);
                 }
             }
 
@@ -305,12 +403,43 @@ impl Cop for InverseMethods {
                         let method_name = std::str::from_utf8(method_bytes).unwrap_or("method");
                         let loc = call.location();
                         let (line, column) = source.offset_to_line_col(loc.start_offset());
-                        diagnostics.push(self.diagnostic(
+                        let mut diagnostic = self.diagnostic(
                             source,
                             line,
                             column,
                             format!("Use `{}` instead of inverting `{}`.", inv, method_name),
-                        ));
+                        );
+
+                        if let Some(corrs) = corrections.as_mut() {
+                            if let Some(method_loc) = call.message_loc() {
+                                let inverse_map = Self::build_inverse_map(config);
+                                if let Some((start, end, negated_replacement)) =
+                                    Self::last_negated_expr_correction(
+                                        &block_node,
+                                        source,
+                                        &inverse_map,
+                                    )
+                                {
+                                    corrs.push(crate::correction::Correction {
+                                        start: method_loc.start_offset(),
+                                        end: method_loc.end_offset(),
+                                        replacement: inv.to_string(),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    corrs.push(crate::correction::Correction {
+                                        start,
+                                        end,
+                                        replacement: negated_replacement,
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    diagnostic.corrected = true;
+                                }
+                            }
+                        }
+
+                        diagnostics.push(diagnostic);
                     }
                 }
             }
@@ -361,4 +490,5 @@ fn has_constant_operand(call: &ruby_prism::CallNode<'_>) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(InverseMethods, "cops/style/inverse_methods");
+    crate::cop_autocorrect_fixture_tests!(InverseMethods, "cops/style/inverse_methods");
 }
