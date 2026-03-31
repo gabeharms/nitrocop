@@ -1,5 +1,6 @@
 use crate::cop::node_type::REGULAR_EXPRESSION_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::parse::source::SourceFile;
 
@@ -22,6 +23,10 @@ impl Cop for RedundantRegexpQuantifiers {
         "Lint/RedundantRegexpQuantifiers"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -41,7 +46,7 @@ impl Cop for RedundantRegexpQuantifiers {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let regexp = match node.as_regular_expression_node() {
             Some(r) => r,
@@ -61,16 +66,90 @@ impl Cop for RedundantRegexpQuantifiers {
             Err(_) => return,
         };
 
+        let mut local_corrections = Vec::new();
+        let autocorrect_enabled = corrections.is_some();
+
         // Find redundant quantifiers: (?:...Q1)Q2 where both are greedy quantifiers
         // and the group contains only a single element with quantifier Q1
-        check_redundant_quantifiers(self, source, content_str, &regexp, diagnostics);
+        check_redundant_quantifiers(
+            self,
+            source,
+            content_str,
+            &regexp,
+            diagnostics,
+            &mut local_corrections,
+            autocorrect_enabled,
+        );
 
         // Find interval quantifiers followed by `?` where the interval normalizes
         // to a simple quantifier (e.g., `{0,1}?`, `{1,}?`, `{0,}?`).
         // regexp_parser treats these as implicit non-capturing groups, so RuboCop
         // flags them as redundant quantifier pairs.
-        check_interval_with_reluctant(self, source, content_str, &regexp, diagnostics);
+        check_interval_with_reluctant(
+            self,
+            source,
+            content_str,
+            &regexp,
+            diagnostics,
+            &mut local_corrections,
+            autocorrect_enabled,
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            corr.extend(local_corrections);
+        }
     }
+}
+
+fn push_quantifier_correction(
+    corrections: &mut Vec<Correction>,
+    cop: &RedundantRegexpQuantifiers,
+    content_start: usize,
+    inner_start: usize,
+    inner_end: usize,
+    outer_start: usize,
+    outer_end: usize,
+    replacement: &str,
+) {
+    corrections.push(Correction {
+        start: content_start + outer_start,
+        end: content_start + outer_end,
+        replacement: String::new(),
+        cop_name: cop.name(),
+        cop_index: 0,
+    });
+    corrections.push(Correction {
+        start: content_start + inner_start,
+        end: content_start + inner_end,
+        replacement: replacement.to_string(),
+        cop_name: cop.name(),
+        cop_index: 0,
+    });
+}
+
+fn push_interval_reluctant_correction(
+    corrections: &mut Vec<Correction>,
+    cop: &RedundantRegexpQuantifiers,
+    content_start: usize,
+    interval_start: usize,
+    interval_end: usize,
+    reluctant_pos: usize,
+    replacement: &str,
+) {
+    corrections.push(Correction {
+        start: content_start + interval_start,
+        end: content_start + interval_end,
+        replacement: replacement.to_string(),
+        cop_name: cop.name(),
+        cop_index: 0,
+    });
+    corrections.push(Correction {
+        start: content_start + reluctant_pos,
+        end: content_start + reluctant_pos + 1,
+        replacement: String::new(),
+        cop_name: cop.name(),
+        cop_index: 0,
+    });
 }
 
 fn check_redundant_quantifiers(
@@ -79,10 +158,13 @@ fn check_redundant_quantifiers(
     pattern: &str,
     regexp: &ruby_prism::RegularExpressionNode<'_>,
     diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Vec<Correction>,
+    autocorrect_enabled: bool,
 ) {
     let bytes = pattern.as_bytes();
     let len = bytes.len();
     let mut i = 0;
+    let content_start = regexp.content_loc().start_offset();
 
     while i < len {
         if bytes[i] == b'\\' {
@@ -90,7 +172,6 @@ fn check_redundant_quantifiers(
             continue;
         }
 
-        // Skip character classes
         if bytes[i] == b'[' {
             i += 1;
             if i < len && bytes[i] == b'^' {
@@ -112,38 +193,30 @@ fn check_redundant_quantifiers(
             continue;
         }
 
-        // Look for non-capturing groups: (?:...)
         if bytes[i] == b'(' && i + 2 < len && bytes[i + 1] == b'?' && bytes[i + 2] == b':' {
             let group_start = i;
-            // Find matching close paren
-            let group_end = find_matching_paren(bytes, i);
-            if let Some(end) = group_end {
-                // Check if the group is followed by a quantifier
-                let after_group = end + 1;
-                if let Some((outer_q, outer_q_end)) = parse_quantifier(bytes, after_group) {
-                    // Check if the outer quantifier is followed by a possessive (+) or reluctant (?) modifier
-                    if outer_q_end < len
-                        && (bytes[outer_q_end] == b'+' || bytes[outer_q_end] == b'?')
-                    {
-                        i = group_end.map(|e| e + 1).unwrap_or(i + 1);
+            if let Some(end) = find_matching_paren(bytes, i) {
+                let outer_start = end + 1;
+                if let Some((outer_q, outer_end)) = parse_quantifier(bytes, outer_start) {
+                    if outer_end < len && (bytes[outer_end] == b'+' || bytes[outer_end] == b'?') {
+                        i = end + 1;
                         continue;
                     }
-                    // Skip interval quantifiers — they can't be trivially combined
                     if matches!(outer_q, Quantifier::Interval(_, _)) {
-                        i = group_end.map(|e| e + 1).unwrap_or(i + 1);
+                        i = end + 1;
                         continue;
                     }
-                    // Check if the group content is a single element with a quantifier
-                    let inner = &bytes[i + 3..end]; // content inside (?:...)
-                    if let Some((inner_q, _)) = find_single_element_quantifier(inner) {
-                        // Skip interval inner quantifiers too
+
+                    let inner = &bytes[group_start + 3..end];
+                    if let Some((inner_q, inner_q_start, inner_q_end)) =
+                        find_single_element_quantifier(inner)
+                    {
                         if matches!(inner_q, Quantifier::Interval(_, _)) {
-                            i = group_end.map(|e| e + 1).unwrap_or(i + 1);
+                            i = end + 1;
                             continue;
                         }
-                        // Check if redundant (both greedy, no possessive/reluctant)
+
                         if is_greedy(&outer_q) && is_greedy(&inner_q) {
-                            // Check that the group doesn't contain captures
                             let inner_str = std::str::from_utf8(inner).unwrap_or("");
                             if !contains_capture_group(inner_str) {
                                 let combined = combine_quantifiers(&inner_q, &outer_q);
@@ -151,23 +224,9 @@ fn check_redundant_quantifiers(
                                 let outer_q_display = quantifier_display(&outer_q);
                                 let combined_display = quantifier_display(&combined);
 
-                                // Report at the position of the inner quantifier end through the outer quantifier
-                                let regexp_start = regexp.location().start_offset() + 1; // skip '/'
-                                let _offset = regexp_start
-                                    + (end - inner_q_display.len() + 1 - (i + 3) + (i + 3));
-                                // Calculate more carefully
-                                let _inner_q_start_in_pattern = end - inner_q_display.len() + 1 - 3; // approximate
-                                // Actually, let's find the column of the quantifiers in the source
-                                // The pattern starts at regexp_start offset in the source
-                                let q_start =
-                                    regexp.location().start_offset() + 1 + group_start + 3;
-                                // The redundant range is from the inner quantifier through the outer
-                                let _ = q_start;
-
-                                // Simpler approach: report at the regexp node location
                                 let loc = regexp.location();
                                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                                diagnostics.push(cop.diagnostic(
+                                let mut diag = cop.diagnostic(
                                     source,
                                     line,
                                     column,
@@ -175,13 +234,31 @@ fn check_redundant_quantifiers(
                                         "Replace redundant quantifiers `{}` and `{}` with a single `{}`.",
                                         inner_q_display, outer_q_display, combined_display
                                     ),
-                                ));
+                                );
+
+                                if autocorrect_enabled {
+                                    let abs_inner_start = group_start + 3 + inner_q_start;
+                                    let abs_inner_end = group_start + 3 + inner_q_end;
+                                    push_quantifier_correction(
+                                        corrections,
+                                        cop,
+                                        content_start,
+                                        abs_inner_start,
+                                        abs_inner_end,
+                                        outer_start,
+                                        outer_end,
+                                        &combined_display,
+                                    );
+                                    diag.corrected = true;
+                                }
+
+                                diagnostics.push(diag);
                             }
                         }
                     }
                 }
 
-                i = group_end.map(|e| e + 1).unwrap_or(i + 1);
+                i = end + 1;
                 continue;
             }
         }
@@ -343,8 +420,8 @@ fn find_matching_paren(bytes: &[u8], start: usize) -> Option<usize> {
 }
 
 /// Check if the inner content of a non-capturing group is a single element with a quantifier.
-/// Returns the quantifier if found.
-fn find_single_element_quantifier(inner: &[u8]) -> Option<(Quantifier, usize)> {
+/// Returns (quantifier, quantifier_start, quantifier_end) within `inner`.
+fn find_single_element_quantifier(inner: &[u8]) -> Option<(Quantifier, usize, usize)> {
     let len = inner.len();
     if len == 0 {
         return None;
@@ -412,7 +489,7 @@ fn find_single_element_quantifier(inner: &[u8]) -> Option<(Quantifier, usize)> {
         return None;
     }
 
-    Some((q, q_end))
+    Some((q, i, q_end))
 }
 
 /// Check for interval quantifiers followed by `?` where the interval normalizes
@@ -425,10 +502,13 @@ fn check_interval_with_reluctant(
     pattern: &str,
     regexp: &ruby_prism::RegularExpressionNode<'_>,
     diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Vec<Correction>,
+    autocorrect_enabled: bool,
 ) {
     let bytes = pattern.as_bytes();
     let len = bytes.len();
     let mut i = 0;
+    let content_start = regexp.content_loc().start_offset();
 
     while i < len {
         if bytes[i] == b'\\' {
@@ -494,7 +574,7 @@ fn check_interval_with_reluctant(
 
                     let loc = regexp.location();
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(cop.diagnostic(
+                    let mut diag = cop.diagnostic(
                         source,
                         line,
                         column,
@@ -502,7 +582,22 @@ fn check_interval_with_reluctant(
                             "Replace redundant quantifiers `{}` and `{}` with a single `{}`.",
                             inner_display, outer_display, combined_display
                         ),
-                    ));
+                    );
+
+                    if autocorrect_enabled {
+                        push_interval_reluctant_correction(
+                            corrections,
+                            cop,
+                            content_start,
+                            i,
+                            q_end,
+                            q_end,
+                            &combined_display,
+                        );
+                        diag.corrected = true;
+                    }
+
+                    diagnostics.push(diag);
                 }
             }
             // Advance past the quantifier (and any modifier)
@@ -569,6 +664,10 @@ fn contains_capture_group(pattern: &str) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantRegexpQuantifiers,
+        "cops/lint/redundant_regexp_quantifiers"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantRegexpQuantifiers,
         "cops/lint/redundant_regexp_quantifiers"
     );
