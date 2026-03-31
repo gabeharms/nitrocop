@@ -1,5 +1,6 @@
 use crate::cop::node_type::{BLOCK_NODE, LAMBDA_NODE};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -40,6 +41,10 @@ impl Cop for BlockEndNewline {
         "Layout/BlockEndNewline"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[BLOCK_NODE, LAMBDA_NODE]
     }
@@ -51,7 +56,7 @@ impl Cop for BlockEndNewline {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let (opening_loc, closing_loc) = if let Some(block_node) = node.as_block_node() {
             (block_node.opening_loc(), block_node.closing_loc())
@@ -84,7 +89,7 @@ impl Cop for BlockEndNewline {
             return;
         }
 
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             close_line,
             close_col,
@@ -93,7 +98,24 @@ impl Cop for BlockEndNewline {
                 close_line,
                 close_col + 1
             ),
-        ));
+        );
+
+        if let Some(corrections) = corrections.as_mut() {
+            let trailing_start =
+                trailing_segment_start_offset(node).unwrap_or(closing_loc.start_offset());
+            if trailing_start <= closing_loc.start_offset() {
+                corrections.push(Correction {
+                    start: trailing_start,
+                    end: closing_loc.start_offset(),
+                    replacement: format!("\n{}", opening_line_indentation(source, open_line)),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+        }
+
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -150,9 +172,29 @@ fn last_expression_end_offset(node: &ruby_prism::Node<'_>) -> usize {
     node.location().end_offset()
 }
 
+fn opening_line_indentation(source: &SourceFile, line: usize) -> String {
+    let bytes = source.as_bytes();
+    let line_start = source.line_start_offset(line);
+    let mut indent_end = line_start;
+    while indent_end < bytes.len() && (bytes[indent_end] == b' ' || bytes[indent_end] == b'\t') {
+        indent_end += 1;
+    }
+    String::from_utf8_lossy(&bytes[line_start..indent_end]).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(BlockEndNewline, "cops/layout/block_end_newline");
+    crate::cop_autocorrect_fixture_tests!(BlockEndNewline, "cops/layout/block_end_newline");
+
+    #[test]
+    fn autocorrect_moves_end_to_own_line() {
+        let source = b"items.each do |x|\n  bar(x) end\n";
+        let (_diagnostics, corrections) =
+            crate::testutil::run_cop_autocorrect(&BlockEndNewline, source);
+        let corrected = crate::correction::CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"items.each do |x|\n  bar(x)\nend\n");
+    }
 }
