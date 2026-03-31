@@ -12,6 +12,10 @@ impl Cop for RedundantInterpolation {
         "Style/RedundantInterpolation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -19,7 +23,7 @@ impl Cop for RedundantInterpolation {
         _code_map: &CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = RedundantInterpVisitor {
             cop: self,
@@ -27,6 +31,7 @@ impl Cop for RedundantInterpolation {
             in_implicit_concat: false,
             in_percent_array: false,
             diagnostics: Vec::new(),
+            corrections,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -39,6 +44,7 @@ struct RedundantInterpVisitor<'a, 'src> {
     in_implicit_concat: bool,
     in_percent_array: bool,
     diagnostics: Vec<Diagnostic>,
+    corrections: Option<&'a mut Vec<crate::correction::Correction>>,
 }
 
 impl<'pr> Visit<'pr> for RedundantInterpVisitor<'_, '_> {
@@ -123,12 +129,30 @@ impl RedundantInterpVisitor<'_, '_> {
 
         let loc = node.location();
         let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diag = self.cop.diagnostic(
             self.source,
             line,
             column,
             "Prefer `to_s` over string interpolation.".to_string(),
-        ));
+        );
+
+        if let Some(corrections) = self.corrections.as_mut() {
+            let inner_loc = inner.location();
+            let inner_src = self
+                .source
+                .byte_slice(inner_loc.start_offset(), inner_loc.end_offset(), "")
+                .to_string();
+            corrections.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: format!("{inner_src}.to_s"),
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        self.diagnostics.push(diag);
     }
 }
 
@@ -136,4 +160,8 @@ impl RedundantInterpVisitor<'_, '_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantInterpolation, "cops/style/redundant_interpolation");
+    crate::cop_autocorrect_fixture_tests!(
+        RedundantInterpolation,
+        "cops/style/redundant_interpolation"
+    );
 }
