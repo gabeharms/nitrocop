@@ -55,6 +55,10 @@ impl Cop for ParenthesesAsGroupedExpression {
         "Lint/ParenthesesAsGroupedExpression"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -70,7 +74,7 @@ impl Cop for ParenthesesAsGroupedExpression {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -169,12 +173,25 @@ impl Cop for ParenthesesAsGroupedExpression {
         let arg_text = source.byte_slice(paren_start, paren_end, "(...)");
 
         let (line, column) = source.offset_to_line_col(paren_start);
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("`{}` interpreted as grouped expression.", arg_text),
-        ));
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            corr.push(crate::correction::Correction {
+                start: msg_end,
+                end: paren_start,
+                replacement: String::new(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -211,6 +228,10 @@ fn is_operator(name: &[u8]) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        ParenthesesAsGroupedExpression,
+        "cops/lint/parentheses_as_grouped_expression"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         ParenthesesAsGroupedExpression,
         "cops/lint/parentheses_as_grouped_expression"
     );

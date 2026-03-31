@@ -1,3 +1,5 @@
+use ruby_prism::Visit;
+
 use crate::cop::node_type::{DEF_NODE, REQUIRED_PARAMETER_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
@@ -34,6 +36,10 @@ impl Cop for BinaryOperatorParameterName {
         "Naming/BinaryOperatorParameterName"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[DEF_NODE, REQUIRED_PARAMETER_NODE]
     }
@@ -45,7 +51,7 @@ impl Cop for BinaryOperatorParameterName {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let def_node = match node.as_def_node() {
             Some(d) => d,
@@ -104,15 +110,65 @@ impl Cop for BinaryOperatorParameterName {
                 let loc = req.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
                 let op_str = std::str::from_utf8(method_name).unwrap_or("");
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     format!("When defining the `{op_str}` operator, name its argument `other`."),
-                ));
+                );
+
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: "other".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+
+                    if let Some(body) = def_node.body() {
+                        let mut finder = ParamReadFinder {
+                            old_name: param_name.to_vec(),
+                            replacements: Vec::new(),
+                        };
+                        finder.visit(&body);
+                        for (start, end) in finder.replacements {
+                            corr.push(crate::correction::Correction {
+                                start,
+                                end,
+                                replacement: "other".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                        }
+                    }
+                    diag.corrected = true;
+                }
+
+                diagnostics.push(diag);
             }
         }
     }
+}
+
+struct ParamReadFinder {
+    old_name: Vec<u8>,
+    replacements: Vec<(usize, usize)>,
+}
+
+impl<'pr> Visit<'pr> for ParamReadFinder {
+    fn visit_local_variable_read_node(&mut self, node: &ruby_prism::LocalVariableReadNode<'pr>) {
+        if node.name().as_slice() == self.old_name.as_slice() {
+            let loc = node.location();
+            self.replacements.push((loc.start_offset(), loc.end_offset()));
+        }
+    }
+
+    fn visit_block_node(&mut self, _node: &ruby_prism::BlockNode<'pr>) {}
+    fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
+    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+    fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
+    fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
 }
 
 #[cfg(test)]
@@ -120,6 +176,10 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(
+        BinaryOperatorParameterName,
+        "cops/naming/binary_operator_parameter_name"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         BinaryOperatorParameterName,
         "cops/naming/binary_operator_parameter_name"
     );
