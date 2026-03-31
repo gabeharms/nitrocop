@@ -9,6 +9,10 @@ impl Cop for RedundantLineContinuation {
         "Style/RedundantLineContinuation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -16,7 +20,7 @@ impl Cop for RedundantLineContinuation {
         code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let lines: Vec<&[u8]> = source.lines().collect();
 
@@ -62,12 +66,25 @@ impl Cop for RedundantLineContinuation {
             // where Ruby would naturally continue to the next line
             if is_redundant_continuation(before_backslash, i, &lines) {
                 let col = trimmed.len() - 1;
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     i + 1,
                     col,
                     "Redundant line continuation.".to_string(),
-                ));
+                );
+
+                if let Some(corrs) = corrections.as_mut() {
+                    corrs.push(crate::correction::Correction {
+                        start: backslash_offset,
+                        end: backslash_offset + 1,
+                        replacement: String::new(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+
+                diagnostics.push(diagnostic);
             }
         }
     }
@@ -114,6 +131,10 @@ fn is_redundant_continuation(before_backslash: &[u8], _line_idx: usize, _lines: 
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantLineContinuation,
+        "cops/style/redundant_line_continuation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantLineContinuation,
         "cops/style/redundant_line_continuation"
     );
