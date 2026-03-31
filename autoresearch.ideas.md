@@ -1,3 +1,3 @@
-- `Lint/RedundantSafeNavigation`: investigate conservative autocorrect for offense-matched safe-navigation chains by replacing `&.` with `.` only where receiver nil-guarding is already redundant per current detection.
-- `Style/Semicolon`: consider expanding autocorrect beyond current conservative subset to expression-separator lines only if newline rewrites can be made robust without structural regressions.
+- `Style/Semicolon`: consider expanding autocorrect beyond current conservative subset to offense-matched expression-separator lines only if newline rewrites can be made robust without structural regressions.
+- `Style/TrailingCommaInArguments`: investigate conservative autocorrect for simple trailing-comma insertion/removal cases where argument layout is already unambiguous in fixtures.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.

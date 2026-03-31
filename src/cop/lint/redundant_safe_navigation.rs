@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::cop::node_type::{
     AND_NODE, ARRAY_NODE, BLOCK_NODE, CALL_NODE, CALL_TARGET_NODE, CONSTANT_PATH_NODE,
     CONSTANT_READ_NODE, FALSE_NODE, FLOAT_NODE, HASH_NODE, INTEGER_NODE, KEYWORD_HASH_NODE,
@@ -109,9 +111,42 @@ const DEFAULT_ALLOWED_METHODS: &[&[u8]] = &[
     b"equal?",
 ];
 
+fn add_safe_nav_offense(
+    cop: &RedundantSafeNavigation,
+    source: &SourceFile,
+    op_loc: &ruby_prism::Location<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    corrections: Option<&mut Vec<crate::correction::Correction>>,
+) {
+    let (line, column) = source.offset_to_line_col(op_loc.start_offset());
+    let mut diag = cop.diagnostic(
+        source,
+        line,
+        column,
+        "Redundant safe navigation detected, use `.` instead.".to_string(),
+    );
+
+    if let Some(corr) = corrections {
+        corr.push(crate::correction::Correction {
+            start: op_loc.start_offset(),
+            end: op_loc.end_offset(),
+            replacement: ".".to_string(),
+            cop_name: cop.name(),
+            cop_index: 0,
+        });
+        diag.corrected = true;
+    }
+
+    diagnostics.push(diag);
+}
+
 impl Cop for RedundantSafeNavigation {
     fn name(&self) -> &'static str {
         "Lint/RedundantSafeNavigation"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn default_severity(&self) -> Severity {
@@ -149,11 +184,16 @@ impl Cop for RedundantSafeNavigation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Case 6: conversion with default literal (foo&.to_h || {})
         if let Some(or_node) = node.as_or_node() {
-            self.check_conversion_with_default(source, &or_node, diagnostics);
+            self.check_conversion_with_default(
+                source,
+                &or_node,
+                diagnostics,
+                corrections.as_deref_mut(),
+            );
             return;
         }
 
@@ -166,13 +206,13 @@ impl Cop for RedundantSafeNavigation {
                     || is_non_nil_literal(&receiver)
                 {
                     let op_loc = ct.call_operator_loc();
-                    let (line, column) = source.offset_to_line_col(op_loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    add_safe_nav_offense(
+                        self,
                         source,
-                        line,
-                        column,
-                        "Redundant safe navigation detected, use `.` instead.".to_string(),
-                    ));
+                        &op_loc,
+                        diagnostics,
+                        corrections.as_deref_mut(),
+                    );
                 }
             }
             return;
@@ -196,47 +236,47 @@ impl Cop for RedundantSafeNavigation {
 
         // Case 1: Receiver is a constant in camel case (not all uppercase/snake case)
         if is_camel_case_const(&receiver) {
-            let (line, column) = source.offset_to_line_col(op_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            add_safe_nav_offense(
+                self,
                 source,
-                line,
-                column,
-                "Redundant safe navigation detected, use `.` instead.".to_string(),
-            ));
+                &op_loc,
+                diagnostics,
+                corrections.as_deref_mut(),
+            );
         }
 
         // Case 2: Receiver is a literal (not nil)
         if is_non_nil_literal(&receiver) {
-            let (line, column) = source.offset_to_line_col(op_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            add_safe_nav_offense(
+                self,
                 source,
-                line,
-                column,
-                "Redundant safe navigation detected, use `.` instead.".to_string(),
-            ));
+                &op_loc,
+                diagnostics,
+                corrections.as_deref_mut(),
+            );
         }
 
         // Case 3: Receiver is `self`
         if receiver.as_self_node().is_some() {
-            let (line, column) = source.offset_to_line_col(op_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            add_safe_nav_offense(
+                self,
                 source,
-                line,
-                column,
-                "Redundant safe navigation detected, use `.` instead.".to_string(),
-            ));
+                &op_loc,
+                diagnostics,
+                corrections.as_deref_mut(),
+            );
         }
 
         // Case 4: Receiver is a guaranteed instance method call (to_s, to_i, etc.)
         // foo.to_s&.strip is redundant because to_s always returns a string
         if is_guaranteed_instance_receiver(&receiver) {
-            let (line, column) = source.offset_to_line_col(op_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            add_safe_nav_offense(
+                self,
                 source,
-                line,
-                column,
-                "Redundant safe navigation detected, use `.` instead.".to_string(),
-            ));
+                &op_loc,
+                diagnostics,
+                corrections.as_deref_mut(),
+            );
         }
 
         // Case 5: AllowedMethods used in conditions — handled by check_source below
@@ -249,7 +289,7 @@ impl Cop for RedundantSafeNavigation {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allowed_methods: Vec<Vec<u8>> =
             if let Some(ref allowed) = config.get_string_array("AllowedMethods") {
@@ -265,6 +305,31 @@ impl Cop for RedundantSafeNavigation {
             diagnostics: Vec::new(),
         };
         visitor.visit(&parse_result.node());
+
+        if let Some(corr) = corrections {
+            let mut seen = HashSet::new();
+            for diag in &mut visitor.diagnostics {
+                if diag.message != "Redundant safe navigation detected, use `.` instead." {
+                    continue;
+                }
+                if let Some(start) =
+                    source.line_col_to_offset(diag.location.line, diag.location.column)
+                {
+                    let end = start + 2;
+                    if seen.insert((start, end)) {
+                        corr.push(crate::correction::Correction {
+                            start,
+                            end,
+                            replacement: ".".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                    }
+                    diag.corrected = true;
+                }
+            }
+        }
+
         diagnostics.extend(visitor.diagnostics);
     }
 }
@@ -277,6 +342,7 @@ impl RedundantSafeNavigation {
         source: &SourceFile,
         or_node: &ruby_prism::OrNode<'_>,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let lhs = or_node.left();
         let rhs = or_node.right();
@@ -315,12 +381,32 @@ impl RedundantSafeNavigation {
         if is_match {
             // Offense at the &. operator position
             let (line, column) = source.offset_to_line_col(op_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Redundant safe navigation with default literal detected.".to_string(),
-            ));
+            );
+
+            if let Some(corr) = corrections {
+                corr.push(crate::correction::Correction {
+                    start: op_loc.start_offset(),
+                    end: op_loc.end_offset(),
+                    replacement: ".".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                corr.push(crate::correction::Correction {
+                    start: lhs.location().end_offset(),
+                    end: or_node.location().end_offset(),
+                    replacement: "".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
+            }
+
+            diagnostics.push(diag);
         }
     }
 }
@@ -622,6 +708,10 @@ fn is_guaranteed_instance_receiver(node: &ruby_prism::Node<'_>) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantSafeNavigation,
+        "cops/lint/redundant_safe_navigation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantSafeNavigation,
         "cops/lint/redundant_safe_navigation"
     );
