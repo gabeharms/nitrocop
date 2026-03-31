@@ -51,6 +51,10 @@ impl Cop for DisableCopsWithinSourceCodeDirective {
         "Style/DisableCopsWithinSourceCodeDirective"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -62,7 +66,7 @@ impl Cop for DisableCopsWithinSourceCodeDirective {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allowed_cops = config.get_string_array("AllowedCops").unwrap_or_default();
 
@@ -107,7 +111,7 @@ impl Cop for DisableCopsWithinSourceCodeDirective {
                 // RuboCop emits one offense per comment, joining all disallowed cop names
                 let cops_formatted: Vec<String> =
                     disallowed.iter().map(|c| format!("`{}`", c)).collect();
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     col,
@@ -115,14 +119,48 @@ impl Cop for DisableCopsWithinSourceCodeDirective {
                         "RuboCop disable/enable directives for {} are not permitted.",
                         cops_formatted.join(", ")
                     ),
-                ));
+                );
+
+                if let Some(corrections) = corrections.as_mut() {
+                    let mode = caps.get(1).map(|m| m.as_str()).unwrap_or("disable");
+                    let kept: Vec<&str> = cop_names
+                        .iter()
+                        .copied()
+                        .filter(|c| allowed_cops.iter().any(|a| a == c))
+                        .collect();
+                    let replacement = if kept.is_empty() {
+                        String::new()
+                    } else {
+                        format!("# rubocop:{mode} {}", kept.join(", "))
+                    };
+                    corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             } else {
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     col,
                     "RuboCop disable/enable directives are not permitted.".to_string(),
-                ));
+                );
+                if let Some(corrections) = corrections.as_mut() {
+                    corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: String::new(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
     }
@@ -132,6 +170,10 @@ impl Cop for DisableCopsWithinSourceCodeDirective {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        DisableCopsWithinSourceCodeDirective,
+        "cops/style/disable_cops_within_source_code_directive"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         DisableCopsWithinSourceCodeDirective,
         "cops/style/disable_cops_within_source_code_directive"
     );
