@@ -20,6 +20,10 @@ impl Cop for AmbiguousBlockAssociation {
         "Lint/AmbiguousBlockAssociation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -41,7 +45,7 @@ impl Cop for AmbiguousBlockAssociation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // We look for CallNode where:
         // 1. The outer call has no parentheses (opening_loc is None)
@@ -144,7 +148,7 @@ impl Cop for AmbiguousBlockAssociation {
 
         let loc = call.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
@@ -152,7 +156,27 @@ impl Cop for AmbiguousBlockAssociation {
                 "Parenthesize the param `{}` to make sure that the block will be associated with the `{}` method call.",
                 param_text, inner_name
             ),
-        ));
+        );
+
+        if let Some(corr) = corrections.as_mut() {
+            corr.push(crate::correction::Correction {
+                start: inner_start,
+                end: inner_start,
+                replacement: "(".to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            corr.push(crate::correction::Correction {
+                start: inner_end,
+                end: inner_end,
+                replacement: ")".to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -240,6 +264,10 @@ fn is_operator(name: &[u8]) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        AmbiguousBlockAssociation,
+        "cops/lint/ambiguous_block_association"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         AmbiguousBlockAssociation,
         "cops/lint/ambiguous_block_association"
     );
