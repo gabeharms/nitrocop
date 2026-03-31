@@ -3,27 +3,15 @@ use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
-/// Checks for consecutive loops over the same data that can be combined.
-///
-/// ## Investigation Notes
-///
-/// FP root cause: nitrocop included non-looping methods (map, flat_map, select,
-/// reject, collect) in the loop method list. RuboCop only considers methods
-/// starting with "each" or ending with "_each". Also, the blank-line gap check
-/// was wrong — RuboCop doesn't care about blank lines between consecutive loops,
-/// only about intervening *statements*. The `left_sibling` in RuboCop is the
-/// previous AST sibling, regardless of whitespace.
-///
-/// FN root cause: `for` loops were not handled at all (only CallNode was checked).
-/// Methods like `each_key`, `each_value`, `each_pair`, `each_with_object` were
-/// missing from the method list because it was a hardcoded allowlist instead of
-/// using the `starts_with("each") || ends_with("_each")` pattern from RuboCop.
-/// Also, RuboCop requires both loops to have bodies (not empty blocks).
 pub struct CombinableLoops;
 
 impl Cop for CombinableLoops {
     fn name(&self) -> &'static str {
         "Style/CombinableLoops"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -37,7 +25,7 @@ impl Cop for CombinableLoops {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let stmt_list: Vec<ruby_prism::Node<'_>> =
             if let Some(stmts_node) = node.as_statements_node() {
@@ -61,12 +49,42 @@ impl Cop for CombinableLoops {
                 {
                     let loc = curr.location();
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diag = self.diagnostic(
                         source,
                         line,
                         column,
                         "Combine this loop with the previous loop.".to_string(),
-                    ));
+                    );
+
+                    if let Some(corr) = corrections.as_mut() {
+                        let prev_prev_same = i >= 2
+                            && get_loop_info(source, &stmt_list[i - 2]).is_some_and(|info| {
+                                info.receiver == prev_info.receiver
+                                    && info.method == prev_info.method
+                                    && info.arguments == prev_info.arguments
+                            });
+                        let next_same = i + 1 < stmt_list.len()
+                            && get_loop_info(source, &stmt_list[i + 1]).is_some_and(|info| {
+                                info.receiver == curr_info.receiver
+                                    && info.method == curr_info.method
+                                    && info.arguments == curr_info.arguments
+                            });
+
+                        if !prev_prev_same && !next_same {
+                            if let Some(repl) = combine_brace_block_pair(source, prev, curr) {
+                                corr.push(crate::correction::Correction {
+                                    start: prev.location().start_offset(),
+                                    end: curr.location().end_offset(),
+                                    replacement: repl,
+                                    cop_name: self.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                        }
+                    }
+
+                    diagnostics.push(diag);
                 }
             }
         }
@@ -84,7 +102,6 @@ fn is_collection_looping_method(method_name: &str) -> bool {
 }
 
 fn get_loop_info(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<LoopInfo> {
-    // Handle for loops
     if let Some(for_node) = node.as_for_node() {
         let collection = for_node.collection();
         let receiver_text = source
@@ -100,7 +117,6 @@ fn get_loop_info(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<Loo
         });
     }
 
-    // Handle method call loops (each, each_with_index, etc.)
     let call = node.as_call_node()?;
     let method_name = std::str::from_utf8(call.name().as_slice()).ok()?;
 
@@ -108,10 +124,7 @@ fn get_loop_info(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<Loo
         return None;
     }
 
-    // Must have a block
     let block = call.block()?;
-
-    // Both loops must have bodies (not empty blocks)
     if let Some(block_node) = block.as_block_node() {
         block_node.body()?;
     }
@@ -124,7 +137,6 @@ fn get_loop_info(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<Loo
         )?
         .to_string();
 
-    // Capture method arguments (e.g., each_with_object([]) — the `([])` part)
     let arguments_text = if let Some(args) = call.arguments() {
         source
             .try_byte_slice(args.location().start_offset(), args.location().end_offset())
@@ -141,8 +153,85 @@ fn get_loop_info(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<Loo
     })
 }
 
+fn combine_brace_block_pair(
+    source: &SourceFile,
+    prev: &ruby_prism::Node<'_>,
+    curr: &ruby_prism::Node<'_>,
+) -> Option<String> {
+    let prev_call = prev.as_call_node()?;
+    let curr_call = curr.as_call_node()?;
+
+    let prev_block = prev_call.block()?.as_block_node()?;
+    let curr_block = curr_call.block()?.as_block_node()?;
+
+    if prev_block.opening_loc().as_slice() != b"{" || curr_block.opening_loc().as_slice() != b"{" {
+        return None;
+    }
+
+    let prev_params = prev_block.parameters().map(|p| {
+        source
+            .byte_slice(p.location().start_offset(), p.location().end_offset(), "")
+            .to_string()
+    });
+    let curr_params = curr_block.parameters().map(|p| {
+        source
+            .byte_slice(p.location().start_offset(), p.location().end_offset(), "")
+            .to_string()
+    });
+    if prev_params != curr_params {
+        return None;
+    }
+
+    let prev_body = prev_block.body()?.as_statements_node()?;
+    let curr_body = curr_block.body()?.as_statements_node()?;
+    if prev_body.body().len() != 1 || curr_body.body().len() != 1 {
+        return None;
+    }
+
+    let prev_stmt = prev_body.body().iter().next()?;
+    let curr_stmt = curr_body.body().iter().next()?;
+
+    let prev_stmt_src = source
+        .byte_slice(
+            prev_stmt.location().start_offset(),
+            prev_stmt.location().end_offset(),
+            "",
+        )
+        .trim()
+        .to_string();
+    let curr_stmt_src = source
+        .byte_slice(
+            curr_stmt.location().start_offset(),
+            curr_stmt.location().end_offset(),
+            "",
+        )
+        .trim()
+        .to_string();
+
+    let header = source
+        .byte_slice(
+            prev_call.location().start_offset(),
+            prev_block.opening_loc().start_offset(),
+            "",
+        )
+        .trim_end()
+        .to_string();
+
+    let params_src = prev_params.unwrap_or_default();
+    let params_part = if params_src.is_empty() {
+        String::new()
+    } else {
+        format!("{params_src} ")
+    };
+
+    Some(format!(
+        "{header}{{ {params_part}{prev_stmt_src}; {curr_stmt_src} }}"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(CombinableLoops, "cops/style/combinable_loops");
+    crate::cop_autocorrect_fixture_tests!(CombinableLoops, "cops/style/combinable_loops");
 }
