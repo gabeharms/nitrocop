@@ -59,6 +59,10 @@ impl Cop for MapCompactWithConditionalBlock {
         "Style/MapCompactWithConditionalBlock"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[BLOCK_NODE, CALL_NODE, IF_NODE, STATEMENTS_NODE, UNLESS_NODE]
     }
@@ -70,7 +74,7 @@ impl Cop for MapCompactWithConditionalBlock {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -110,7 +114,29 @@ impl Cop for MapCompactWithConditionalBlock {
                         } else {
                             "Use `filter_map` instead of `map { ... }.compact`."
                         };
-                        diagnostics.push(self.diagnostic(source, line, column, msg.to_string()));
+                        let mut diag = self.diagnostic(source, line, column, msg.to_string());
+                        if map_name == b"map" {
+                            if let Some(corrections) = corrections.as_mut() {
+                                if let Some(map_selector) = map_call.message_loc() {
+                                    corrections.push(crate::correction::Correction {
+                                        start: map_selector.start_offset(),
+                                        end: map_selector.end_offset(),
+                                        replacement: "filter_map".to_string(),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    corrections.push(crate::correction::Correction {
+                                        start: map_call.location().end_offset(),
+                                        end: call.location().end_offset(),
+                                        replacement: String::new(),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    diag.corrected = true;
+                                }
+                            }
+                        }
+                        diagnostics.push(diag);
                     }
                 }
             }
@@ -520,6 +546,10 @@ fn get_unless_else_stmts<'a>(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        MapCompactWithConditionalBlock,
+        "cops/style/map_compact_with_conditional_block"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         MapCompactWithConditionalBlock,
         "cops/style/map_compact_with_conditional_block"
     );

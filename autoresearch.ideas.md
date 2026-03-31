@@ -1,4 +1,3 @@
-- Evaluate `Style/MapCompactWithConditionalBlock` only where match already encodes a direct `filter_map`/`map.compact` canonical replacement with no control-flow reshaping.
 - Evaluate `Security/YAMLLoad` only with strict target-Ruby guards (Ruby <= 3.0 behavior) and real offense parity; avoid metric-only toggles.
 - Evaluate `Lint/AmbiguousRegexpLiteral` only with very conservative correction boundaries (likely offense-only unless a safe transformation is proven).
 - Extend `Lint/NumberConversion` autocorrect to symbol/block-pass forms (`map(&:to_i)`, `try(:to_f)`) only after implementing syntax-safe parenthesis/block rewrites.
