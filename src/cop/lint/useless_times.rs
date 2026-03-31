@@ -19,6 +19,10 @@ impl Cop for UselessTimes {
         "Lint/UselessTimes"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -34,7 +38,7 @@ impl Cop for UselessTimes {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Look for `N.times` where N is 0, 1, or negative
         let call = match node.as_call_node() {
@@ -105,12 +109,77 @@ impl Cop for UselessTimes {
         // Use the full call range for the offense
         let _full_src = &source.as_bytes()[start..report_end];
 
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Useless call to `{}.times` detected.", recv_text),
-        ));
+        );
+
+        if let Some(corrections) = corrections.as_mut() {
+            let loc = call.location();
+            if value < 1 {
+                if is_whole_line_call(source, &loc) {
+                    let (line_start, line_end) =
+                        line_range(source, loc.start_offset(), loc.end_offset());
+                    corrections.push(crate::correction::Correction {
+                        start: line_start,
+                        end: line_end,
+                        replacement: String::new(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+            } else if value == 1 {
+                if let Some(block) = call.block() {
+                    if let Some(block_arg) = block.as_block_argument_node() {
+                        if let Some(expr) = block_arg.expression() {
+                            if let Some(sym) = expr.as_symbol_node() {
+                                let sym_src = source.byte_slice(
+                                    sym.location().start_offset(),
+                                    sym.location().end_offset(),
+                                    "",
+                                );
+                                let name = sym_src.strip_prefix(':').unwrap_or(sym_src);
+                                corrections.push(crate::correction::Correction {
+                                    start: loc.start_offset(),
+                                    end: loc.end_offset(),
+                                    replacement: name.to_string(),
+                                    cop_name: self.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                        }
+                    } else if let Some(block_node) = block.as_block_node() {
+                        if let Some(body) = block_node.body() {
+                            if let Some(stmts) = body.as_statements_node() {
+                                let body_items: Vec<_> = stmts.body().iter().collect();
+                                if body_items.len() == 1 && is_whole_line_call(source, &loc) {
+                                    let item = &body_items[0];
+                                    let replacement = source.byte_slice(
+                                        item.location().start_offset(),
+                                        item.location().end_offset(),
+                                        "",
+                                    );
+                                    corrections.push(crate::correction::Correction {
+                                        start: loc.start_offset(),
+                                        end: loc.end_offset(),
+                                        replacement: replacement.to_string(),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    diag.corrected = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -139,8 +208,40 @@ fn get_integer_value(node: &ruby_prism::Node<'_>, source: &SourceFile) -> Option
     None
 }
 
+fn line_range(source: &SourceFile, start: usize, end: usize) -> (usize, usize) {
+    let bytes = source.as_bytes();
+    let mut line_start = start;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+
+    let mut line_end = end;
+    while line_end < bytes.len() && bytes[line_end] != b'\n' {
+        line_end += 1;
+    }
+    if line_end < bytes.len() {
+        line_end += 1;
+    }
+
+    (line_start, line_end)
+}
+
+fn is_whole_line_call(source: &SourceFile, loc: &ruby_prism::Location<'_>) -> bool {
+    let bytes = source.as_bytes();
+    let (line_start, line_end_exclusive) = line_range(source, loc.start_offset(), loc.end_offset());
+
+    let before = &bytes[line_start..loc.start_offset()];
+    if before.iter().any(|b| !b.is_ascii_whitespace()) {
+        return false;
+    }
+
+    let after = &bytes[loc.end_offset()..line_end_exclusive];
+    !after.iter().any(|b| !b.is_ascii_whitespace())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(UselessTimes, "cops/lint/useless_times");
+    crate::cop_autocorrect_fixture_tests!(UselessTimes, "cops/lint/useless_times");
 }
