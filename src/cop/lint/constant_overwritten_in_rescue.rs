@@ -10,6 +10,10 @@ impl Cop for ConstantOverwrittenInRescue {
         "Lint/ConstantOverwrittenInRescue"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -25,7 +29,7 @@ impl Cop for ConstantOverwrittenInRescue {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let begin_node = match node.as_begin_node() {
             Some(n) => n,
@@ -61,12 +65,26 @@ impl Cop for ConstantOverwrittenInRescue {
                             } else {
                                 "constant".to_string()
                             };
-                            diagnostics.push(self.diagnostic(
+                            let mut diag = self.diagnostic(
                                 source,
                                 line,
                                 column,
                                 format!("`{ref_src}` is overwritten by `rescue =>`."),
-                            ));
+                            );
+
+                            if let Some(corr) = corrections.as_mut() {
+                                let keyword = rescue_node.keyword_loc();
+                                corr.push(crate::correction::Correction {
+                                    start: keyword.end_offset(),
+                                    end: operator_loc.end_offset(),
+                                    replacement: "".to_string(),
+                                    cop_name: self.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+
+                            diagnostics.push(diag);
                         }
                     }
                 }
@@ -80,6 +98,10 @@ impl Cop for ConstantOverwrittenInRescue {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        ConstantOverwrittenInRescue,
+        "cops/lint/constant_overwritten_in_rescue"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         ConstantOverwrittenInRescue,
         "cops/lint/constant_overwritten_in_rescue"
     );

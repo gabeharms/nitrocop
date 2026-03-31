@@ -1,3 +1,3 @@
-- `Style/SingleLineDoEndBlock`: investigate conservative block-delimiter autocorrect for single-line `do...end`/brace forms where replacement is local and syntax-preserving.
+- `Lint/UselessAccessModifier`: add conservative line-removal autocorrect for offense-matched bare access modifiers (`public/private/protected/module_function` and bare `private_class_method`) where deletions are whole-line and deterministic.
 - `Style/Semicolon`: consider expanding autocorrect beyond current conservative subset to expression-separator lines only if newline rewrites can be made robust without structural regressions.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.

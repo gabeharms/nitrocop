@@ -29,7 +29,10 @@ impl SingleLineDoEndBlock {
         expr_start: usize,
         expr_end: usize,
         opening_loc: ruby_prism::Location<'_>,
+        closing_loc: ruby_prism::Location<'_>,
+        newline_insert_after: usize,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Check if it uses do...end
         if opening_loc.as_slice() != b"do" {
@@ -45,18 +48,42 @@ impl SingleLineDoEndBlock {
 
         // Report offense at the start of the entire expression (matches RuboCop)
         let (line, column) = source.offset_to_line_col(expr_start);
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             "Prefer multiline `do`...`end` block.".to_string(),
-        ));
+        );
+
+        if let Some(corr) = corrections {
+            corr.push(crate::correction::Correction {
+                start: newline_insert_after,
+                end: newline_insert_after,
+                replacement: "\n".to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            corr.push(crate::correction::Correction {
+                start: closing_loc.start_offset(),
+                end: closing_loc.start_offset(),
+                replacement: "\n".to_string(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
 impl Cop for SingleLineDoEndBlock {
     fn name(&self) -> &'static str {
         "Style/SingleLineDoEndBlock"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -70,7 +97,7 @@ impl Cop for SingleLineDoEndBlock {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Handle CallNode with a do...end block (e.g., `foo do bar end`, `lambda do |x| x end`)
         if let Some(call) = node.as_call_node() {
@@ -83,12 +110,31 @@ impl Cop for SingleLineDoEndBlock {
             };
 
             let call_loc = call.location();
+            let insert_after = if call.receiver().is_none() && call.name().as_slice() == b"lambda" {
+                block.opening_loc().end_offset()
+            } else if let Some(params) = block.parameters() {
+                if params
+                    .as_block_parameters_node()
+                    .and_then(|bp| bp.opening_loc())
+                    .is_some()
+                {
+                    params.location().end_offset()
+                } else {
+                    block.opening_loc().end_offset()
+                }
+            } else {
+                block.opening_loc().end_offset()
+            };
+
             self.check_do_end_block(
                 source,
                 call_loc.start_offset(),
                 call_loc.end_offset(),
                 block.opening_loc(),
+                block.closing_loc(),
+                insert_after,
                 diagnostics,
+                corrections.as_deref_mut(),
             );
             return;
         }
@@ -101,7 +147,10 @@ impl Cop for SingleLineDoEndBlock {
                 loc.start_offset(),
                 loc.end_offset(),
                 lambda.opening_loc(),
+                lambda.closing_loc(),
+                lambda.opening_loc().end_offset(),
                 diagnostics,
+                corrections.as_deref_mut(),
             );
         }
     }
@@ -111,4 +160,8 @@ impl Cop for SingleLineDoEndBlock {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(SingleLineDoEndBlock, "cops/style/single_line_do_end_block");
+    crate::cop_autocorrect_fixture_tests!(
+        SingleLineDoEndBlock,
+        "cops/style/single_line_do_end_block"
+    );
 }
