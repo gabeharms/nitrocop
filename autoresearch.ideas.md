@@ -1,4 +1,3 @@
-- `Style/RedundantCondition`: conservative subset — only autocorrect `if cond ... else ... end` patterns where condition source equals if-branch expression (`cond || else_expr`) and no-else `if cond; cond; end` to `cond`.
 - `Style/StringConcatenation`: conservative mode candidate — bounded rewrite for simple two-part string-plus-expression cases to interpolation while skipping heredoc/percent/multiline chain edge cases.
 - `Lint/HeredocMethodCallPosition`: defer for now; naive location-based suffix move corrupted heredoc structure. Revisit with robust line/parser-aware opener/body/terminator reconstruction before retrying.
 - Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.
