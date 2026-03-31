@@ -102,6 +102,10 @@ impl Cop for SymbolArray {
         "Style/SymbolArray"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -109,7 +113,7 @@ impl Cop for SymbolArray {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let min_size = config.get_usize("MinSize", 2);
         let enforced_style = config.get_str("EnforcedStyle", "percent");
@@ -124,10 +128,15 @@ impl Cop for SymbolArray {
             parse_result,
             min_size,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
             in_ambiguous_block_context: false,
+            emit_corrections: corrections.is_some(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -137,8 +146,10 @@ struct SymbolArrayVisitor<'a, 'src, 'pr> {
     parse_result: &'a ruby_prism::ParseResult<'pr>,
     min_size: usize,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
     /// True when we're inside arguments of a non-parenthesized call with a block.
     in_ambiguous_block_context: bool,
+    emit_corrections: bool,
 }
 
 impl<'pr> SymbolArrayVisitor<'_, '_, 'pr> {
@@ -187,12 +198,46 @@ impl<'pr> SymbolArrayVisitor<'_, '_, 'pr> {
         }
 
         let (line, column) = self.source.offset_to_line_col(opening.start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diag = self.cop.diagnostic(
             self.source,
             line,
             column,
             "Use `%i` or `%I` for an array of symbols.".to_string(),
-        ));
+        );
+
+        if self.emit_corrections
+            && let Some(replacement) = self.build_percent_symbol_array(node)
+        {
+            self.corrections.push(crate::correction::Correction {
+                start: node.location().start_offset(),
+                end: node.location().end_offset(),
+                replacement,
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        self.diagnostics.push(diag);
+    }
+
+    fn build_percent_symbol_array(&self, node: &ruby_prism::ArrayNode<'pr>) -> Option<String> {
+        let mut symbols: Vec<String> = Vec::with_capacity(node.elements().len());
+        for elem in node.elements().iter() {
+            let sym = elem.as_symbol_node()?;
+            let symbol = std::str::from_utf8(sym.unescaped()).ok()?;
+            if symbol.is_empty() || symbol.chars().any(char::is_whitespace) {
+                return None;
+            }
+            symbols.push(symbol.to_string());
+        }
+
+        let delimiters = [("[", "]"), ("(", ")"), ("{", "}"), ("<", ">")];
+        let (open, close) = delimiters
+            .iter()
+            .find(|(_, close)| !symbols.iter().any(|sym| sym.contains(*close)))?;
+
+        Some(format!("%i{open}{}{close}", symbols.join(" ")))
     }
 
     /// Check if a call node represents an ambiguous block context:
@@ -268,6 +313,7 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(SymbolArray, "cops/style/symbol_array");
+    crate::cop_autocorrect_fixture_tests!(SymbolArray, "cops/style/symbol_array");
 
     #[test]
     fn config_min_size_5() {
