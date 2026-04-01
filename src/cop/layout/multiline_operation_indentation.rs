@@ -6,6 +6,13 @@ use crate::parse::source::SourceFile;
 
 pub struct MultilineOperationIndentation;
 
+struct BinaryIndentOffense {
+    line: usize,
+    col: usize,
+    expected_col: usize,
+    message: String,
+}
+
 const OPERATOR_METHODS: &[&[u8]] = &[
     b"+", b"-", b"*", b"/", b"%", b"**", b"==", b"!=", b"<", b">", b"<=", b">=", b"<=>", b"&",
     b"|", b"^", b"<<", b">>",
@@ -14,6 +21,10 @@ const OPERATOR_METHODS: &[&[u8]] = &[
 impl Cop for MultilineOperationIndentation {
     fn name(&self) -> &'static str {
         "Layout/MultilineOperationIndentation"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -27,7 +38,7 @@ impl Cop for MultilineOperationIndentation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "aligned");
 
@@ -125,6 +136,25 @@ impl Cop for MultilineOperationIndentation {
                         arg_col.saturating_sub(recv_indent)
                     ),
                 ));
+
+                if let Some(corrections) = corrections.as_deref_mut() {
+                    if let Some((line_start, first_non_ws)) =
+                        line_leading_whitespace_range(source, arg_line)
+                    {
+                        let autocorrect_col = if style == "aligned" {
+                            expected_indented
+                        } else {
+                            expected
+                        };
+                        corrections.push(crate::correction::Correction {
+                            start: line_start,
+                            end: first_non_ws,
+                            replacement: " ".repeat(autocorrect_col),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                    }
+                }
             }
         }
 
@@ -135,13 +165,29 @@ impl Cop for MultilineOperationIndentation {
             if is_inside_parentheses(source, node) {
                 return;
             }
-            diagnostics.extend(self.check_binary_node(
-                source,
-                &and_node.left(),
-                &and_node.right(),
-                config,
-                style,
-            ));
+            for offense in
+                self.check_binary_node(source, &and_node.left(), &and_node.right(), config, style)
+            {
+                diagnostics.push(self.diagnostic(
+                    source,
+                    offense.line,
+                    offense.col,
+                    offense.message,
+                ));
+                if let Some(corrections) = corrections.as_deref_mut() {
+                    if let Some((line_start, first_non_ws)) =
+                        line_leading_whitespace_range(source, offense.line)
+                    {
+                        corrections.push(crate::correction::Correction {
+                            start: line_start,
+                            end: first_non_ws,
+                            replacement: " ".repeat(offense.expected_col),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                    }
+                }
+            }
             return;
         }
 
@@ -151,13 +197,29 @@ impl Cop for MultilineOperationIndentation {
             if is_inside_parentheses(source, node) {
                 return;
             }
-            diagnostics.extend(self.check_binary_node(
-                source,
-                &or_node.left(),
-                &or_node.right(),
-                config,
-                style,
-            ));
+            for offense in
+                self.check_binary_node(source, &or_node.left(), &or_node.right(), config, style)
+            {
+                diagnostics.push(self.diagnostic(
+                    source,
+                    offense.line,
+                    offense.col,
+                    offense.message,
+                ));
+                if let Some(corrections) = corrections.as_deref_mut() {
+                    if let Some((line_start, first_non_ws)) =
+                        line_leading_whitespace_range(source, offense.line)
+                    {
+                        corrections.push(crate::correction::Correction {
+                            start: line_start,
+                            end: first_non_ws,
+                            replacement: " ".repeat(offense.expected_col),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                    }
+                }
+            }
         }
     }
 }
@@ -245,7 +307,7 @@ impl MultilineOperationIndentation {
         right: &ruby_prism::Node<'_>,
         config: &CopConfig,
         style: &str,
-    ) -> Vec<Diagnostic> {
+    ) -> Vec<BinaryIndentOffense> {
         let (left_line, left_col) = source.offset_to_line_col(left.location().start_offset());
         let (left_end_line, _) = source.offset_to_line_col(left.location().end_offset());
         let (right_line, right_col) = source.offset_to_line_col(right.location().start_offset());
@@ -314,20 +376,36 @@ impl MultilineOperationIndentation {
         };
 
         if !is_ok {
-            return vec![self.diagnostic(
-                source,
-                right_line,
-                right_col,
-                format!(
+            let autocorrect_col = if style == "aligned" {
+                expected_indented
+            } else {
+                expected
+            };
+            return vec![BinaryIndentOffense {
+                line: right_line,
+                col: right_col,
+                expected_col: autocorrect_col,
+                message: format!(
                     "Use {} (not {}) spaces for indentation of a continuation line.",
                     width,
                     right_col.saturating_sub(left_indent)
                 ),
-            )];
+            }];
         }
 
         Vec::new()
     }
+}
+
+fn line_leading_whitespace_range(source: &SourceFile, line: usize) -> Option<(usize, usize)> {
+    let line_bytes = source.lines().nth(line - 1)?;
+    let first_non_ws_col = line_bytes
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t')
+        .unwrap_or(line_bytes.len());
+    let line_start = source.line_col_to_offset(line, 0)?;
+    let first_non_ws = source.line_col_to_offset(line, first_non_ws_col)?;
+    Some((line_start, first_non_ws))
 }
 
 #[cfg(test)]
@@ -336,6 +414,10 @@ mod tests {
     use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(
+        MultilineOperationIndentation,
+        "cops/layout/multiline_operation_indentation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         MultilineOperationIndentation,
         "cops/layout/multiline_operation_indentation"
     );
