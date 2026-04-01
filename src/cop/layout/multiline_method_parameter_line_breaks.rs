@@ -1,5 +1,6 @@
 use crate::cop::node_type::DEF_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -28,6 +29,10 @@ impl Cop for MultilineMethodParameterLineBreaks {
         "Layout/MultilineMethodParameterLineBreaks"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -43,7 +48,7 @@ impl Cop for MultilineMethodParameterLineBreaks {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let allow_multiline_final = config.get_bool("AllowMultilineFinalElement", false);
 
@@ -66,13 +71,28 @@ impl Cop for MultilineMethodParameterLineBreaks {
         for &(start, end) in &param_locs {
             let (curr_line, curr_col) = source.offset_to_line_col(start);
             if last_seen_line >= curr_line {
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     curr_line,
                     curr_col,
                     "Each parameter in a multi-line method definition must start on a separate line."
                         .to_string(),
-                ));
+                );
+
+                if let Some(corrections) = corrections.as_deref_mut() {
+                    let replace_start = whitespace_prefix_start(source, start, curr_line).unwrap_or(start);
+                    let indent = preferred_indent(source, curr_line, curr_col, &param_locs);
+                    corrections.push(Correction {
+                        start: replace_start,
+                        end: start,
+                        replacement: format!("\n{}", " ".repeat(indent)),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+
+                diagnostics.push(diagnostic);
             } else {
                 let end_offset = end.saturating_sub(1).max(start);
                 last_seen_line = source.offset_to_line_col(end_offset).0;
@@ -140,6 +160,54 @@ fn all_on_same_line(
     first_line == last_line
 }
 
+fn whitespace_prefix_start(source: &SourceFile, param_start: usize, param_line: usize) -> Option<usize> {
+    let line_start = source.line_col_to_offset(param_line, 0)?;
+    let bytes = source.as_bytes();
+    let mut start = param_start;
+    while start > line_start {
+        let b = bytes[start - 1];
+        if b == b' ' || b == b'\t' || b == b'\r' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    Some(start)
+}
+
+fn line_indent(source: &SourceFile, line: usize) -> Option<usize> {
+    let lines: Vec<&[u8]> = source.lines().collect();
+    let raw = *lines.get(line.checked_sub(1)?)?;
+    Some(
+        raw.iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count(),
+    )
+}
+
+fn preferred_indent(
+    source: &SourceFile,
+    param_line: usize,
+    param_col: usize,
+    param_locs: &[(usize, usize)],
+) -> usize {
+    let current_indent = line_indent(source, param_line).unwrap_or(0);
+    if current_indent > 0 {
+        return current_indent;
+    }
+
+    for &(start, _) in param_locs {
+        let line = source.offset_to_line_col(start).0;
+        if line > param_line {
+            if let Some(indent) = line_indent(source, line) {
+                return indent;
+            }
+        }
+    }
+
+    param_col
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +215,10 @@ mod tests {
     use std::collections::HashMap;
 
     crate::cop_fixture_tests!(
+        MultilineMethodParameterLineBreaks,
+        "cops/layout/multiline_method_parameter_line_breaks"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         MultilineMethodParameterLineBreaks,
         "cops/layout/multiline_method_parameter_line_breaks"
     );

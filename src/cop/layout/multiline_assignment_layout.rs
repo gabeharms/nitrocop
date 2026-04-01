@@ -7,6 +7,7 @@ use crate::cop::node_type::{
     LOCAL_VARIABLE_WRITE_NODE, MODULE_NODE, UNLESS_NODE,
 };
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -123,6 +124,10 @@ impl Cop for MultilineAssignmentLayout {
         "Layout/MultilineAssignmentLayout"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -160,7 +165,7 @@ impl Cop for MultilineAssignmentLayout {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "new_line");
         let supported_types = config
@@ -207,12 +212,27 @@ impl Cop for MultilineAssignmentLayout {
         match enforced_style {
             "new_line" => {
                 if same_line {
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         node_line,
                         node_col,
                         "Right hand side of multi-line assignment is on the same line as the assignment operator `=`.".to_string(),
-                    ));
+                    );
+
+                    if let Some(corrections) = corrections.as_deref_mut() {
+                        let indent = leading_indent(source, eq_line).unwrap_or(0)
+                            + config.get_usize("IndentationWidth", 2);
+                        corrections.push(Correction {
+                            start: eq_offset + 1,
+                            end: value.location().start_offset(),
+                            replacement: format!("\n{}", " ".repeat(indent)),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+
+                    diagnostics.push(diagnostic);
                 }
             }
             "same_line" => {
@@ -230,11 +250,25 @@ impl Cop for MultilineAssignmentLayout {
     }
 }
 
+fn leading_indent(source: &SourceFile, line: usize) -> Option<usize> {
+    let lines: Vec<&[u8]> = source.lines().collect();
+    let raw = *lines.get(line.checked_sub(1)?)?;
+    Some(
+        raw.iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(
+        MultilineAssignmentLayout,
+        "cops/layout/multiline_assignment_layout"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         MultilineAssignmentLayout,
         "cops/layout/multiline_assignment_layout"
     );
