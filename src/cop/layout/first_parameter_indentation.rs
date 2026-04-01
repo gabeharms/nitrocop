@@ -1,5 +1,6 @@
 use crate::cop::node_type::DEF_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -8,6 +9,10 @@ pub struct FirstParameterIndentation;
 impl Cop for FirstParameterIndentation {
     fn name(&self) -> &'static str {
         "Layout/FirstParameterIndentation"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -21,7 +26,7 @@ impl Cop for FirstParameterIndentation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "consistent");
 
@@ -117,7 +122,7 @@ impl Cop for FirstParameterIndentation {
         };
 
         if first_col != expected {
-            diagnostics.push(self.diagnostic(
+            let mut diagnostic = self.diagnostic(
                 source,
                 first_line,
                 first_col,
@@ -125,7 +130,21 @@ impl Cop for FirstParameterIndentation {
                     "Use {} (not {}) spaces for indentation.",
                     expected, first_col
                 ),
-            ));
+            );
+
+            if let Some(corrections) = corrections.as_mut() {
+                let line_start = source.line_start_offset(first_line);
+                corrections.push(Correction {
+                    start: line_start,
+                    end: line_start + first_col,
+                    replacement: " ".repeat(expected),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+
+            diagnostics.push(diagnostic);
         }
     }
 }
@@ -135,6 +154,10 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(
+        FirstParameterIndentation,
+        "cops/layout/first_parameter_indentation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         FirstParameterIndentation,
         "cops/layout/first_parameter_indentation"
     );
