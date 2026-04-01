@@ -35,11 +35,28 @@ use crate::parse::source::SourceFile;
 ///   Fixed by rejecting lines with non-standard trailing content (rescue, backslash, etc.).
 /// - FP: `require` after `__END__` — data section, not code. Fixed by breaking the
 ///   line loop at `__END__`.
+///
+/// Autocorrect strategy (2026-04-01):
+/// - Conservative line-level reorder for contiguous, plain require groups only.
+/// - Groups containing transparent comments or modifier-conditionals remain offense-only.
 pub struct RequireOrder;
+
+#[derive(Clone)]
+struct RequireEntry {
+    line_num: usize,
+    path: String,
+    kind: &'static str,
+    raw_line: String,
+    autocorrect_safe: bool,
+}
 
 impl Cop for RequireOrder {
     fn name(&self) -> &'static str {
         "Style/RequireOrder"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn default_enabled(&self) -> bool {
@@ -53,7 +70,7 @@ impl Cop for RequireOrder {
         code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let lines: Vec<&[u8]> = source.lines().collect();
 
@@ -69,19 +86,15 @@ impl Cop for RequireOrder {
         // `require` and `require_relative` are separate groups even if adjacent.
         // Comment lines are transparent — they don't break groups (matching RuboCop's
         // AST-based approach where comments aren't sibling nodes).
-        let mut groups: Vec<Vec<(usize, String, &str)>> = Vec::new(); // (line, path, kind)
-        let mut current_group: Vec<(usize, String, &str)> = Vec::new();
+        let mut groups: Vec<Vec<RequireEntry>> = Vec::new();
+        let mut current_group: Vec<RequireEntry> = Vec::new();
         let mut current_kind: &str = "";
         let mut inside_begin_block = false;
 
         for (i, line) in lines.iter().enumerate() {
             // Skip lines inside heredocs
             if i < line_offsets.len() && code_map.is_heredoc(line_offsets[i]) {
-                if current_group.len() > 1 {
-                    groups.push(std::mem::take(&mut current_group));
-                } else {
-                    current_group.clear();
-                }
+                finalize_group(&mut groups, &mut current_group);
                 current_kind = "";
                 continue;
             }
@@ -96,11 +109,7 @@ impl Cop for RequireOrder {
                         .is_some_and(|b| b.is_ascii_whitespace()))
             {
                 inside_begin_block = true;
-                if current_group.len() > 1 {
-                    groups.push(std::mem::take(&mut current_group));
-                } else {
-                    current_group.clear();
-                }
+                finalize_group(&mut groups, &mut current_group);
                 current_kind = "";
                 continue;
             }
@@ -126,67 +135,158 @@ impl Cop for RequireOrder {
             // Skip lines inside string literals (e.g. %(...), %{...}, heredocs)
             // The heredoc check above handles heredocs; this catches percent-string bodies.
             if i < line_offsets.len() && !code_map.is_not_string(line_offsets[i]) {
-                // Line is inside a string literal — don't treat as require
-                if current_group.len() > 1 {
-                    groups.push(std::mem::take(&mut current_group));
-                } else {
-                    current_group.clear();
-                }
+                finalize_group(&mut groups, &mut current_group);
                 current_kind = "";
                 continue;
             }
 
             // Strip UTF-8 BOM if present (common on first line of some files)
             let trimmed = trimmed_raw.strip_prefix('\u{FEFF}').unwrap_or(trimmed_raw);
-            if let Some((path, kind)) = extract_require_path_and_kind(trimmed) {
+            if let Some(parsed) = extract_require(trimmed) {
                 // If the kind changed (require vs require_relative), start a new group
-                if !current_group.is_empty() && kind != current_kind {
-                    if current_group.len() > 1 {
-                        groups.push(std::mem::take(&mut current_group));
-                    } else {
-                        current_group.clear();
-                    }
+                if !current_group.is_empty() && parsed.kind != current_kind {
+                    finalize_group(&mut groups, &mut current_group);
                 }
-                current_kind = kind;
-                current_group.push((i + 1, path, kind));
+                current_kind = parsed.kind;
+                current_group.push(RequireEntry {
+                    line_num: i + 1,
+                    path: parsed.path,
+                    kind: parsed.kind,
+                    raw_line: trimmed.to_string(),
+                    autocorrect_safe: parsed.autocorrect_safe,
+                });
             } else if is_comment_line(trimmed) {
                 // Comment lines are transparent — don't break groups
             } else {
-                if current_group.len() > 1 {
-                    groups.push(std::mem::take(&mut current_group));
-                } else {
-                    current_group.clear();
-                }
+                finalize_group(&mut groups, &mut current_group);
                 current_kind = "";
             }
         }
-        if current_group.len() > 1 {
-            groups.push(current_group);
-        }
+        finalize_group(&mut groups, &mut current_group);
 
         for group in &groups {
-            let kind = group[0].2;
+            let kind = group[0].kind;
             // Track the maximum path seen so far. An entry is out of order
             // if its path is less than ANY previous path in the group,
             // which is equivalent to being less than the running maximum.
-            let mut max_path: &str = &group[0].1;
-            for &(line_num, ref curr_path, _) in &group[1..] {
-                if curr_path.as_str() < max_path {
+            let mut max_path: &str = &group[0].path;
+            let mut out_of_order = false;
+            let diag_start = diagnostics.len();
+            for entry in &group[1..] {
+                if entry.path.as_str() < max_path {
+                    out_of_order = true;
                     diagnostics.push(self.diagnostic(
                         source,
-                        line_num,
+                        entry.line_num,
                         0,
                         format!("Sort `{}` in alphabetical order.", kind),
                     ));
                 } else {
-                    max_path = curr_path;
+                    max_path = &entry.path;
                 }
+            }
+
+            if !out_of_order || corrections.is_none() {
+                continue;
+            }
+
+            if !group_autocorrect_safe(group, &lines) {
+                continue;
+            }
+
+            let mut sorted = group.to_vec();
+            sorted.sort_by(|a, b| a.path.cmp(&b.path));
+            if sorted
+                .iter()
+                .zip(group.iter())
+                .all(|(a, b)| a.raw_line == b.raw_line)
+            {
+                continue;
+            }
+
+            let first_line = group.first().map(|e| e.line_num).unwrap_or(1);
+            let last_line = group.last().map(|e| e.line_num).unwrap_or(first_line);
+            let start = line_offsets[first_line - 1];
+            let end = if last_line < line_offsets.len() {
+                line_offsets[last_line]
+            } else {
+                source.as_bytes().len()
+            };
+
+            let mut replacement = sorted
+                .iter()
+                .map(|e| e.raw_line.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            replacement.push('\n');
+
+            if let Some(ref mut corrs) = corrections {
+                corrs.push(crate::correction::Correction {
+                    start,
+                    end,
+                    replacement,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+            }
+
+            for diag in diagnostics.iter_mut().skip(diag_start) {
+                diag.corrected = true;
             }
         }
     }
 }
 
-fn extract_require_path_and_kind(line: &str) -> Option<(String, &'static str)> {
+fn finalize_group(groups: &mut Vec<Vec<RequireEntry>>, current_group: &mut Vec<RequireEntry>) {
+    if current_group.len() > 1 {
+        groups.push(std::mem::take(current_group));
+    } else {
+        current_group.clear();
+    }
+}
+
+fn group_autocorrect_safe(group: &[RequireEntry], lines: &[&[u8]]) -> bool {
+    if group.is_empty() {
+        return false;
+    }
+
+    if !group.iter().all(|entry| entry.autocorrect_safe) {
+        return false;
+    }
+
+    let first = group[0].line_num;
+    let last = group[group.len() - 1].line_num;
+    if last < first {
+        return false;
+    }
+
+    // Conservative: only contiguous require-only groups.
+    if group.len() != (last - first + 1) {
+        return false;
+    }
+
+    for line_num in first..=last {
+        let idx = line_num - 1;
+        let line_str = std::str::from_utf8(lines[idx]).unwrap_or("");
+        let trimmed = line_str.trim().strip_prefix('\u{FEFF}').unwrap_or(line_str.trim());
+        let Some(parsed) = extract_require(trimmed) else {
+            return false;
+        };
+        if !parsed.autocorrect_safe {
+            return false;
+        }
+    }
+
+    true
+}
+
+struct ParsedRequire {
+    path: String,
+    kind: &'static str,
+    autocorrect_safe: bool,
+}
+
+fn extract_require(line: &str) -> Option<ParsedRequire> {
     let line = line.trim();
     // Match `require_relative` before `require` to avoid prefix collision
     let (rest, kind) = if let Some(r) = line.strip_prefix("require_relative") {
@@ -222,6 +322,7 @@ fn extract_require_path_and_kind(line: &str) -> Option<(String, &'static str)> {
     if inner.contains("#{") {
         return None;
     }
+
     // Check for trailing content after closing quote (ignoring optional `)`, whitespace, comments)
     let after_quote = &rest[end_pos + 1..];
     let after_quote = after_quote.trim_start();
@@ -229,18 +330,24 @@ fn extract_require_path_and_kind(line: &str) -> Option<(String, &'static str)> {
         .strip_prefix(')')
         .unwrap_or(after_quote)
         .trim_start();
+
+    let has_trailing_modifier = after_quote.starts_with("if ")
+        || after_quote.starts_with("unless ")
+        || after_quote.starts_with("while ")
+        || after_quote.starts_with("until ");
+
     // Allow: empty, comment, modifier conditionals (if/unless/while/until)
     // Reject: `rescue nil`, backslash continuation, or other non-standard trailing content
-    if !after_quote.is_empty()
-        && !after_quote.starts_with('#')
-        && !after_quote.starts_with("if ")
-        && !after_quote.starts_with("unless ")
-        && !after_quote.starts_with("while ")
-        && !after_quote.starts_with("until ")
-    {
+    if !after_quote.is_empty() && !after_quote.starts_with('#') && !has_trailing_modifier {
         return None;
     }
-    Some((inner.to_string(), kind))
+
+    Some(ParsedRequire {
+        path: inner.to_string(),
+        kind,
+        // conservative: skip any trailing modifier/comment when autocorrecting
+        autocorrect_safe: after_quote.is_empty(),
+    })
 }
 
 /// Returns true if the line is a comment (starts with `#`).
@@ -252,4 +359,5 @@ fn is_comment_line(trimmed: &str) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RequireOrder, "cops/style/require_order");
+    crate::cop_autocorrect_fixture_tests!(RequireOrder, "cops/style/require_order");
 }
