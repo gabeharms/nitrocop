@@ -11,6 +11,10 @@ impl Cop for StringLiterals {
         "Style/StringLiterals"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -27,12 +31,16 @@ impl Cop for StringLiterals {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
             enforced_style,
             consistent_multiline,
             in_interpolation: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = _corrections {
+            corrections.extend(visitor.corrections);
+        }
     }
 }
 
@@ -40,6 +48,7 @@ struct StringLiteralsVisitor<'a> {
     cop: &'a StringLiterals,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
     enforced_style: String,
     consistent_multiline: bool,
     in_interpolation: bool,
@@ -91,7 +100,17 @@ impl<'pr> Visit<'pr> for StringLiteralsVisitor<'_> {
                     // - No escape sequences (no backslash in content)
                     if !content.contains(&b'\'') && !needs_double_quotes(content) {
                         let (line, column) = self.source.offset_to_line_col(opening.start_offset());
-                        self.diagnostics.push(self.cop.diagnostic(self.source, line, column, "Prefer single-quoted strings when you don't need string interpolation or special symbols.".to_string()));
+                        let mut diagnostic = self.cop.diagnostic(self.source, line, column, "Prefer single-quoted strings when you don't need string interpolation or special symbols.".to_string());
+                        let loc = node.location();
+                        self.corrections.push(crate::correction::Correction {
+                            start: loc.start_offset(),
+                            end: loc.end_offset(),
+                            replacement: to_single_quoted_literal(content),
+                            cop_name: self.cop.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                        self.diagnostics.push(diagnostic);
                     }
                 }
             }
@@ -131,7 +150,17 @@ impl<'pr> Visit<'pr> for StringLiteralsVisitor<'_> {
                         return;
                     }
                     let (line, column) = self.source.offset_to_line_col(opening.start_offset());
-                    self.diagnostics.push(self.cop.diagnostic(self.source, line, column, "Prefer double-quoted strings unless you need single quotes to avoid extra backslashes for escaping.".to_string()));
+                    let mut diagnostic = self.cop.diagnostic(self.source, line, column, "Prefer double-quoted strings unless you need single quotes to avoid extra backslashes for escaping.".to_string());
+                    let loc = node.location();
+                    self.corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: to_double_quoted_literal(content),
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                    self.diagnostics.push(diagnostic);
                 }
             }
             _ => {}
@@ -185,11 +214,82 @@ fn needs_double_quotes(content: &[u8]) -> bool {
     false
 }
 
+fn to_single_quoted_literal(content: &[u8]) -> String {
+    let mut out = String::with_capacity(content.len() + 2);
+    out.push('\'');
+
+    let mut i = 0;
+    let mut segment_start = 0;
+    while i < content.len() {
+        if content[i] == b'\\' && i + 1 < content.len() {
+            match content[i + 1] {
+                b'"' => {
+                    out.push_str(&String::from_utf8_lossy(&content[segment_start..i]));
+                    out.push('"');
+                    i += 2;
+                    segment_start = i;
+                    continue;
+                }
+                b'\\' => {
+                    out.push_str(&String::from_utf8_lossy(&content[segment_start..i]));
+                    out.push('\\');
+                    out.push('\\');
+                    i += 2;
+                    segment_start = i;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&String::from_utf8_lossy(&content[segment_start..]));
+
+    out.push('\'');
+    out
+}
+
+fn to_double_quoted_literal(content: &[u8]) -> String {
+    let mut out = String::with_capacity(content.len() + 2);
+    out.push('"');
+
+    let mut i = 0;
+    let mut segment_start = 0;
+    while i < content.len() {
+        if content[i] == b'\\' && i + 1 < content.len() {
+            match content[i + 1] {
+                b'\\' => {
+                    out.push_str(&String::from_utf8_lossy(&content[segment_start..i]));
+                    out.push('\\');
+                    out.push('\\');
+                    i += 2;
+                    segment_start = i;
+                    continue;
+                }
+                b'\'' => {
+                    out.push_str(&String::from_utf8_lossy(&content[segment_start..i]));
+                    out.push('\'');
+                    i += 2;
+                    segment_start = i;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&String::from_utf8_lossy(&content[segment_start..]));
+
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(StringLiterals, "cops/style/string_literals");
+    crate::cop_autocorrect_fixture_tests!(StringLiterals, "cops/style/string_literals");
 
     #[test]
     fn config_double_quotes() {

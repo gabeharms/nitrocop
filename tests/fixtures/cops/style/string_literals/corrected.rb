@@ -1,0 +1,10 @@
+x = 'hello'
+y = 'world'
+z = 'foo bar'
+u = 'has \\ backslash'
+a = '\\'
+b = '"'
+c = 'España'
+# Strings with only \" escapes can use single quotes (\" becomes literal " in single quotes)
+d = 'execve("/bin/sh", rsp, environ)'
+e = '{"key": "value"}'

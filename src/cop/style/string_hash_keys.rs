@@ -73,6 +73,10 @@ impl Cop for StringHashKeys {
         "Style/StringHashKeys"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -90,10 +94,14 @@ impl Cop for StringHashKeys {
             source,
             cop: self,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
             exempt_hash_offsets: std::collections::HashSet::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = _corrections {
+            corrections.extend(visitor.corrections);
+        }
     }
 }
 
@@ -101,6 +109,7 @@ struct StringHashKeysVisitor<'a> {
     source: &'a SourceFile,
     cop: &'a StringHashKeys,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
     /// Set of byte offsets for hash nodes that are exempt (direct args of env methods).
     exempt_hash_offsets: std::collections::HashSet<usize>,
 }
@@ -187,6 +196,49 @@ fn is_const(node: &ruby_prism::Node<'_>, name: &[u8]) -> bool {
     false
 }
 
+fn symbol_literal_for_string_key(str_node: &ruby_prism::StringNode<'_>) -> Option<String> {
+    let content = std::str::from_utf8(str_node.unescaped()).ok()?;
+    if is_simple_symbol_name(content) {
+        return Some(format!(":{}", content));
+    }
+
+    let mut escaped = String::with_capacity(content.len());
+    for ch in content.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            _ => escaped.push(ch),
+        }
+    }
+
+    Some(format!(":\"{}\"", escaped))
+}
+
+fn is_simple_symbol_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    let rest: Vec<char> = chars.collect();
+    if rest.is_empty() {
+        return true;
+    }
+
+    let suffix_len = if rest.last().is_some_and(|c| matches!(*c, '!' | '?' | '=')) {
+        1
+    } else {
+        0
+    };
+
+    rest[..rest.len() - suffix_len]
+        .iter()
+        .all(|c| c.is_ascii_alphanumeric() || *c == '_')
+}
+
 impl StringHashKeysVisitor<'_> {
     fn check_hash_elements<'pr, I>(&mut self, elements: I, hash_offset: usize)
     where
@@ -227,12 +279,23 @@ impl StringHashKeysVisitor<'_> {
                     }
                     let loc = key.location();
                     let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                    self.diagnostics.push(self.cop.diagnostic(
+                    let mut diagnostic = self.cop.diagnostic(
                         self.source,
                         line,
                         column,
                         "Prefer symbols instead of strings as hash keys.".to_string(),
-                    ));
+                    );
+                    if let Some(replacement) = symbol_literal_for_string_key(&str_node) {
+                        self.corrections.push(crate::correction::Correction {
+                            start: loc.start_offset(),
+                            end: loc.end_offset(),
+                            replacement,
+                            cop_name: self.cop.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+                    self.diagnostics.push(diagnostic);
                 }
             }
         }
@@ -292,4 +355,5 @@ impl<'pr> Visit<'pr> for StringHashKeysVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(StringHashKeys, "cops/style/string_hash_keys");
+    crate::cop_autocorrect_fixture_tests!(StringHashKeys, "cops/style/string_hash_keys");
 }
