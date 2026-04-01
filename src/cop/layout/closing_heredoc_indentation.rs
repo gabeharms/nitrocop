@@ -1,6 +1,7 @@
 use ruby_prism::Visit;
 
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
@@ -12,6 +13,10 @@ impl Cop for ClosingHeredocIndentation {
         "Layout/ClosingHeredocIndentation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -19,16 +24,20 @@ impl Cop for ClosingHeredocIndentation {
         _code_map: &CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let mut visitor = HeredocVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
             argument_indent: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = corrections.as_mut() {
+            corrections.extend(visitor.corrections);
+        }
     }
 }
 
@@ -36,6 +45,7 @@ struct HeredocVisitor<'a> {
     cop: &'a ClosingHeredocIndentation,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<Correction>,
     /// When a heredoc is a direct argument to a method call (or chained call),
     /// this holds the indentation of the outermost call in the chain.
     /// Mirrors RuboCop's `argument_indentation_correct?` + `find_node_used_heredoc_argument`.
@@ -112,10 +122,28 @@ impl HeredocVisitor<'_> {
             )
         };
 
-        self.diagnostics.push(
-            self.cop
-                .diagnostic(self.source, close_line, close_col, message),
-        );
+        let mut diagnostic = self
+            .cop
+            .diagnostic(self.source, close_line, close_col, message);
+
+        // RuboCop aligns the closing delimiter to the opening heredoc indentation.
+        let closing_indent = closing_line_indent;
+        let replacement = if closing_line_text.len() >= closing_indent {
+            let rest = &closing_line_text[closing_indent..];
+            format!("{}{}", " ".repeat(opening_line_indent), String::from_utf8_lossy(rest))
+        } else {
+            format!("{}{}", " ".repeat(opening_line_indent), closing_trimmed)
+        };
+
+        self.corrections.push(Correction {
+            start: closing_loc.start_offset(),
+            end: closing_loc.end_offset(),
+            replacement,
+            cop_name: self.cop.name(),
+            cop_index: 0,
+        });
+        diagnostic.corrected = true;
+        self.diagnostics.push(diagnostic);
     }
 }
 
@@ -198,6 +226,10 @@ mod tests {
     use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(
+        ClosingHeredocIndentation,
+        "cops/layout/closing_heredoc_indentation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         ClosingHeredocIndentation,
         "cops/layout/closing_heredoc_indentation"
     );
