@@ -1,5 +1,6 @@
 use crate::cop::node_type::ARRAY_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -698,6 +699,10 @@ impl Cop for FirstArrayElementIndentation {
         "Layout/FirstArrayElementIndentation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[ARRAY_NODE]
     }
@@ -709,7 +714,7 @@ impl Cop for FirstArrayElementIndentation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let array_node = match node.as_array_node() {
             Some(a) => a,
@@ -844,7 +849,7 @@ impl Cop for FirstArrayElementIndentation {
                         "the start of the line where the left square bracket is"
                     }
                 };
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     elem_line,
                     elem_col,
@@ -852,7 +857,28 @@ impl Cop for FirstArrayElementIndentation {
                         "Use {} spaces for indentation in an array, relative to {}.",
                         width, base_description
                     ),
-                ));
+                );
+                if let Some(corrections) = corrections.as_mut() {
+                    let line_start = source.line_start_offset(elem_line);
+                    let elem_start = first_loc.start_offset();
+                    let current_indent = &source.as_bytes()[line_start..elem_start];
+                    let replacement = if !current_indent.is_empty()
+                        && current_indent.iter().all(|&b| b == b'\t')
+                    {
+                        "\t".repeat(expected_elem)
+                    } else {
+                        " ".repeat(expected_elem)
+                    };
+                    corrections.push(Correction {
+                        start: line_start,
+                        end: elem_start,
+                        replacement,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+                diagnostics.push(diagnostic);
             }
         }
 
@@ -916,7 +942,28 @@ impl Cop for FirstArrayElementIndentation {
                             .to_string()
                     }
                 };
-                diagnostics.push(self.diagnostic(source, close_line, close_col, msg));
+                let mut diagnostic = self.diagnostic(source, close_line, close_col, msg);
+                if let Some(corrections) = corrections.as_mut() {
+                    let line_start = source.line_start_offset(close_line);
+                    let close_start = closing_loc.start_offset();
+                    let current_indent = &source.as_bytes()[line_start..close_start];
+                    let replacement = if !current_indent.is_empty()
+                        && current_indent.iter().all(|&b| b == b'\t')
+                    {
+                        "\t".repeat(indent_base)
+                    } else {
+                        " ".repeat(indent_base)
+                    };
+                    corrections.push(Correction {
+                        start: line_start,
+                        end: close_start,
+                        replacement,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+                diagnostics.push(diagnostic);
             }
         }
     }
@@ -928,6 +975,10 @@ mod tests {
     use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(
+        FirstArrayElementIndentation,
+        "cops/layout/first_array_element_indentation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         FirstArrayElementIndentation,
         "cops/layout/first_array_element_indentation"
     );
