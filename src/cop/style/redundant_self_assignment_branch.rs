@@ -35,6 +35,10 @@ impl Cop for RedundantSelfAssignmentBranch {
         "Style/RedundantSelfAssignmentBranch"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[IF_NODE, LOCAL_VARIABLE_WRITE_NODE]
     }
@@ -46,7 +50,7 @@ impl Cop for RedundantSelfAssignmentBranch {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let write = match node.as_local_variable_write_node() {
             Some(w) => w,
@@ -67,7 +71,7 @@ impl Cop for RedundantSelfAssignmentBranch {
             return;
         }
 
-        self.check_if_node(source, &if_node, var_name, diagnostics);
+        self.check_if_node(source, &if_node, var_name, diagnostics, corrections);
     }
 }
 
@@ -78,6 +82,7 @@ impl RedundantSelfAssignmentBranch {
         if_node: &ruby_prism::IfNode<'_>,
         var_name: &[u8],
         diagnostics: &mut Vec<Diagnostic>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Get the if-branch statements
         let if_stmts = if_node.statements();
@@ -113,12 +118,27 @@ impl RedundantSelfAssignmentBranch {
                 if let Some(read_node) = body.first() {
                     let loc = read_node.location();
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         line,
                         column,
                         "Remove the self-assignment branch.".to_string(),
-                    ));
+                    );
+                    if let Some(replacement) = build_replacement(source, if_node, &else_stmts, "unless")
+                    {
+                        if let Some(corrections) = corrections.as_mut() {
+                            let if_loc = if_node.location();
+                            corrections.push(crate::correction::Correction {
+                                start: if_loc.start_offset(),
+                                end: if_loc.end_offset(),
+                                replacement,
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diagnostic.corrected = true;
+                        }
+                    }
+                    diagnostics.push(diagnostic);
                 }
             }
             return;
@@ -131,16 +151,59 @@ impl RedundantSelfAssignmentBranch {
                 if let Some(read_node) = body.first() {
                     let loc = read_node.location();
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         line,
                         column,
                         "Remove the self-assignment branch.".to_string(),
-                    ));
+                    );
+                    if let Some(replacement) = build_replacement(source, if_node, &if_stmts, "if") {
+                        if let Some(corrections) = corrections.as_mut() {
+                            let if_loc = if_node.location();
+                            corrections.push(crate::correction::Correction {
+                                start: if_loc.start_offset(),
+                                end: if_loc.end_offset(),
+                                replacement,
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diagnostic.corrected = true;
+                        }
+                    }
+                    diagnostics.push(diagnostic);
                 }
             }
         }
     }
+}
+
+fn build_replacement(
+    source: &SourceFile,
+    if_node: &ruby_prism::IfNode<'_>,
+    opposite_branch: &Option<ruby_prism::StatementsNode<'_>>,
+    keyword: &str,
+) -> Option<String> {
+    let condition_loc = if_node.predicate().location();
+    let condition_src = std::str::from_utf8(
+        &source.as_bytes()[condition_loc.start_offset()..condition_loc.end_offset()],
+    )
+    .ok()?
+    .trim();
+
+    let assignment_value = opposite_branch
+        .as_ref()
+        .and_then(|stmts| stmts.body().iter().next())
+        .map(|node| {
+            let loc = node.location();
+            std::str::from_utf8(&source.as_bytes()[loc.start_offset()..loc.end_offset()])
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "nil".to_string());
+
+    Some(format!("{assignment_value} {keyword} {condition_src}"))
 }
 
 fn has_multiple_statements(stmts: &Option<ruby_prism::StatementsNode<'_>>) -> bool {
@@ -172,6 +235,10 @@ fn is_same_var(node: &ruby_prism::Node<'_>, var_name: &[u8]) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        RedundantSelfAssignmentBranch,
+        "cops/style/redundant_self_assignment_branch"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         RedundantSelfAssignmentBranch,
         "cops/style/redundant_self_assignment_branch"
     );
