@@ -5,6 +5,7 @@ use crate::cop::node_type::{
 };
 use crate::cop::util::{assignment_context_base_col, expected_indent_for_body};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -137,6 +138,28 @@ struct MemberStyles<'a> {
 }
 
 impl IndentationWidth {
+    fn push_leading_whitespace_correction(
+        &self,
+        source: &SourceFile,
+        line: usize,
+        start_offset: usize,
+        expected_col: usize,
+        corrections: Option<&mut Vec<Correction>>,
+    ) {
+        let Some(corrections) = corrections else {
+            return;
+        };
+
+        let line_start = source.line_start_offset(line);
+        corrections.push(Correction {
+            start: line_start,
+            end: start_offset,
+            replacement: " ".repeat(expected_col),
+            cop_name: self.name(),
+            cop_index: 0,
+        });
+    }
+
     fn indentation_message(
         &self,
         width: usize,
@@ -165,6 +188,7 @@ impl IndentationWidth {
         member: &ruby_prism::Node<'_>,
         width: usize,
         style_name: Option<&str>,
+        corrections: Option<&mut Vec<Correction>>,
     ) -> Option<Diagnostic> {
         let (base_line, _) = source.offset_to_line_col(base_offset);
         let loc = member.location();
@@ -189,6 +213,13 @@ impl IndentationWidth {
         }
 
         let actual_indent = member_col as isize - base_col as isize;
+        self.push_leading_whitespace_correction(
+            source,
+            member_line,
+            loc.start_offset(),
+            expected,
+            corrections,
+        );
         Some(self.diagnostic(
             source,
             member_line,
@@ -205,6 +236,7 @@ impl IndentationWidth {
         body: Option<ruby_prism::Node<'_>>,
         width: usize,
         styles: MemberStyles<'_>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) -> Vec<Diagnostic> {
         let body = match body {
             Some(body) => body,
@@ -235,13 +267,20 @@ impl IndentationWidth {
                         first,
                         width,
                         None,
+                        corrections.as_deref_mut(),
                     ) {
                         diagnostics.push(diagnostic);
                     }
                 }
-            } else if let Some(diagnostic) =
-                self.check_member_indentation(source, base_offset, base_col, first, width, None)
-            {
+            } else if let Some(diagnostic) = self.check_member_indentation(
+                source,
+                base_offset,
+                base_col,
+                first,
+                width,
+                None,
+                corrections.as_deref_mut(),
+            ) {
                 diagnostics.push(diagnostic);
             }
 
@@ -262,6 +301,7 @@ impl IndentationWidth {
                         member,
                         width,
                         Some("indented_internal_methods"),
+                        corrections.as_deref_mut(),
                     ) {
                         diagnostics.push(diagnostic);
                     }
@@ -272,9 +312,15 @@ impl IndentationWidth {
         }
 
         if is_access_modifier_call(first) && styles.access_modifier != "outdent" {
-            if let Some(diagnostic) =
-                self.check_member_indentation(source, base_offset, base_col, first, width, None)
-            {
+            if let Some(diagnostic) = self.check_member_indentation(
+                source,
+                base_offset,
+                base_col,
+                first,
+                width,
+                None,
+                corrections.as_deref_mut(),
+            ) {
                 diagnostics.push(diagnostic);
             }
         }
@@ -284,9 +330,15 @@ impl IndentationWidth {
                 continue;
             }
 
-            if let Some(diagnostic) =
-                self.check_member_indentation(source, base_offset, base_col, member, width, None)
-            {
+            if let Some(diagnostic) = self.check_member_indentation(
+                source,
+                base_offset,
+                base_col,
+                member,
+                width,
+                None,
+                corrections.as_deref_mut(),
+            ) {
                 diagnostics.push(diagnostic);
             }
         }
@@ -302,6 +354,7 @@ impl IndentationWidth {
         body: Option<ruby_prism::Node<'_>>,
         width: usize,
         access_modifier_style: &str,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) -> Vec<Diagnostic> {
         let body = match body {
             Some(body) => body,
@@ -315,9 +368,15 @@ impl IndentationWidth {
 
         let mut diagnostics = Vec::new();
         if is_access_modifier_call(&members[0]) && access_modifier_style != "outdent" {
-            if let Some(diagnostic) =
-                self.check_member_indentation(source, end_offset, end_col, &members[0], width, None)
-            {
+            if let Some(diagnostic) = self.check_member_indentation(
+                source,
+                end_offset,
+                end_col,
+                &members[0],
+                width,
+                None,
+                corrections.as_deref_mut(),
+            ) {
                 diagnostics.push(diagnostic);
             }
         }
@@ -339,6 +398,7 @@ impl IndentationWidth {
                     member,
                     width,
                     Some("indented_internal_methods"),
+                    corrections.as_deref_mut(),
                 ) {
                     diagnostics.push(diagnostic);
                 }
@@ -358,6 +418,7 @@ impl IndentationWidth {
         base_col: usize,
         body: Option<ruby_prism::Node<'_>>,
         width: usize,
+        corrections: Option<&mut Vec<Correction>>,
     ) -> Vec<Diagnostic> {
         let body = match body {
             Some(b) => b,
@@ -406,6 +467,13 @@ impl IndentationWidth {
 
         if child_col != expected {
             let actual_indent = child_col as isize - base_col as isize;
+            self.push_leading_whitespace_correction(
+                source,
+                child_line,
+                loc.start_offset(),
+                expected,
+                corrections,
+            );
             return vec![self.diagnostic(
                 source,
                 child_line,
@@ -428,6 +496,7 @@ impl IndentationWidth {
         alt_base_col: Option<usize>,
         stmts: Option<ruby_prism::StatementsNode<'_>>,
         width: usize,
+        corrections: Option<&mut Vec<Correction>>,
     ) -> Vec<Diagnostic> {
         let stmts = match stmts {
             Some(s) => s,
@@ -474,6 +543,13 @@ impl IndentationWidth {
                 }
             }
             let actual_indent = child_col as isize - base_col as isize;
+            self.push_leading_whitespace_correction(
+                source,
+                child_line,
+                loc.start_offset(),
+                expected,
+                corrections,
+            );
             return vec![self.diagnostic(
                 source,
                 child_line,
@@ -497,6 +573,7 @@ impl IndentationWidth {
         begin_node: &ruby_prism::BeginNode<'_>,
         width: usize,
         diagnostics: &mut Vec<Diagnostic>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         // Check rescue clause(s)
         let mut rescue_opt = begin_node.rescue_clause();
@@ -510,6 +587,7 @@ impl IndentationWidth {
                 None,
                 rescue_node.statements(),
                 width,
+                corrections.as_deref_mut(),
             ));
             rescue_opt = rescue_node.subsequent();
         }
@@ -525,6 +603,7 @@ impl IndentationWidth {
                 None,
                 else_clause.statements(),
                 width,
+                corrections.as_deref_mut(),
             ));
         }
 
@@ -539,6 +618,7 @@ impl IndentationWidth {
                 None,
                 ensure_node.statements(),
                 width,
+                corrections.as_deref_mut(),
             ));
         }
     }
@@ -552,6 +632,7 @@ impl IndentationWidth {
         else_node: &ruby_prism::ElseNode<'_>,
         width: usize,
         diagnostics: &mut Vec<Diagnostic>,
+        corrections: Option<&mut Vec<Correction>>,
     ) {
         let kw_offset = else_node.else_keyword_loc().start_offset();
         let (_, kw_col) = source.offset_to_line_col(kw_offset);
@@ -562,6 +643,7 @@ impl IndentationWidth {
             None,
             else_node.statements(),
             width,
+            corrections,
         ));
     }
 }
@@ -569,6 +651,10 @@ impl IndentationWidth {
 impl Cop for IndentationWidth {
     fn name(&self) -> &'static str {
         "Layout/IndentationWidth"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -599,8 +685,9 @@ impl Cop for IndentationWidth {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        let mut corrections = corrections;
         let width = config.get_usize("Width", 2);
         let align_style = config.get_str("EnforcedStyleAlignWith", "start_of_line");
         let consistency_style = config.get_str("IndentationConsistencyStyle", "normal");
@@ -653,9 +740,16 @@ impl Cop for IndentationWidth {
                     alt_base,
                     begin_node.statements(),
                     width,
+                    corrections.as_deref_mut(),
                 ));
                 // Check rescue/ensure/else clauses (these bypass the walker)
-                self.check_begin_clauses(source, &begin_node, width, diagnostics);
+                self.check_begin_clauses(
+                    source,
+                    &begin_node,
+                    width,
+                    diagnostics,
+                    corrections.as_deref_mut(),
+                );
             }
             // Implicit BeginNode (e.g., `def...rescue...end`) — clauses are
             // checked by the parent DefNode handler, skip here to avoid dupes.
@@ -675,6 +769,7 @@ impl Cop for IndentationWidth {
                     access_modifier: access_modifier_style,
                     consistency: consistency_style,
                 },
+                corrections.as_deref_mut(),
             ));
             return;
         }
@@ -692,6 +787,7 @@ impl Cop for IndentationWidth {
                     access_modifier: access_modifier_style,
                     consistency: consistency_style,
                 },
+                corrections.as_deref_mut(),
             ));
             return;
         }
@@ -709,6 +805,7 @@ impl Cop for IndentationWidth {
                     access_modifier: access_modifier_style,
                     consistency: consistency_style,
                 },
+                corrections.as_deref_mut(),
             ));
             return;
         }
@@ -733,12 +830,19 @@ impl Cop for IndentationWidth {
                 base_col,
                 def_node.body(),
                 width,
+                corrections.as_deref_mut(),
             ));
             // For `def...rescue...end`, the body is an implicit BeginNode.
             // Check its rescue/ensure/else clauses.
             if let Some(body) = def_node.body() {
                 if let Some(begin_node) = body.as_begin_node() {
-                    self.check_begin_clauses(source, &begin_node, width, diagnostics);
+                    self.check_begin_clauses(
+                        source,
+                        &begin_node,
+                        width,
+                        diagnostics,
+                        corrections.as_deref_mut(),
+                    );
                 }
             }
             return;
@@ -771,12 +875,19 @@ impl Cop for IndentationWidth {
                     alt_base,
                     if_node.statements(),
                     width,
+                    corrections.as_deref_mut(),
                 ));
                 // Check else body (ElseNode bypasses the walker).
                 // elsif is another IfNode that will be visited directly.
                 if let Some(subsequent) = if_node.subsequent() {
                     if let Some(else_node) = subsequent.as_else_node() {
-                        self.check_else_clause(source, &else_node, width, diagnostics);
+                        self.check_else_clause(
+                            source,
+                            &else_node,
+                            width,
+                            diagnostics,
+                            corrections.as_deref_mut(),
+                        );
                     }
                 }
                 return;
@@ -793,10 +904,17 @@ impl Cop for IndentationWidth {
                 None,
                 unless_node.statements(),
                 width,
+                corrections.as_deref_mut(),
             ));
             // Check else clause (ElseNode bypasses the walker)
             if let Some(else_clause) = unless_node.else_clause() {
-                self.check_else_clause(source, &else_clause, width, diagnostics);
+                self.check_else_clause(
+                    source,
+                    &else_clause,
+                    width,
+                    diagnostics,
+                    corrections.as_deref_mut(),
+                );
             }
             return;
         }
@@ -812,6 +930,7 @@ impl Cop for IndentationWidth {
                 None,
                 for_node.statements(),
                 width,
+                corrections.as_deref_mut(),
             ));
             return;
         }
@@ -885,6 +1004,7 @@ impl Cop for IndentationWidth {
                         base_col,
                         block.body(),
                         width,
+                        corrections.as_deref_mut(),
                     ));
                     if consistency_style == "indented_internal_methods"
                         && body_contains_access_modifier(block.body())
@@ -896,6 +1016,7 @@ impl Cop for IndentationWidth {
                             block.body(),
                             width,
                             access_modifier_style,
+                            corrections.as_deref_mut(),
                         ));
                     }
                     return;
@@ -931,6 +1052,7 @@ impl Cop for IndentationWidth {
                 None,
                 when_node.statements(),
                 width,
+                corrections.as_deref_mut(),
             ));
             return;
         }
@@ -938,7 +1060,13 @@ impl Cop for IndentationWidth {
         // Check else clause on case/when (ElseNode bypasses the walker)
         if let Some(case_node) = node.as_case_node() {
             if let Some(else_clause) = case_node.else_clause() {
-                self.check_else_clause(source, &else_clause, width, diagnostics);
+                self.check_else_clause(
+                    source,
+                    &else_clause,
+                    width,
+                    diagnostics,
+                    corrections.as_deref_mut(),
+                );
             }
             return;
         }
@@ -946,7 +1074,13 @@ impl Cop for IndentationWidth {
         // Check else clause on case/in pattern matching
         if let Some(case_match_node) = node.as_case_match_node() {
             if let Some(else_clause) = case_match_node.else_clause() {
-                self.check_else_clause(source, &else_clause, width, diagnostics);
+                self.check_else_clause(
+                    source,
+                    &else_clause,
+                    width,
+                    diagnostics,
+                    corrections.as_deref_mut(),
+                );
             }
             return;
         }
@@ -973,6 +1107,7 @@ impl Cop for IndentationWidth {
                 alt_base,
                 while_node.statements(),
                 width,
+                corrections.as_deref_mut(),
             ));
             return;
         }
@@ -999,6 +1134,7 @@ impl Cop for IndentationWidth {
                 alt_base,
                 until_node.statements(),
                 width,
+                corrections.as_deref_mut(),
             ));
         }
     }
@@ -1007,9 +1143,26 @@ impl Cop for IndentationWidth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::run_cop_full_with_config;
+    use crate::correction::CorrectionSet;
+    use crate::testutil::{run_cop_autocorrect, run_cop_full_with_config};
 
     crate::cop_fixture_tests!(IndentationWidth, "cops/layout/indentation_width");
+
+    #[test]
+    fn autocorrect_rewrites_leading_whitespace_for_simple_body_offense() {
+        let source = b"def foo\n x = 1\nend\n";
+        let (_diags, corrections) = run_cop_autocorrect(&IndentationWidth, source);
+        let corrected = CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"def foo\n  x = 1\nend\n");
+    }
+
+    #[test]
+    fn autocorrect_rewrites_else_clause_indentation() {
+        let source = b"if cond\n  ok\nelse\n bad\nend\n";
+        let (_diags, corrections) = run_cop_autocorrect(&IndentationWidth, source);
+        let corrected = CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"if cond\n  ok\nelse\n  bad\nend\n");
+    }
 
     #[test]
     fn custom_width() {
