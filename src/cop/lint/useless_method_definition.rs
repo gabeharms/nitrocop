@@ -62,6 +62,7 @@ impl Cop for UselessMethodDefinition {
             diagnostics: Vec::new(),
             corrections,
             inside_non_access_modifier_call: false,
+            access_modifier_call_range: None,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -77,6 +78,10 @@ struct UselessMethodVisitor<'a, 'src> {
     /// (e.g., `memoize def foo; super; end`). DefNodes in this context should
     /// not be flagged.
     inside_non_access_modifier_call: bool,
+    /// When inside an access modifier call (e.g., `private def foo`), stores
+    /// the call node's location range so the correction can remove the entire
+    /// `private def foo...end` expression, not just the `def...end` part.
+    access_modifier_call_range: Option<(usize, usize)>,
 }
 
 impl<'pr> Visit<'pr> for UselessMethodVisitor<'_, '_> {
@@ -96,6 +101,12 @@ impl<'pr> Visit<'pr> for UselessMethodVisitor<'_, '_> {
             self.inside_non_access_modifier_call = true;
             ruby_prism::visit_call_node(self, node);
             self.inside_non_access_modifier_call = prev;
+        } else if !is_non_access_modifier && has_def_argument(node) {
+            let loc = node.location();
+            let prev = self.access_modifier_call_range;
+            self.access_modifier_call_range = Some((loc.start_offset(), loc.end_offset()));
+            ruby_prism::visit_call_node(self, node);
+            self.access_modifier_call_range = prev;
         } else {
             ruby_prism::visit_call_node(self, node);
         }
@@ -184,10 +195,26 @@ impl UselessMethodVisitor<'_, '_> {
         );
 
         if let Some(corrections) = self.corrections.as_deref_mut() {
-            let loc = def_node.location();
+            // Use the access modifier call range if present (e.g., `private def foo...end`)
+            // so the entire expression is removed, not just the `def...end`.
+            let (raw_start, raw_end) = self.access_modifier_call_range.unwrap_or_else(|| {
+                let loc = def_node.location();
+                (loc.start_offset(), loc.end_offset())
+            });
+            let bytes = self.source.as_bytes();
+            // Extend start backwards to consume leading whitespace on the line
+            let mut start = raw_start;
+            while start > 0 && (bytes[start - 1] == b' ' || bytes[start - 1] == b'\t') {
+                start -= 1;
+            }
+            // Extend end forwards to consume trailing newline
+            let mut end = raw_end;
+            if end < bytes.len() && bytes[end] == b'\n' {
+                end += 1;
+            }
             corrections.push(crate::correction::Correction {
-                start: loc.start_offset(),
-                end: loc.end_offset(),
+                start,
+                end,
                 replacement: "".to_string(),
                 cop_name: self.cop.name(),
                 cop_index: 0,

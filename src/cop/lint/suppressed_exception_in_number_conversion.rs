@@ -188,6 +188,12 @@ fn is_numeric_constructor(node: &ruby_prism::Node<'_>) -> bool {
 
 fn build_preferred(call: &ruby_prism::CallNode<'_>, source: &SourceFile) -> String {
     let method_name = std::str::from_utf8(call.name().as_slice()).unwrap_or("Integer");
+    let prefix = if let Some(recv) = call.receiver() {
+        let src = &source.as_bytes()[recv.location().start_offset()..recv.location().end_offset()];
+        format!("{}.", std::str::from_utf8(src).unwrap_or("Kernel"))
+    } else {
+        String::new()
+    };
     let mut args_parts: Vec<String> = Vec::new();
 
     if let Some(args) = call.arguments() {
@@ -199,7 +205,7 @@ fn build_preferred(call: &ruby_prism::CallNode<'_>, source: &SourceFile) -> Stri
     }
     args_parts.push("exception: false".to_string());
 
-    format!("{}({})", method_name, args_parts.join(", "))
+    format!("{}{}({})", prefix, method_name, args_parts.join(", "))
 }
 
 fn is_rescue_nil_or_empty(rescue_node: &ruby_prism::RescueNode<'_>) -> bool {
