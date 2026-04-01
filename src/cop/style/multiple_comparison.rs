@@ -32,15 +32,34 @@ use crate::parse::source::SourceFile;
 /// - After processing a root OrNode, manually flatten its || chain and
 ///   visit non-Or leaf children for independent nested OrNodes, instead of
 ///   using `inside_or` flag which incorrectly blocked OrNodes inside `&&`.
+///
+/// ## Autocorrect strategy (2026-04-01)
+///
+/// RuboCop autocorrect rewrites offense ranges to `[values].include?(var)`.
+/// To stay conservative and avoid semantic changes, nitrocop autocorrect only
+/// applies when every comparison in the offending `||` chain contributes a
+/// concrete value (no skipped `lvar == lvar` and no AllowMethodComparison
+/// `value.call` skips). Mixed chains are still diagnosed but left uncorrected.
 pub struct MultipleComparison;
 
 /// Result of analyzing a single `==` comparison.
 enum ComparisonResult {
     /// A valid comparison: variable source bytes and whether it counts.
     /// count=0 means skipped (e.g., AllowMethodComparison), count=1 means counted.
-    Valid { var_src: Vec<u8>, count: usize },
+    Valid {
+        var_src: Vec<u8>,
+        value_src: Option<Vec<u8>>,
+        count: usize,
+    },
     /// Both sides are local variables — skip but don't break chain.
     DoubleVar,
+}
+
+struct AutocorrectChain {
+    var_src: Vec<u8>,
+    count: usize,
+    values: Vec<Vec<u8>>,
+    has_skipped_comparison: bool,
 }
 
 impl MultipleComparison {
@@ -93,13 +112,81 @@ impl MultipleComparison {
 
                 let result = Self::classify_comparison(&lhs, rhs, allow_method)?;
                 return match result {
-                    ComparisonResult::Valid { var_src, count } => Some((var_src, count)),
+                    ComparisonResult::Valid { var_src, count, .. } => Some((var_src, count)),
                     // simple_double_comparison: both sides are lvars — skip but keep chain alive
                     // Return a dummy variable with count 0 so the chain continues
                     ComparisonResult::DoubleVar => Some((lhs.location().as_slice().to_vec(), 0)),
                 };
             }
         }
+        None
+    }
+
+    /// Conservative autocorrect collector.
+    ///
+    /// Returns enough data to rewrite an `||` chain to `[values].include?(var)`
+    /// when all comparisons in the chain are representable.
+    fn collect_autocorrect_chain<'a>(
+        node: &'a ruby_prism::Node<'a>,
+        allow_method: bool,
+    ) -> Option<AutocorrectChain> {
+        if let Some(or_node) = node.as_or_node() {
+            let lhs = Self::collect_autocorrect_chain(&or_node.left(), allow_method)?;
+            let rhs = Self::collect_autocorrect_chain(&or_node.right(), allow_method)?;
+
+            if lhs.var_src == rhs.var_src {
+                let mut values = lhs.values;
+                values.extend(rhs.values);
+                return Some(AutocorrectChain {
+                    var_src: lhs.var_src,
+                    count: lhs.count + rhs.count,
+                    values,
+                    has_skipped_comparison: lhs.has_skipped_comparison || rhs.has_skipped_comparison,
+                });
+            }
+
+            if lhs.count == 0 {
+                return Some(rhs);
+            }
+            if rhs.count == 0 {
+                return Some(lhs);
+            }
+            return None;
+        }
+
+        if let Some(call) = node.as_call_node() {
+            if call.name().as_slice() != b"==" {
+                return None;
+            }
+            let lhs = call.receiver()?;
+            let rhs_args = call.arguments()?;
+            let rhs_list: Vec<_> = rhs_args.arguments().iter().collect();
+            if rhs_list.len() != 1 {
+                return None;
+            }
+            let rhs = &rhs_list[0];
+
+            let result = Self::classify_comparison(&lhs, rhs, allow_method)?;
+            return match result {
+                ComparisonResult::Valid {
+                    var_src,
+                    value_src,
+                    count,
+                } => Some(AutocorrectChain {
+                    var_src,
+                    count,
+                    values: value_src.into_iter().collect(),
+                    has_skipped_comparison: count == 0,
+                }),
+                ComparisonResult::DoubleVar => Some(AutocorrectChain {
+                    var_src: lhs.location().as_slice().to_vec(),
+                    count: 0,
+                    values: Vec::new(),
+                    has_skipped_comparison: true,
+                }),
+            };
+        }
+
         None
     }
 
@@ -137,9 +224,17 @@ impl MultipleComparison {
             }
 
             if allow_method && value_is_call {
-                return Some(ComparisonResult::Valid { var_src, count: 0 });
+                return Some(ComparisonResult::Valid {
+                    var_src,
+                    value_src: None,
+                    count: 0,
+                });
             }
-            return Some(ComparisonResult::Valid { var_src, count: 1 });
+            return Some(ComparisonResult::Valid {
+                var_src,
+                value_src: Some(rhs.location().as_slice().to_vec()),
+                count: 1,
+            });
         }
 
         // Try simple_comparison_rhs: (send $_ :== {lvar call})
@@ -152,9 +247,17 @@ impl MultipleComparison {
             }
 
             if allow_method && value_is_call {
-                return Some(ComparisonResult::Valid { var_src, count: 0 });
+                return Some(ComparisonResult::Valid {
+                    var_src,
+                    value_src: None,
+                    count: 0,
+                });
             }
-            return Some(ComparisonResult::Valid { var_src, count: 1 });
+            return Some(ComparisonResult::Valid {
+                var_src,
+                value_src: Some(lhs.location().as_slice().to_vec()),
+                count: 1,
+            });
         }
 
         // Neither side is an lvar or call — not a matchable comparison
@@ -163,9 +266,9 @@ impl MultipleComparison {
 
     /// Recursively visit non-OrNode leaf nodes from an || chain.
     /// This flattens the chain and visits each leaf with the given visitor.
-    fn visit_or_leaves<'a>(
+    fn visit_or_leaves<'a, 'b>(
         node: &ruby_prism::Node<'a>,
-        visitor: &mut MultipleComparisonVisitor<'a>,
+        visitor: &mut MultipleComparisonVisitor<'a, 'b>,
     ) {
         if let Some(or_node) = node.as_or_node() {
             let lhs = or_node.left();
@@ -183,6 +286,10 @@ impl Cop for MultipleComparison {
         "Style/MultipleComparison"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -190,7 +297,7 @@ impl Cop for MultipleComparison {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allow_method = config.get_bool("AllowMethodComparison", true);
         let threshold = config.get_usize("ComparisonsThreshold", 2);
@@ -201,21 +308,23 @@ impl Cop for MultipleComparison {
             allow_method,
             threshold,
             diagnostics: Vec::new(),
+            corrections,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
     }
 }
 
-struct MultipleComparisonVisitor<'a> {
+struct MultipleComparisonVisitor<'a, 'b> {
     cop: &'a MultipleComparison,
     source: &'a SourceFile,
     allow_method: bool,
     threshold: usize,
     diagnostics: Vec<Diagnostic>,
+    corrections: Option<&'b mut Vec<crate::correction::Correction>>,
 }
 
-impl MultipleComparisonVisitor<'_> {
+impl MultipleComparisonVisitor<'_, '_> {
     /// Check if the lhs and rhs of an OrNode form a chain of only `==` comparisons.
     /// Matches RuboCop's `nested_comparison?` check.
     fn nested_comparison_or<'a>(
@@ -238,7 +347,7 @@ impl MultipleComparisonVisitor<'_> {
     }
 }
 
-impl<'a> Visit<'a> for MultipleComparisonVisitor<'a> {
+impl<'a, 'b> Visit<'a> for MultipleComparisonVisitor<'a, 'b> {
     fn visit_or_node(&mut self, node: &ruby_prism::OrNode<'a>) {
         let lhs = node.left();
         let rhs = node.right();
@@ -268,12 +377,42 @@ impl<'a> Visit<'a> for MultipleComparisonVisitor<'a> {
                 if count >= self.threshold {
                     let loc = node.location();
                     let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                    self.diagnostics.push(self.cop.diagnostic(
+                    let mut diag = self.cop.diagnostic(
                         self.source,
                         line,
                         column,
                         "Avoid comparing a variable with multiple items in a conditional, use `Array#include?` instead.".to_string(),
-                    ));
+                    );
+
+                    if let Some(corrections) = self.corrections.as_mut() {
+                        if let Some(chain) =
+                            MultipleComparison::collect_autocorrect_chain(&node.as_node(), self.allow_method)
+                        {
+                            if chain.count >= self.threshold
+                                && !chain.has_skipped_comparison
+                                && !chain.values.is_empty()
+                            {
+                                let values = chain
+                                    .values
+                                    .iter()
+                                    .map(|v| String::from_utf8_lossy(v).to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let var = String::from_utf8_lossy(&chain.var_src);
+                                let replacement = format!("[{}].include?({})", values, var);
+                                corrections.push(crate::correction::Correction {
+                                    start: loc.start_offset(),
+                                    end: loc.end_offset(),
+                                    replacement,
+                                    cop_name: self.cop.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                        }
+                    }
+
+                    self.diagnostics.push(diag);
                 }
             }
 
@@ -292,4 +431,5 @@ impl<'a> Visit<'a> for MultipleComparisonVisitor<'a> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(MultipleComparison, "cops/style/multiple_comparison");
+    crate::cop_autocorrect_fixture_tests!(MultipleComparison, "cops/style/multiple_comparison");
 }
