@@ -1,6 +1,6 @@
 use crate::cop::node_type::DEF_NODE;
-use crate::cop::util;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -22,7 +22,7 @@ use crate::parse::source::SourceFile;
 /// `protected (def bar ...` (FN), `false && def ...` (FN), `module X;def ...` (FN).
 ///
 /// FP investigation (2026-03-25): 2 FPs from `foodcoops__foodsoft` caused by line
-/// continuations before `def` (e.g., `helper_method \\\n  def foo`). The `def` appears
+/// continuations before `def` (e.g., `helper_method \\n  def foo`). The `def` appears
 /// on its own line with only whitespace before it, so `is_modifier_prefix` returned
 /// true and `check_keyword_end_alignment` aligned `end` with `def`'s line. But since
 /// the previous line ends with `\`, the `def` is an argument to the method call on
@@ -62,7 +62,7 @@ fn is_modifier_prefix(source: &SourceFile, def_kw_offset: usize) -> bool {
 
 /// Find the offset of the real statement start when line continuations (`\`) are involved.
 /// If the line before `def` ends with `\`, the `def` is part of a larger expression that
-/// started on an earlier line (e.g., `helper_method \\\n  def foo`). This traces back
+/// started on an earlier line (e.g., `helper_method \\n  def foo`). This traces back
 /// through any chain of continuation lines and returns the offset of the first line's
 /// first non-whitespace character. Returns `None` if there is no line continuation.
 fn find_continuation_start(source: &SourceFile, def_kw_offset: usize) -> Option<usize> {
@@ -110,9 +110,58 @@ fn find_continuation_start(source: &SourceFile, def_kw_offset: usize) -> Option<
     Some(pos)
 }
 
+fn first_non_ws_col_on_line(source: &SourceFile, offset: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut line_start = offset;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+    let mut pos = line_start;
+    while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
+        pos += 1;
+    }
+    let (_, col) = source.offset_to_line_col(pos);
+    col
+}
+
+impl DefEndAlignment {
+    fn push_end_alignment_offense(
+        &self,
+        source: &SourceFile,
+        end_line: usize,
+        end_col: usize,
+        expected_col: usize,
+        diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<Correction>>,
+    ) {
+        let mut diagnostic = self.diagnostic(
+            source,
+            end_line,
+            end_col,
+            "Align `end` with `def`.".to_string(),
+        );
+        if let Some(corrections) = corrections.as_mut() {
+            let line_start = source.line_start_offset(end_line);
+            corrections.push(Correction {
+                start: line_start,
+                end: line_start + end_col,
+                replacement: " ".repeat(expected_col),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+        diagnostics.push(diagnostic);
+    }
+}
+
 impl Cop for DefEndAlignment {
     fn name(&self) -> &'static str {
         "Layout/DefEndAlignment"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -126,7 +175,7 @@ impl Cop for DefEndAlignment {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let style = config.get_str("EnforcedStyleAlignWith", "start_of_line");
         let def_node = match node.as_def_node() {
@@ -142,64 +191,38 @@ impl Cop for DefEndAlignment {
 
         // Skip single-line defs (e.g., `def foo; 42; end`)
         let def_kw_offset = def_node.def_keyword_loc().start_offset();
-        let (def_line, _) = source.offset_to_line_col(def_kw_offset);
+        let (def_line, def_col) = source.offset_to_line_col(def_kw_offset);
         let (end_line, end_col) = source.offset_to_line_col(end_kw_loc.start_offset());
         if def_line == end_line {
             return;
         }
 
-        match style {
-            "def" => {
-                // Align `end` with `def` keyword
-                let (_, def_col) = source.offset_to_line_col(def_kw_offset);
-                if end_col != def_col {
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        end_line,
-                        end_col,
-                        "Align `end` with `def`.".to_string(),
-                    ));
-                }
-            }
+        let expected_col = match style {
+            "def" => def_col,
             _ => {
                 // "start_of_line" (default): RuboCop's on_def always aligns end with
-                // the def keyword. The start_of_line vs def distinction only applies
-                // in on_send for modifier methods. Detect modifier prefixes (e.g.,
-                // `private def`) and align with line start; for non-modifier mid-line
-                // defs (e.g., `class X;def` or `false && def`), align with def keyword.
-                //
-                // Line continuations: `helper_method \\\n  def foo` means `def` is part
-                // of a method call expression. Align `end` with the statement start
-                // (the first line of the continuation chain), not the `def` line.
+                // the def keyword line's first non-whitespace in modifier/continuation
+                // contexts, and with the def column for non-modifier mid-line defs.
                 if let Some(stmt_start_offset) = find_continuation_start(source, def_kw_offset) {
-                    diagnostics.extend(util::check_keyword_end_alignment(
-                        self.name(),
-                        source,
-                        "def",
-                        stmt_start_offset,
-                        end_kw_loc.start_offset(),
-                    ));
+                    first_non_ws_col_on_line(source, stmt_start_offset)
                 } else if is_modifier_prefix(source, def_kw_offset) {
-                    diagnostics.extend(util::check_keyword_end_alignment(
-                        self.name(),
-                        source,
-                        "def",
-                        def_kw_offset,
-                        end_kw_loc.start_offset(),
-                    ));
+                    first_non_ws_col_on_line(source, def_kw_offset)
                 } else {
                     // Non-modifier mid-line def: align end with def keyword
-                    let (_, def_col) = source.offset_to_line_col(def_kw_offset);
-                    if end_col != def_col {
-                        diagnostics.push(self.diagnostic(
-                            source,
-                            end_line,
-                            end_col,
-                            "Align `end` with `def`.".to_string(),
-                        ));
-                    }
+                    def_col
                 }
             }
+        };
+
+        if end_col != expected_col {
+            self.push_end_alignment_offense(
+                source,
+                end_line,
+                end_col,
+                expected_col,
+                diagnostics,
+                &mut corrections,
+            );
         }
     }
 }
@@ -210,6 +233,7 @@ mod tests {
     use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(DefEndAlignment, "cops/layout/def_end_alignment");
+    crate::cop_autocorrect_fixture_tests!(DefEndAlignment, "cops/layout/def_end_alignment");
 
     #[test]
     fn endless_method_no_offense() {
