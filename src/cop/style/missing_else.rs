@@ -35,6 +35,10 @@ impl Cop for MissingElse {
         "Style/MissingElse"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false // Matches vendor config/default.yml: Enabled: false
     }
@@ -46,7 +50,7 @@ impl Cop for MissingElse {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "both");
         let unless_else_enabled = config.get_bool("UnlessElseEnabled", true);
@@ -61,10 +65,15 @@ impl Cop for MissingElse {
             style,
             unless_else_enabled,
             empty_else_style,
+            autocorrect_enabled: corrections.is_some(),
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = corrections {
+            corrections.extend(visitor.corrections);
+        }
     }
 }
 
@@ -82,7 +91,9 @@ struct MissingElseVisitor<'a> {
     style: &'a str,
     unless_else_enabled: bool,
     empty_else_style: &'a str,
+    autocorrect_enabled: bool,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
 }
 
 impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
@@ -135,6 +146,13 @@ impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
                             column,
                             make_message(self.empty_else_style, "if"),
                         ));
+
+                        if self.autocorrect_enabled {
+                            self.push_else_clause_if_missing(
+                                node.location().start_offset(),
+                                node.end_keyword_loc().map(|loc| loc.start_offset()),
+                            );
+                        }
                     }
                 } else if kw == b"unless" && node.end_keyword_loc().is_some() {
                     // unless without else — only flag when Style/UnlessElse is disabled
@@ -148,6 +166,13 @@ impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
                             column,
                             make_message(self.empty_else_style, "if"),
                         ));
+
+                        if self.autocorrect_enabled {
+                            self.push_else_clause_if_missing(
+                                node.location().start_offset(),
+                                node.end_keyword_loc().map(|loc| loc.start_offset()),
+                            );
+                        }
                     }
                 }
                 // elsif nodes: don't visit independently — handled by the
@@ -175,6 +200,13 @@ impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
                 column,
                 make_message(self.empty_else_style, "case"),
             ));
+
+            if self.autocorrect_enabled {
+                self.push_else_clause_if_missing(
+                    node.location().start_offset(),
+                    Some(node.end_keyword_loc().start_offset()),
+                );
+            }
         }
 
         // Visit children
@@ -194,8 +226,36 @@ impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
     // NoMatchingPatternError if no branch matches, so an else is not required.
 }
 
+impl MissingElseVisitor<'_> {
+    fn push_else_clause_if_missing(&mut self, node_start: usize, end_start: Option<usize>) {
+        let Some(end_start) = end_start else {
+            return;
+        };
+
+        let (_, column) = self.source.offset_to_line_col(node_start);
+        let (end_line, _) = self.source.offset_to_line_col(end_start);
+        let insertion_start = self.source.line_start_offset(end_line);
+
+        let indent = " ".repeat(column);
+        let else_clause = if self.empty_else_style == "empty" {
+            format!("{indent}else\n{indent}  nil\n")
+        } else {
+            format!("{indent}else\n")
+        };
+
+        self.corrections.push(crate::correction::Correction {
+            start: insertion_start,
+            end: insertion_start,
+            replacement: else_clause,
+            cop_name: self.cop.name(),
+            cop_index: 0,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(MissingElse, "cops/style/missing_else");
+    crate::cop_autocorrect_fixture_tests!(MissingElse, "cops/style/missing_else");
 }
