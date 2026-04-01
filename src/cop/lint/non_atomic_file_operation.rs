@@ -253,6 +253,10 @@ impl Cop for NonAtomicFileOperation {
         "Lint/NonAtomicFileOperation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -268,7 +272,7 @@ impl Cop for NonAtomicFileOperation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Extract condition, body, and else-branch presence from if/unless nodes
         let (condition, body, has_else) = if let Some(if_node) = node.as_if_node() {
@@ -349,18 +353,82 @@ impl Cop for NonAtomicFileOperation {
             return;
         }
 
+        // Conservative autocorrect: rewrite the whole if/unless expression to the body file op.
+        // Skip elsif nodes because replacing their span can corrupt the surrounding if chain.
+        let file_op_has_force_option = has_force_option(&file_op_call);
+        let should_emit_atomic_offense = !is_force_method(method) && !file_op_has_force_option;
+        let keyword_loc = if let Some(if_node) = node.as_if_node() {
+            if_node.if_keyword_loc()
+        } else if let Some(unless_node) = node.as_unless_node() {
+            Some(unless_node.keyword_loc())
+        } else {
+            None
+        };
+
+        let mut did_autocorrect = false;
+        if let (Some(keyword_loc), Some(corrections_vec)) = (keyword_loc, corrections.as_mut()) {
+            // `if` / `unless` only; skip `elsif`.
+            if keyword_loc.as_slice() == b"if" || keyword_loc.as_slice() == b"unless" {
+                let replacement = if should_emit_atomic_offense {
+                    let args = file_op_call
+                        .arguments()
+                        .map(|a| {
+                            a.arguments()
+                                .iter()
+                                .map(|arg| {
+                                    source
+                                        .byte_slice(
+                                            arg.location().start_offset(),
+                                            arg.location().end_offset(),
+                                            "arg",
+                                        )
+                                        .to_string()
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    let method = replacement_method(method);
+                    if args.is_empty() {
+                        format!("FileUtils.{method}")
+                    } else {
+                        format!("FileUtils.{method}({args})")
+                    }
+                } else {
+                    source
+                        .byte_slice(
+                            file_op_call.location().start_offset(),
+                            file_op_call.location().end_offset(),
+                            "file op call",
+                        )
+                        .to_string()
+                };
+
+                corrections_vec.push(crate::correction::Correction {
+                    start: node.location().start_offset(),
+                    end: node.location().end_offset(),
+                    replacement,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                did_autocorrect = true;
+            }
+        }
+
         // Emit offense on file operation (only for non-force methods/options)
         // RuboCop treats `force: true` option the same as force method names
-        if !is_force_method(method) && !has_force_option(&file_op_call) {
+        if should_emit_atomic_offense {
             let replacement = replacement_method(method);
             let loc = file_op_call.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 format!("Use atomic file operation method `FileUtils.{replacement}`."),
-            ));
+            );
+            diag.corrected = did_autocorrect;
+            diagnostics.push(diag);
         }
 
         // Emit offense on the existence check condition
@@ -382,12 +450,14 @@ impl Cop for NonAtomicFileOperation {
         let recv_str = std::str::from_utf8(&exist_info.recv_name).unwrap_or("File");
         let method_str = std::str::from_utf8(&exist_info.method_name).unwrap_or("exist?");
 
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             format!("Remove unnecessary existence check `{recv_str}.{method_str}`."),
-        ));
+        );
+        diag.corrected = did_autocorrect;
+        diagnostics.push(diag);
     }
 }
 
@@ -395,6 +465,10 @@ impl Cop for NonAtomicFileOperation {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        NonAtomicFileOperation,
+        "cops/lint/non_atomic_file_operation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         NonAtomicFileOperation,
         "cops/lint/non_atomic_file_operation"
     );
