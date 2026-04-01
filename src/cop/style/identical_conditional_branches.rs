@@ -301,6 +301,150 @@ impl IdenticalConditionalBranches {
             diagnostics.push(self.diagnostic(source, *line, *col, msg.clone()));
         }
     }
+
+    /// Conservative whole-node autocorrect for a simple `if/else` tail case:
+    ///
+    /// ```ruby
+    /// if cond
+    ///   a
+    ///   z
+    /// else
+    ///   b
+    ///   z
+    /// end
+    /// ```
+    ///
+    /// becomes:
+    ///
+    /// ```ruby
+    /// if cond
+    ///   a
+    /// else
+    ///   b
+    /// end
+    /// z
+    /// ```
+    fn simple_if_tail_autocorrect(
+        &self,
+        source: &SourceFile,
+        if_node: &ruby_prism::IfNode<'_>,
+    ) -> Option<crate::correction::Correction> {
+        // Only support plain `if ... else` (no elsif chain, no modifier/ternary).
+        let if_kw = if_node.if_keyword_loc()?;
+        if if_kw.as_slice() != b"if" {
+            return None;
+        }
+        if if_node.end_keyword_loc().is_none() {
+            return None;
+        }
+
+        let subsequent = if_node.subsequent()?;
+        let else_node = subsequent.as_else_node()?;
+
+        let if_stmts = if_node.statements()?;
+        let else_stmts = else_node.statements()?;
+
+        let if_body: Vec<_> = if_stmts.body().iter().collect();
+        let else_body: Vec<_> = else_stmts.body().iter().collect();
+
+        // Conservative subset: exactly two statements in each branch.
+        if if_body.len() != 2 || else_body.len() != 2 {
+            return None;
+        }
+
+        let if_first = &if_body[0];
+        let if_tail = &if_body[1];
+        let else_first = &else_body[0];
+        let else_tail = &else_body[1];
+
+        // Keep to single-line statement slices for deterministic reconstruction.
+        let if_first_loc = if_first.location();
+        let if_tail_loc = if_tail.location();
+        let else_first_loc = else_first.location();
+        let else_tail_loc = else_tail.location();
+
+        let (if_first_line, _) = source.offset_to_line_col(if_first_loc.start_offset());
+        let (if_first_end_line, _) = source.offset_to_line_col(if_first_loc.end_offset());
+        let (if_tail_line, _) = source.offset_to_line_col(if_tail_loc.start_offset());
+        let (if_tail_end_line, _) = source.offset_to_line_col(if_tail_loc.end_offset());
+        let (else_first_line, _) = source.offset_to_line_col(else_first_loc.start_offset());
+        let (else_first_end_line, _) = source.offset_to_line_col(else_first_loc.end_offset());
+        let (else_tail_line, _) = source.offset_to_line_col(else_tail_loc.start_offset());
+        let (else_tail_end_line, _) = source.offset_to_line_col(else_tail_loc.end_offset());
+
+        if if_first_line != if_first_end_line
+            || if_tail_line != if_tail_end_line
+            || else_first_line != else_first_end_line
+            || else_tail_line != else_tail_end_line
+        {
+            return None;
+        }
+
+        // Skip heredoc tails.
+        if contains_heredoc(if_tail) || contains_heredoc(else_tail) {
+            return None;
+        }
+
+        let if_tail_src = source
+            .byte_slice(if_tail_loc.start_offset(), if_tail_loc.end_offset(), "")
+            .trim();
+        let else_tail_src = source
+            .byte_slice(else_tail_loc.start_offset(), else_tail_loc.end_offset(), "")
+            .trim();
+
+        if if_tail_src.is_empty() || if_tail_src != else_tail_src {
+            return None;
+        }
+
+        let predicate = if_node.predicate();
+        let pred_loc = predicate.location();
+        let pred_src = source
+            .byte_slice(pred_loc.start_offset(), pred_loc.end_offset(), "")
+            .trim();
+        if pred_src.is_empty() {
+            return None;
+        }
+
+        let if_first_src = source
+            .byte_slice(if_first_loc.start_offset(), if_first_loc.end_offset(), "")
+            .trim();
+        let else_first_src = source
+            .byte_slice(else_first_loc.start_offset(), else_first_loc.end_offset(), "")
+            .trim();
+        if if_first_src.is_empty() || else_first_src.is_empty() {
+            return None;
+        }
+
+        // Preserve original indentation prefixes for each kept branch statement.
+        let if_first_line_start = source.line_start_offset(if_first_line);
+        let else_first_line_start = source.line_start_offset(else_first_line);
+        let if_prefix = source.byte_slice(if_first_line_start, if_first_loc.start_offset(), "");
+        let else_prefix =
+            source.byte_slice(else_first_line_start, else_first_loc.start_offset(), "");
+
+        let (if_line, if_col) = source.offset_to_line_col(if_kw.start_offset());
+        let if_line_start = source.line_start_offset(if_line);
+        let if_indent = source.byte_slice(if_line_start, if_kw.start_offset(), "");
+
+        // Require the branch statements to be one indentation level deeper than `if`.
+        let (_, if_first_col) = source.offset_to_line_col(if_first_loc.start_offset());
+        let (_, else_first_col) = source.offset_to_line_col(else_first_loc.start_offset());
+        if if_first_col <= if_col || else_first_col <= if_col {
+            return None;
+        }
+
+        let replacement = format!(
+            "{if_indent}if {pred_src}\n{if_prefix}{if_first_src}\n{if_indent}else\n{else_prefix}{else_first_src}\n{if_indent}end\n{if_indent}{if_tail_src}"
+        );
+
+        Some(crate::correction::Correction {
+            start: if_node.location().start_offset(),
+            end: if_node.location().end_offset(),
+            replacement,
+            cop_name: self.name(),
+            cop_index: 0,
+        })
+    }
 }
 
 /// Check if the head expression is an assignment whose LHS matches the
@@ -409,6 +553,10 @@ impl Cop for IdenticalConditionalBranches {
         "Style/IdenticalConditionalBranches"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[IF_NODE, CASE_NODE, CASE_MATCH_NODE]
     }
@@ -420,7 +568,7 @@ impl Cop for IdenticalConditionalBranches {
         parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if let Some(if_node) = node.as_if_node() {
             // Skip elsif nodes — we process the full chain from the top-level if
@@ -451,6 +599,15 @@ impl Cop for IdenticalConditionalBranches {
 
             // Deduplicate: when both head and tail fire on single-stmt branches
             Self::dedup_diagnostics(diagnostics, pre_len);
+
+            if let Some(corr) = corrections.as_deref_mut() {
+                if let Some(correction) = self.simple_if_tail_autocorrect(source, &if_node) {
+                    corr.push(correction);
+                    for diag in diagnostics.iter_mut().skip(pre_len) {
+                        diag.corrected = true;
+                    }
+                }
+            }
         } else if let Some(case_node) = node.as_case_node() {
             let branches = match Self::collect_case_branches(&case_node) {
                 Some(b) => b,
@@ -504,4 +661,17 @@ mod tests {
         IdenticalConditionalBranches,
         "cops/style/identical_conditional_branches"
     );
+
+    #[test]
+    fn autocorrect_simple_if_else_identical_tail() {
+        crate::testutil::assert_cop_autocorrect(
+            &IdenticalConditionalBranches,
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/identical_conditional_branches/offense/simple_autocorrect.rb"
+            ),
+            include_bytes!(
+                "../../../tests/fixtures/cops/style/identical_conditional_branches/corrected/simple_autocorrect.rb"
+            ),
+        );
+    }
 }
