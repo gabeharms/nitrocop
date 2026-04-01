@@ -1,5 +1,4 @@
 use crate::cop::{Cop, CopConfig};
-use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
@@ -73,12 +72,12 @@ impl Cop for HeredocArgumentClosingParenthesis {
         "Layout/HeredocArgumentClosingParenthesis"
     }
 
-    fn default_enabled(&self) -> bool {
-        false
-    }
-
     fn supports_autocorrect(&self) -> bool {
         true
+    }
+
+    fn default_enabled(&self) -> bool {
+        false
     }
 
     fn check_source(
@@ -96,10 +95,13 @@ impl Cop for HeredocArgumentClosingParenthesis {
             end_depth: 0,
             end_stack: Vec::new(),
             diagnostics: Vec::new(),
-            corrections,
+            pending_corrections: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = corrections {
+            corrections.extend(visitor.pending_corrections);
+        }
     }
 }
 
@@ -110,7 +112,7 @@ struct HeredocParenVisitor<'a> {
     /// Stack of booleans: true if the corresponding branch node had an `end` keyword.
     end_stack: Vec<bool>,
     diagnostics: Vec<Diagnostic>,
-    corrections: Option<&'a mut Vec<Correction>>,
+    pending_corrections: Vec<crate::correction::Correction>,
 }
 
 impl HeredocParenVisitor<'_> {
@@ -220,6 +222,7 @@ impl HeredocParenVisitor<'_> {
         // on direct arguments — hash nodes don't have heredoc_end locations.
         let mut max_direct_heredoc_body_end: usize = 0;
         let mut last_heredoc_opener_line: usize = 0;
+        let mut last_heredoc_opener_line_end: usize = 0;
 
         for arg in args.arguments().iter() {
             if let Some((opener_offset, body_end)) = heredoc_info(bytes, &arg) {
@@ -228,6 +231,7 @@ impl HeredocParenVisitor<'_> {
                     max_any_body_end = body_end;
                     let (line, _) = self.source.offset_to_line_col(opener_offset);
                     last_heredoc_opener_line = line;
+                    last_heredoc_opener_line_end = line_end_offset(bytes, opener_offset);
                 }
                 // Only track body end for direct heredocs (not hash-nested)
                 // for the "arguments between heredoc end and close paren" check.
@@ -288,43 +292,48 @@ impl HeredocParenVisitor<'_> {
             }
         }
 
-        let mut diagnostic = self.cop.diagnostic(
+        self.diagnostics.push(self.cop.diagnostic(
             self.source,
             close_line,
             close_col,
             "Put the closing parenthesis for a method call with a HEREDOC parameter on the same line as the HEREDOC opening.".to_string(),
-        );
+        ));
 
-        if let Some(corrections) = self.corrections.as_mut() {
-            let opener_line_start = self.source.line_start_offset(last_heredoc_opener_line);
-            let opener_line_end = opener_line_start
-                + crate::cop::util::line_at(self.source, last_heredoc_opener_line)
-                    .map(|l| l.len())
-                    .unwrap_or(0);
-            corrections.push(Correction {
-                start: opener_line_end,
-                end: opener_line_end,
-                replacement: ")".to_string(),
-                cop_name: self.cop.name(),
-                cop_index: 0,
-            });
-
-            let close_line_start = self.source.line_start_offset(close_line);
-            let close_line_end = self
-                .source
-                .line_col_to_offset(close_line + 1, 0)
-                .unwrap_or_else(|| self.source.as_bytes().len());
-            corrections.push(Correction {
-                start: close_line_start,
-                end: close_line_end,
-                replacement: String::new(),
-                cop_name: self.cop.name(),
-                cop_index: 0,
-            });
-            diagnostic.corrected = true;
+        if last_heredoc_opener_line_end > 0 {
+            self.pending_corrections
+                .push(crate::correction::Correction {
+                    start: last_heredoc_opener_line_end,
+                    end: last_heredoc_opener_line_end,
+                    replacement: ")".to_string(),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
         }
 
-        self.diagnostics.push(diagnostic);
+        let close_line_start = self.source.line_start_offset(close_line);
+        let close_line_end =
+            extend_to_line_break(bytes, line_end_offset(bytes, close_loc.end_offset()));
+        let close_line_has_only_paren = bytes[close_line_start..close_loc.start_offset()]
+            .iter()
+            .all(|b| b.is_ascii_whitespace())
+            && bytes[close_loc.end_offset()..line_end_offset(bytes, close_loc.end_offset())]
+                .iter()
+                .all(|b| b.is_ascii_whitespace());
+
+        let (remove_start, remove_end) = if close_line_has_only_paren {
+            (close_line_start, close_line_end)
+        } else {
+            (close_loc.start_offset(), close_loc.end_offset())
+        };
+
+        self.pending_corrections
+            .push(crate::correction::Correction {
+                start: remove_start,
+                end: remove_end,
+                replacement: "".to_string(),
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
     }
 }
 
@@ -449,6 +458,30 @@ fn direct_heredoc_info(bytes: &[u8], node: &ruby_prism::Node<'_>) -> Option<(usi
         }
     }
     None
+}
+
+fn line_end_offset(bytes: &[u8], mut offset: usize) -> usize {
+    if offset > bytes.len() {
+        offset = bytes.len();
+    }
+    while offset < bytes.len() && bytes[offset] != b'\n' {
+        offset += 1;
+    }
+    offset
+}
+
+fn extend_to_line_break(bytes: &[u8], end: usize) -> usize {
+    if end >= bytes.len() {
+        return end;
+    }
+
+    if bytes[end] == b'\r' && end + 1 < bytes.len() && bytes[end + 1] == b'\n' {
+        end + 2
+    } else if bytes[end] == b'\n' {
+        end + 1
+    } else {
+        end
+    }
 }
 
 /// Check if there's an `end` keyword immediately before the closing paren on the same line.

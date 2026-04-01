@@ -377,7 +377,9 @@ fn add_literal_offense(
 }
 
 fn rhs_is_control_flow(node: &ruby_prism::Node<'_>) -> bool {
-    node.as_return_node().is_some() || node.as_break_node().is_some() || node.as_next_node().is_some()
+    node.as_return_node().is_some()
+        || node.as_break_node().is_some()
+        || node.as_next_node().is_some()
 }
 
 impl Cop for LiteralAsCondition {
