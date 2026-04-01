@@ -1,5 +1,6 @@
 use crate::cop::node_type::CALL_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -68,6 +69,10 @@ impl Cop for MultilineMethodArgumentLineBreaks {
         "Layout/MultilineMethodArgumentLineBreaks"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -83,7 +88,7 @@ impl Cop for MultilineMethodArgumentLineBreaks {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let allow_multiline_final = config.get_bool("AllowMultilineFinalElement", false);
 
@@ -171,20 +176,40 @@ impl Cop for MultilineMethodArgumentLineBreaks {
         // Issue E: Replace pairwise loop with last_seen_line tracking
         // Matches RuboCop's check_line_breaks: last_seen_line >= child.first_line → offense
         let mut last_seen_line: isize = -1;
+        let call_end_line = offsets
+            .iter()
+            .map(|&(_, end)| source.offset_to_line_col(end.saturating_sub(1)).0)
+            .max()
+            .unwrap_or(0);
+
         for &(start, end) in &offsets {
             let (arg_start_line, arg_start_col) = source.offset_to_line_col(start);
             let arg_end_line = source.offset_to_line_col(end.saturating_sub(1)).0;
 
             if last_seen_line >= arg_start_line as isize {
-                diagnostics.push(
-                    self.diagnostic(
-                        source,
-                        arg_start_line,
-                        arg_start_col,
-                        "Each argument in a multi-line method call must start on a separate line."
-                            .to_string(),
-                    ),
+                let mut diagnostic = self.diagnostic(
+                    source,
+                    arg_start_line,
+                    arg_start_col,
+                    "Each argument in a multi-line method call must start on a separate line."
+                        .to_string(),
                 );
+
+                if let Some(corrections) = corrections.as_deref_mut() {
+                    let replace_start = whitespace_prefix_start(source, start, arg_start_line)
+                        .unwrap_or(start);
+                    let indent = preferred_indent(source, arg_start_line, arg_start_col, call_end_line);
+                    corrections.push(Correction {
+                        start: replace_start,
+                        end: start,
+                        replacement: format!("\n{}", " ".repeat(indent)),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+
+                diagnostics.push(diagnostic);
             } else {
                 last_seen_line = arg_end_line as isize;
             }
@@ -192,11 +217,55 @@ impl Cop for MultilineMethodArgumentLineBreaks {
     }
 }
 
+fn whitespace_prefix_start(source: &SourceFile, arg_start: usize, arg_start_line: usize) -> Option<usize> {
+    let line_start = source.line_col_to_offset(arg_start_line, 0)?;
+    let bytes = source.as_bytes();
+    let mut start = arg_start;
+    while start > line_start {
+        let b = bytes[start - 1];
+        if b == b' ' || b == b'\t' || b == b'\r' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    Some(start)
+}
+
+fn line_indent(source: &SourceFile, line: usize) -> Option<usize> {
+    let lines: Vec<&[u8]> = source.lines().collect();
+    let raw = *lines.get(line.checked_sub(1)?)?;
+    Some(
+        raw.iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count(),
+    )
+}
+
+fn preferred_indent(source: &SourceFile, arg_line: usize, arg_col: usize, call_end_line: usize) -> usize {
+    let current_indent = line_indent(source, arg_line).unwrap_or(0);
+    if current_indent > 0 {
+        return current_indent;
+    }
+
+    for line in (arg_line + 1)..=call_end_line {
+        if let Some(indent) = line_indent(source, line) {
+            return indent;
+        }
+    }
+
+    arg_col
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(
+        MultilineMethodArgumentLineBreaks,
+        "cops/layout/multiline_method_argument_line_breaks"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         MultilineMethodArgumentLineBreaks,
         "cops/layout/multiline_method_argument_line_breaks"
     );
