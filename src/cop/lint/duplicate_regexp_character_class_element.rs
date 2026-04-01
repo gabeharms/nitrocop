@@ -50,6 +50,10 @@ impl Cop for DuplicateRegexpCharacterClassElement {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -57,7 +61,7 @@ impl Cop for DuplicateRegexpCharacterClassElement {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         if let Some(regexp) = node.as_regular_expression_node() {
             let content_slice = regexp.content_loc().as_slice();
@@ -73,7 +77,15 @@ impl Cop for DuplicateRegexpCharacterClassElement {
                 offset += ch.len_utf8();
             }
             let extended = regexp.is_extended();
-            check_regexp_content(self, source, &chars, &offsets, extended, diagnostics);
+            check_regexp_content(
+                self,
+                source,
+                &chars,
+                &offsets,
+                extended,
+                diagnostics,
+                corrections.as_deref_mut(),
+            );
             return;
         }
 
@@ -101,7 +113,15 @@ impl Cop for DuplicateRegexpCharacterClassElement {
             }
 
             let extended = is_extended_regex(regexp.closing_loc().as_slice());
-            check_regexp_content(self, source, &chars, &offsets, extended, diagnostics);
+            check_regexp_content(
+                self,
+                source,
+                &chars,
+                &offsets,
+                extended,
+                diagnostics,
+                corrections.as_deref_mut(),
+            );
         }
     }
 }
@@ -184,6 +204,7 @@ fn check_regexp_content(
     offsets: &[Option<usize>],
     extended: bool,
     diagnostics: &mut Vec<Diagnostic>,
+    mut corrections: Option<&mut Vec<crate::correction::Correction>>,
 ) {
     let mut i = 0;
     while i < chars.len() {
@@ -218,6 +239,7 @@ fn check_regexp_content(
                         class_content,
                         &offsets[start..j],
                         diagnostics,
+                        corrections.as_deref_mut(),
                     );
                 }
                 i = j + 1;
@@ -239,21 +261,19 @@ fn check_class_for_duplicates(
     class_content: &[char],
     class_offsets: &[Option<usize>],
     diagnostics: &mut Vec<Diagnostic>,
+    mut corrections: Option<&mut Vec<crate::correction::Correction>>,
 ) {
     let mut seen = std::collections::HashSet::new();
     let mut k = 0;
-    // Handle ^ at the start
     if k < class_content.len() && class_content[k] == '^' {
         k += 1;
     }
+
     while k < class_content.len() {
-        // Skip null placeholders (interpolation boundaries)
         if class_content[k] == '\0' {
-            // Interpolation inside a character class — we can't reliably analyze
-            // what comes from the interpolation, so skip the rest of this class.
             return;
         }
-        // Skip POSIX character classes like [:digit:], [:alpha:], etc.
+
         if class_content[k] == '[' && k + 1 < class_content.len() && class_content[k + 1] == ':' {
             let mut p = k + 2;
             while p + 1 < class_content.len() {
@@ -265,16 +285,29 @@ fn check_class_for_duplicates(
             }
             let posix_class: String = class_content[k..p].iter().collect();
             if !seen.insert(posix_class) {
-                emit_duplicate(cop, source, class_offsets, k, diagnostics);
+                emit_duplicate(
+                    cop,
+                    source,
+                    class_offsets,
+                    k,
+                    diagnostics,
+                    corrections.as_deref_mut(),
+                );
             }
             k = p;
         } else if class_content[k] == '[' {
-            // Nested character class (e.g. [a-z[0-9]]) — skip as a single entity
             let nested_chars: Vec<char> = class_content[k..].to_vec();
             if let Some(end) = find_char_class_end(&nested_chars, 0) {
                 let entity: String = nested_chars[..=end].iter().collect();
                 if !seen.insert(entity) {
-                    emit_duplicate(cop, source, class_offsets, k, diagnostics);
+                    emit_duplicate(
+                        cop,
+                        source,
+                        class_offsets,
+                        k,
+                        diagnostics,
+                        corrections.as_deref_mut(),
+                    );
                 }
                 k += end + 1;
             } else {
@@ -283,14 +316,11 @@ fn check_class_for_duplicates(
         } else if class_content[k] == '\\' && k + 1 < class_content.len() {
             let esc_len = escape_sequence_len(class_content, k);
             let entity: String = class_content[k..k + esc_len].iter().collect();
-
-            // Check if this escape is followed by `-` forming a range
             let after_esc = k + esc_len;
             if after_esc + 1 < class_content.len()
                 && class_content[after_esc] == '-'
                 && class_content[after_esc + 1] != ']'
             {
-                // Range where the start is an escape sequence (e.g. \x00-\x1F)
                 let range_end_start = after_esc + 1;
                 let range_end_len = if class_content[range_end_start] == '\\'
                     && range_end_start + 1 < class_content.len()
@@ -305,7 +335,14 @@ fn check_class_for_duplicates(
                     .collect();
                 if entity == range_end {
                     seen.insert(entity);
-                    emit_duplicate(cop, source, class_offsets, range_end_start, diagnostics);
+                    emit_duplicate(
+                        cop,
+                        source,
+                        class_offsets,
+                        range_end_start,
+                        diagnostics,
+                        corrections.as_deref_mut(),
+                    );
                     k = range_end_start + range_end_len;
                     continue;
                 }
@@ -313,12 +350,26 @@ fn check_class_for_duplicates(
                     .iter()
                     .collect();
                 if !seen.insert(range_str) {
-                    emit_duplicate(cop, source, class_offsets, k, diagnostics);
+                    emit_duplicate(
+                        cop,
+                        source,
+                        class_offsets,
+                        k,
+                        diagnostics,
+                        corrections.as_deref_mut(),
+                    );
                 }
                 k = range_end_start + range_end_len;
             } else {
                 if !seen.insert(entity) {
-                    emit_duplicate(cop, source, class_offsets, k, diagnostics);
+                    emit_duplicate(
+                        cop,
+                        source,
+                        class_offsets,
+                        k,
+                        diagnostics,
+                        corrections.as_deref_mut(),
+                    );
                 }
                 k += esc_len;
             }
@@ -326,7 +377,6 @@ fn check_class_for_duplicates(
             && class_content[k + 1] == '-'
             && class_content[k + 2] != ']'
         {
-            // Range like a-z — the end might be an escape sequence
             let range_end_start = k + 2;
             let range_end_len = if class_content[range_end_start] == '\\'
                 && range_end_start + 1 < class_content.len()
@@ -341,7 +391,14 @@ fn check_class_for_duplicates(
                 .collect();
             if start == end {
                 seen.insert(start);
-                emit_duplicate(cop, source, class_offsets, range_end_start, diagnostics);
+                emit_duplicate(
+                    cop,
+                    source,
+                    class_offsets,
+                    range_end_start,
+                    diagnostics,
+                    corrections.as_deref_mut(),
+                );
                 k = range_end_start + range_end_len;
                 continue;
             }
@@ -349,14 +406,27 @@ fn check_class_for_duplicates(
                 .iter()
                 .collect();
             if !seen.insert(range) {
-                emit_duplicate(cop, source, class_offsets, k, diagnostics);
+                emit_duplicate(
+                    cop,
+                    source,
+                    class_offsets,
+                    k,
+                    diagnostics,
+                    corrections.as_deref_mut(),
+                );
             }
             k = range_end_start + range_end_len;
         } else {
-            // Single character
             let ch = class_content[k].to_string();
             if !seen.insert(ch) {
-                emit_duplicate(cop, source, class_offsets, k, diagnostics);
+                emit_duplicate(
+                    cop,
+                    source,
+                    class_offsets,
+                    k,
+                    diagnostics,
+                    corrections.as_deref_mut(),
+                );
             }
             k += 1;
         }
@@ -442,15 +512,34 @@ fn emit_duplicate(
     class_offsets: &[Option<usize>],
     k: usize,
     diagnostics: &mut Vec<Diagnostic>,
+    corrections: Option<&mut Vec<crate::correction::Correction>>,
 ) {
     if let Some(byte_pos) = class_offsets.get(k).copied().flatten() {
         let (line, column) = source.offset_to_line_col(byte_pos);
-        diagnostics.push(cop.diagnostic(
+        let mut diag = cop.diagnostic(
             source,
             line,
             column,
             "Duplicate element inside regexp character class".to_string(),
-        ));
+        );
+
+        if let Some(corr) = corrections {
+            let char_len = std::str::from_utf8(&source.as_bytes()[byte_pos..])
+                .ok()
+                .and_then(|s| s.chars().next())
+                .map(|ch| ch.len_utf8())
+                .unwrap_or(1);
+            corr.push(crate::correction::Correction {
+                start: byte_pos,
+                end: byte_pos + char_len,
+                replacement: String::new(),
+                cop_name: cop.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -458,6 +547,10 @@ fn emit_duplicate(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        DuplicateRegexpCharacterClassElement,
+        "cops/lint/duplicate_regexp_character_class_element"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         DuplicateRegexpCharacterClassElement,
         "cops/lint/duplicate_regexp_character_class_element"
     );
