@@ -45,6 +45,10 @@ impl Cop for ArgumentsForwarding {
         "Style/ArgumentsForwarding"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[DEF_NODE]
     }
@@ -56,7 +60,7 @@ impl Cop for ArgumentsForwarding {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allow_only_rest = config.get_bool("AllowOnlyRestArgument", true);
         let use_anonymous = config.get_bool("UseAnonymousForwarding", true);
@@ -195,20 +199,39 @@ impl Cop for ArgumentsForwarding {
             .filter_map(|o| *o)
             .min();
 
+            let def_range = forwarding_param_range(fwd_rest, fwd_kwrest, fwd_block);
+
             if let Some(offset) = first_forwardable_offset {
                 let (line, column) = source.offset_to_line_col(offset);
-                diagnostics.push(self.diagnostic(source, line, column, FORWARDING_MSG.to_string()));
+                let mut diag = self.diagnostic(source, line, column, FORWARDING_MSG.to_string());
+                if let (Some((start, end)), Some(corr)) = (def_range, corrections.as_deref_mut()) {
+                    corr.push(crate::correction::Correction {
+                        start,
+                        end,
+                        replacement: "...".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
 
             for sc in &send_classifications {
-                if let Some(offset) = sc.forwarding_start_offset() {
-                    let (line, col) = source.offset_to_line_col(offset);
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        line,
-                        col,
-                        FORWARDING_MSG.to_string(),
-                    ));
+                if let Some((start, end)) = sc.forwarding_range() {
+                    let (line, col) = source.offset_to_line_col(start);
+                    let mut diag = self.diagnostic(source, line, col, FORWARDING_MSG.to_string());
+                    if let Some(corr) = corrections.as_deref_mut() {
+                        corr.push(crate::correction::Correction {
+                            start,
+                            end,
+                            replacement: "...".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                    diagnostics.push(diag);
                 }
             }
         } else if ruby_version >= 3.2 && use_anonymous {
@@ -228,6 +251,7 @@ impl Cop for ArgumentsForwarding {
                 fwd_kwrest.filter(|_| kwrest_is_redundant),
                 fwd_block.filter(|_| block_is_redundant),
                 diagnostics,
+                corrections.as_deref_mut(),
             );
         }
     }
@@ -242,6 +266,7 @@ impl ArgumentsForwarding {
         kwrest_name: Option<&ParamName>,
         block_name: Option<&ParamName>,
         diagnostics: &mut Vec<Diagnostic>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let any_forwards_rest = rest_name.is_some()
             && send_classifications
@@ -260,40 +285,106 @@ impl ArgumentsForwarding {
         if any_forwards_rest {
             if let Some(name) = rest_name {
                 let (line, col) = source.offset_to_line_col(name.start());
-                diagnostics.push(self.diagnostic(source, line, col, ARGS_MSG.to_string()));
+                let mut diag = self.diagnostic(source, line, col, ARGS_MSG.to_string());
+                if let Some(corr) = corrections.as_deref_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: name.start(),
+                        end: name.end(),
+                        replacement: "*".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
         if any_forwards_kwrest {
             if let Some(name) = kwrest_name {
                 let (line, col) = source.offset_to_line_col(name.start());
-                diagnostics.push(self.diagnostic(source, line, col, KWARGS_MSG.to_string()));
+                let mut diag = self.diagnostic(source, line, col, KWARGS_MSG.to_string());
+                if let Some(corr) = corrections.as_deref_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: name.start(),
+                        end: name.end(),
+                        replacement: "**".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
         if any_forwards_block {
             if let Some(name) = block_name {
                 let (line, col) = source.offset_to_line_col(name.start());
-                diagnostics.push(self.diagnostic(source, line, col, BLOCK_MSG.to_string()));
+                let mut diag = self.diagnostic(source, line, col, BLOCK_MSG.to_string());
+                if let Some(corr) = corrections.as_deref_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: name.start(),
+                        end: name.end(),
+                        replacement: "&".to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
             }
         }
 
         // Report on each call site
         for sc in send_classifications {
             if any_forwards_rest {
-                if let Some(offset) = sc.forwards_rest {
-                    let (line, col) = source.offset_to_line_col(offset);
-                    diagnostics.push(self.diagnostic(source, line, col, ARGS_MSG.to_string()));
+                if let Some((start, end)) = sc.forwards_rest {
+                    let (line, col) = source.offset_to_line_col(start);
+                    let mut diag = self.diagnostic(source, line, col, ARGS_MSG.to_string());
+                    if let Some(corr) = corrections.as_deref_mut() {
+                        corr.push(crate::correction::Correction {
+                            start,
+                            end,
+                            replacement: "*".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                    diagnostics.push(diag);
                 }
             }
             if any_forwards_kwrest {
-                if let Some(offset) = sc.forwards_kwrest {
-                    let (line, col) = source.offset_to_line_col(offset);
-                    diagnostics.push(self.diagnostic(source, line, col, KWARGS_MSG.to_string()));
+                if let Some((start, end)) = sc.forwards_kwrest {
+                    let (line, col) = source.offset_to_line_col(start);
+                    let mut diag = self.diagnostic(source, line, col, KWARGS_MSG.to_string());
+                    if let Some(corr) = corrections.as_deref_mut() {
+                        corr.push(crate::correction::Correction {
+                            start,
+                            end,
+                            replacement: "**".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                    diagnostics.push(diag);
                 }
             }
             if any_forwards_block {
-                if let Some(offset) = sc.forwards_block {
-                    let (line, col) = source.offset_to_line_col(offset);
-                    diagnostics.push(self.diagnostic(source, line, col, BLOCK_MSG.to_string()));
+                if let Some((start, end)) = sc.forwards_block {
+                    let (line, col) = source.offset_to_line_col(start);
+                    let mut diag = self.diagnostic(source, line, col, BLOCK_MSG.to_string());
+                    if let Some(corr) = corrections.as_deref_mut() {
+                        corr.push(crate::correction::Correction {
+                            start,
+                            end,
+                            replacement: "&".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                    diagnostics.push(diag);
                 }
             }
         }
@@ -304,6 +395,7 @@ impl ArgumentsForwarding {
 struct ParamName {
     name: Vec<u8>,
     start_offset: usize,
+    end_offset: usize,
 }
 
 impl ParamName {
@@ -314,6 +406,10 @@ impl ParamName {
     fn start(&self) -> usize {
         self.start_offset
     }
+
+    fn end(&self) -> usize {
+        self.end_offset
+    }
 }
 
 fn extract_rest_param_name(params: &ruby_prism::ParametersNode<'_>) -> Option<ParamName> {
@@ -323,6 +419,7 @@ fn extract_rest_param_name(params: &ruby_prism::ParametersNode<'_>) -> Option<Pa
     Some(ParamName {
         name: name.as_slice().to_vec(),
         start_offset: rest.location().start_offset(),
+        end_offset: rest.location().end_offset(),
     })
 }
 
@@ -333,6 +430,7 @@ fn extract_kwrest_param_name(params: &ruby_prism::ParametersNode<'_>) -> Option<
     Some(ParamName {
         name: name.as_slice().to_vec(),
         start_offset: kw_rest.location().start_offset(),
+        end_offset: kw_rest.location().end_offset(),
     })
 }
 
@@ -342,28 +440,59 @@ fn extract_block_param_name(params: &ruby_prism::ParametersNode<'_>) -> Option<P
     Some(ParamName {
         name: name.as_slice().to_vec(),
         start_offset: block.location().start_offset(),
+        end_offset: block.location().end_offset(),
     })
+}
+
+fn forwarding_param_range(
+    rest_name: Option<&ParamName>,
+    kwrest_name: Option<&ParamName>,
+    block_name: Option<&ParamName>,
+) -> Option<(usize, usize)> {
+    let mut starts = Vec::new();
+    let mut ends = Vec::new();
+
+    for name in [rest_name, kwrest_name, block_name].iter().flatten() {
+        starts.push(name.start());
+        ends.push(name.end());
+    }
+
+    match (starts.into_iter().min(), ends.into_iter().max()) {
+        (Some(start), Some(end)) => Some((start, end)),
+        _ => None,
+    }
 }
 
 /// Classification of what a single call site forwards
 struct SendClassification {
-    forwards_rest: Option<usize>,
-    forwards_kwrest: Option<usize>,
-    forwards_block: Option<usize>,
+    forwards_rest: Option<(usize, usize)>,
+    forwards_kwrest: Option<(usize, usize)>,
+    forwards_block: Option<(usize, usize)>,
     /// Whether this call is inside a block (relevant for Ruby < 3.4 anonymous forwarding)
     inside_block: bool,
 }
 
 impl SendClassification {
-    fn forwarding_start_offset(&self) -> Option<usize> {
-        [
+    fn forwarding_range(&self) -> Option<(usize, usize)> {
+        let mut starts = Vec::new();
+        let mut ends = Vec::new();
+
+        for (start, end) in [
             self.forwards_rest,
             self.forwards_kwrest,
             self.forwards_block,
         ]
         .iter()
-        .filter_map(|o| *o)
-        .min()
+        .flatten()
+        {
+            starts.push(*start);
+            ends.push(*end);
+        }
+
+        match (starts.into_iter().min(), ends.into_iter().max()) {
+            (Some(start), Some(end)) => Some((start, end)),
+            _ => None,
+        }
     }
 }
 
@@ -511,9 +640,9 @@ impl SendClassifier {
         arguments: Option<ruby_prism::ArgumentsNode<'_>>,
         block: Option<ruby_prism::Node<'_>>,
     ) -> Option<SendClassification> {
-        let mut forwards_rest = None;
-        let mut forwards_kwrest = None;
-        let mut forwards_block = None;
+        let mut forwards_rest: Option<(usize, usize)> = None;
+        let mut forwards_kwrest: Option<(usize, usize)> = None;
+        let mut forwards_block: Option<(usize, usize)> = None;
 
         if let Some(args) = &arguments {
             for arg in args.arguments().iter() {
@@ -523,7 +652,10 @@ impl SendClassifier {
                         if let Some(expr) = splat.expression() {
                             if let Some(lvar) = expr.as_local_variable_read_node() {
                                 if lvar.name().as_slice() == rest_name.as_slice() {
-                                    forwards_rest = Some(splat.location().start_offset());
+                                    forwards_rest = Some((
+                                        splat.location().start_offset(),
+                                        splat.location().end_offset(),
+                                    ));
                                 }
                             }
                         }
@@ -537,8 +669,10 @@ impl SendClassifier {
                                 if let Some(expr) = assoc_splat.value() {
                                     if let Some(lvar) = expr.as_local_variable_read_node() {
                                         if lvar.name().as_slice() == kw_name.as_slice() {
-                                            forwards_kwrest =
-                                                Some(assoc_splat.location().start_offset());
+                                            forwards_kwrest = Some((
+                                                assoc_splat.location().start_offset(),
+                                                assoc_splat.location().end_offset(),
+                                            ));
                                         }
                                     }
                                 }
@@ -552,7 +686,10 @@ impl SendClassifier {
                         if let Some(expr) = block_arg.expression() {
                             if let Some(lvar) = expr.as_local_variable_read_node() {
                                 if lvar.name().as_slice() == blk_name.as_slice() {
-                                    forwards_block = Some(block_arg.location().start_offset());
+                                    forwards_block = Some((
+                                        block_arg.location().start_offset(),
+                                        block_arg.location().end_offset(),
+                                    ));
                                 }
                             }
                         }
@@ -569,7 +706,10 @@ impl SendClassifier {
                         if let Some(expr) = block_arg.expression() {
                             if let Some(lvar) = expr.as_local_variable_read_node() {
                                 if lvar.name().as_slice() == blk_name.as_slice() {
-                                    forwards_block = Some(block_arg.location().start_offset());
+                                    forwards_block = Some((
+                                        block_arg.location().start_offset(),
+                                        block_arg.location().end_offset(),
+                                    ));
                                 }
                             }
                         }
@@ -737,6 +877,7 @@ impl<'pr> Visit<'pr> for NonForwardingRefFinder {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ArgumentsForwarding, "cops/style/arguments_forwarding");
+    crate::cop_autocorrect_fixture_tests!(ArgumentsForwarding, "cops/style/arguments_forwarding");
 
     #[test]
     fn detects_triple_forwarding() {
