@@ -44,65 +44,83 @@ impl Cop for StructInheritance {
         };
 
         // Check if superclass is Struct.new(...) or ::Struct.new(...)
+        // It could be a direct CallNode or a block wrapping a CallNode
         if is_struct_new(&superclass) || is_struct_new_block(&superclass) {
             let loc = superclass.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            let mut diag = self.diagnostic(
+            let mut diagnostic = self.diagnostic(
                 source,
                 line,
                 column,
                 "Don't extend an instance initialized by `Struct.new`. Use a block to customize the struct.".to_string(),
             );
 
-            if let Some(corrections) = corrections.as_mut() {
-                let class_name =
-                    std::str::from_utf8(class_node.name().as_slice()).unwrap_or("ClassName");
-                let super_src = source.byte_slice(loc.start_offset(), loc.end_offset(), "");
-                let replacement = if let Some(body) = class_node.body() {
-                    let body_src = source.byte_slice(
-                        body.location().start_offset(),
-                        body.location().end_offset(),
-                        "",
-                    );
-                    if body_src.trim().is_empty() {
-                        format!("{class_name} = {super_src}")
-                    } else {
-                        let mut lines = body_src.lines();
-                        let indented_body = if let Some(first_line) = lines.next() {
-                            let mut out = String::new();
-                            if first_line.is_empty() {
-                                out.push_str("  ");
-                            } else {
-                                out.push_str("  ");
-                                out.push_str(first_line);
-                            }
-                            for line in lines {
-                                out.push('\n');
-                                out.push_str(line);
-                            }
-                            out
-                        } else {
-                            String::new()
-                        };
-                        format!("{class_name} = {super_src} do\n{indented_body}\nend")
-                    }
-                } else {
-                    format!("{class_name} = {super_src}")
-                };
-
-                corrections.push(crate::correction::Correction {
-                    start: class_node.location().start_offset(),
-                    end: class_node.location().end_offset(),
-                    replacement,
-                    cop_name: self.name(),
-                    cop_index: 0,
-                });
-                diag.corrected = true;
+            if let Some(corrs) = corrections.as_deref_mut() {
+                if apply_struct_inheritance_autocorrect(source, &class_node, &superclass, corrs) {
+                    diagnostic.corrected = true;
+                }
             }
 
-            diagnostics.push(diag);
+            diagnostics.push(diagnostic);
         }
     }
+}
+
+fn apply_struct_inheritance_autocorrect(
+    source: &SourceFile,
+    class_node: &ruby_prism::ClassNode<'_>,
+    superclass: &ruby_prism::Node<'_>,
+    corrections: &mut Vec<crate::correction::Correction>,
+) -> bool {
+    let class_name = source
+        .byte_slice(
+            class_node.constant_path().location().start_offset(),
+            class_node.constant_path().location().end_offset(),
+            "",
+        )
+        .to_string();
+
+    let superclass_source = source
+        .byte_slice(
+            superclass.location().start_offset(),
+            superclass.location().end_offset(),
+            "",
+        )
+        .to_string();
+
+    let replacement = if let Some(body) = class_node.body() {
+        let body_source = source
+            .byte_slice(body.location().start_offset(), body.location().end_offset(), "")
+            .to_string();
+        if body_source.trim().is_empty() {
+            format!("{class_name} = {superclass_source}")
+        } else {
+            let indented_body = body_source
+                .lines()
+                .map(|line| {
+                    if line.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {line}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{class_name} = {superclass_source} do\n{indented_body}\nend")
+        }
+    } else {
+        format!("{class_name} = {superclass_source}")
+    };
+
+    corrections.push(crate::correction::Correction {
+        start: class_node.location().start_offset(),
+        end: class_node.location().end_offset(),
+        replacement,
+        cop_name: "Style/StructInheritance",
+        cop_index: 0,
+    });
+
+    true
 }
 
 fn is_struct_new(node: &ruby_prism::Node<'_>) -> bool {
