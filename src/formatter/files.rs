@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::io::Write;
-use std::path::PathBuf;
 
 use crate::diagnostic::Diagnostic;
 use crate::formatter::Formatter;
@@ -8,7 +7,7 @@ use crate::formatter::Formatter;
 pub struct FilesFormatter;
 
 impl Formatter for FilesFormatter {
-    fn format_to(&self, diagnostics: &[Diagnostic], _files: &[PathBuf], out: &mut dyn Write) {
+    fn format_to(&self, diagnostics: &[Diagnostic], _file_count: usize, out: &mut dyn Write) {
         // Deduplicate and sort file paths
         let paths: BTreeSet<&str> = diagnostics.iter().map(|d| d.path.as_str()).collect();
         for path in paths {
@@ -36,7 +35,7 @@ mod tests {
 
     fn render(diagnostics: &[Diagnostic]) -> String {
         let mut buf = Vec::new();
-        FilesFormatter.format_to(diagnostics, &[], &mut buf);
+        FilesFormatter.format_to(diagnostics, 0, &mut buf);
         String::from_utf8(buf).unwrap()
     }
 

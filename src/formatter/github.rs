@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::path::PathBuf;
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::formatter::Formatter;
@@ -7,7 +6,7 @@ use crate::formatter::Formatter;
 pub struct GithubFormatter;
 
 impl Formatter for GithubFormatter {
-    fn format_to(&self, diagnostics: &[Diagnostic], _files: &[PathBuf], out: &mut dyn Write) {
+    fn format_to(&self, diagnostics: &[Diagnostic], _file_count: usize, out: &mut dyn Write) {
         for d in diagnostics {
             let level = match d.severity {
                 Severity::Convention | Severity::Warning => "warning",
@@ -29,7 +28,7 @@ mod tests {
 
     fn render(diagnostics: &[Diagnostic]) -> String {
         let mut buf = Vec::new();
-        GithubFormatter.format_to(diagnostics, &[], &mut buf);
+        GithubFormatter.format_to(diagnostics, 0, &mut buf);
         String::from_utf8(buf).unwrap()
     }
 

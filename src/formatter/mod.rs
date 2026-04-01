@@ -7,22 +7,21 @@ pub mod quiet;
 pub mod text;
 
 use std::io::Write;
-use std::path::PathBuf;
 
 use crate::cop::tiers::SkipSummary;
 use crate::diagnostic::Diagnostic;
 
 pub trait Formatter {
-    fn format_to(&self, diagnostics: &[Diagnostic], files: &[PathBuf], out: &mut dyn Write);
+    fn format_to(&self, diagnostics: &[Diagnostic], file_count: usize, out: &mut dyn Write);
 
     /// Provide skip summary data for formatters that include it in output (e.g. JSON).
     fn set_skip_summary(&mut self, _summary: SkipSummary) {}
 
-    fn print(&self, diagnostics: &[Diagnostic], files: &[PathBuf]) {
+    fn print(&self, diagnostics: &[Diagnostic], file_count: usize) {
         let stdout = std::io::stdout();
         let lock = stdout.lock();
         let mut out = std::io::BufWriter::new(lock);
-        self.format_to(diagnostics, files, &mut out);
+        self.format_to(diagnostics, file_count, &mut out);
         let _ = out.flush();
     }
 }
@@ -55,10 +54,6 @@ mod tests {
 
             corrected: false,
         }]
-    }
-
-    fn sample_files() -> Vec<PathBuf> {
-        vec![PathBuf::from("foo.rb")]
     }
 
     #[test]
@@ -94,29 +89,28 @@ mod tests {
     fn text_formatter_runs_without_panic() {
         let f = create_formatter("text");
         let mut buf = Vec::new();
-        f.format_to(&[], &[], &mut buf);
-        f.format_to(&sample_diagnostics(), &sample_files(), &mut buf);
+        f.format_to(&[], 0, &mut buf);
+        f.format_to(&sample_diagnostics(), 1, &mut buf);
     }
 
     #[test]
     fn json_formatter_runs_without_panic() {
         let f = create_formatter("json");
         let mut buf = Vec::new();
-        f.format_to(&[], &[], &mut buf);
-        f.format_to(&sample_diagnostics(), &sample_files(), &mut buf);
+        f.format_to(&[], 0, &mut buf);
+        f.format_to(&sample_diagnostics(), 1, &mut buf);
     }
 
     #[test]
     fn all_formatters_run_without_panic() {
-        let files = sample_files();
         let diags = sample_diagnostics();
         for name in [
             "progress", "text", "json", "github", "pacman", "quiet", "files", "emacs", "simple",
         ] {
             let f = create_formatter(name);
             let mut buf = Vec::new();
-            f.format_to(&[], &[], &mut buf);
-            f.format_to(&diags, &files, &mut buf);
+            f.format_to(&[], 0, &mut buf);
+            f.format_to(&diags, 1, &mut buf);
         }
     }
 

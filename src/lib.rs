@@ -435,7 +435,7 @@ pub fn run(args: Args) -> Result<i32> {
         let result = lint_source(&source, &config, &registry, &args, &tier_map, &allowlist);
         let mut formatter = create_formatter(&args.format);
         formatter.set_skip_summary(result.skip_summary.clone());
-        formatter.print(&result.diagnostics, std::slice::from_ref(display_path));
+        formatter.print(&result.diagnostics, 1);
         let has_lint_failure = result.diagnostics.iter().any(|d| d.severity >= fail_level);
         let strict_failure = args.strict_scope().is_some_and(|scope| {
             let fails = strict_check_fails(scope, &result.skip_summary);
@@ -453,7 +453,7 @@ pub fn run(args: Args) -> Result<i32> {
         };
     }
 
-    let mut discovered = if let Some(handle) = discovery_handle {
+    let discovered = if let Some(handle) = discovery_handle {
         handle
             .join()
             .map_err(|_| anyhow::anyhow!("file discovery thread panicked"))??
@@ -482,30 +482,6 @@ pub fn run(args: Args) -> Result<i32> {
             println!("{}", file.display());
         }
         return Ok(0);
-    }
-
-    // Filter globally-excluded files from the discovered set so the file count
-    // reported by formatters matches RuboCop's "files inspected" semantics.
-    // (Explicitly-passed files bypass AllCops.Exclude unless --force-exclusion.)
-    {
-        let cop_filters = config.build_cop_filters(&registry, &tier_map, args.preview);
-        discovered.files.retain(|file| {
-            if cop_filters.is_globally_excluded(file) {
-                if args.force_exclusion {
-                    return false;
-                }
-                if discovered.explicit.is_empty() {
-                    return false;
-                }
-                let is_explicit = discovered.explicit.contains(file)
-                    || file
-                        .canonicalize()
-                        .ok()
-                        .is_some_and(|c| discovered.explicit.contains(&c));
-                return is_explicit;
-            }
-            true
-        });
     }
 
     if args.debug {
@@ -545,7 +521,7 @@ pub fn run(args: Args) -> Result<i32> {
     let skip_summary = result.skip_summary.clone();
     let mut formatter = create_formatter(&args.format);
     formatter.set_skip_summary(result.skip_summary);
-    formatter.print(&result.diagnostics, &discovered.files);
+    formatter.print(&result.diagnostics, result.file_count);
 
     let has_lint_failure = result.diagnostics.iter().any(|d| d.severity >= fail_level);
     let strict_failure = args.strict_scope().is_some_and(|scope| {

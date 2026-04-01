@@ -262,6 +262,29 @@ pub fn run_linter(
         None
     };
 
+    // Compute the effective file count excluding globally-excluded files,
+    // matching RuboCop's "files inspected" semantics.
+    let effective_file_count = files
+        .iter()
+        .filter(|file| {
+            if cop_filters.is_globally_excluded(file) {
+                if args.force_exclusion {
+                    return false;
+                }
+                if discovered.explicit.is_empty() {
+                    return false;
+                }
+                let is_explicit = discovered.explicit.contains(file.as_path())
+                    || file
+                        .canonicalize()
+                        .ok()
+                        .is_some_and(|c| discovered.explicit.contains(&c));
+                return is_explicit;
+            }
+            true
+        })
+        .count();
+
     let cache_stat_hits = std::sync::atomic::AtomicUsize::new(0);
     let cache_content_hits = std::sync::atomic::AtomicUsize::new(0);
     let cache_misses = std::sync::atomic::AtomicUsize::new(0);
@@ -306,7 +329,7 @@ pub fn run_linter(
     sorted.sort_unstable_by(|a, b| a.sort_key().cmp(&b.sort_key()));
 
     if let Some(ref t) = timers {
-        t.print_summary(wall_start.elapsed(), files.len());
+        t.print_summary(wall_start.elapsed(), effective_file_count);
     }
 
     if args.debug && cache.is_enabled() {
@@ -410,7 +433,7 @@ pub fn run_linter(
     let skip_summary = config.compute_skip_summary(registry, tier_map, args.preview);
     LintResult {
         diagnostics: sorted,
-        file_count: files.len(),
+        file_count: effective_file_count,
         corrected_count,
         skip_summary,
     }

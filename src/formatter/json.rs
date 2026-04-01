@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::path::PathBuf;
 
 use serde::Serialize;
 
@@ -67,7 +66,7 @@ impl Formatter for JsonFormatter {
         self.skip_summary = Some(summary);
     }
 
-    fn format_to(&self, diagnostics: &[Diagnostic], files: &[PathBuf], out: &mut dyn Write) {
+    fn format_to(&self, diagnostics: &[Diagnostic], file_count: usize, out: &mut dyn Write) {
         let corrected_count = diagnostics.iter().filter(|d| d.corrected).count();
 
         let skipped = self.skip_summary.as_ref().map(|s| SkippedOutput {
@@ -79,7 +78,7 @@ impl Formatter for JsonFormatter {
 
         let output = JsonOutput {
             metadata: Metadata {
-                files_inspected: files.len(),
+                files_inspected: file_count,
                 offense_count: diagnostics.len(),
                 corrected_count,
             },
@@ -107,27 +106,27 @@ mod tests {
     use super::*;
     use crate::diagnostic::{Location, Severity};
 
-    fn render(diagnostics: &[Diagnostic], files: &[PathBuf]) -> String {
+    fn render(diagnostics: &[Diagnostic], file_count: usize) -> String {
         let mut buf = Vec::new();
-        JsonFormatter::new().format_to(diagnostics, files, &mut buf);
+        JsonFormatter::new().format_to(diagnostics, file_count, &mut buf);
         String::from_utf8(buf).unwrap()
     }
 
     fn render_with_skips(
         diagnostics: &[Diagnostic],
-        files: &[PathBuf],
+        file_count: usize,
         summary: SkipSummary,
     ) -> String {
         let mut f = JsonFormatter::new();
         f.set_skip_summary(summary);
         let mut buf = Vec::new();
-        f.format_to(diagnostics, files, &mut buf);
+        f.format_to(diagnostics, file_count, &mut buf);
         String::from_utf8(buf).unwrap()
     }
 
     #[test]
     fn empty_produces_valid_json() {
-        let out = render(&[], &[]);
+        let out = render(&[], 0);
         let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(parsed["metadata"]["files_inspected"], 0);
         assert_eq!(parsed["metadata"]["offense_count"], 0);
@@ -136,7 +135,7 @@ mod tests {
 
     #[test]
     fn no_skipped_field_without_summary() {
-        let out = render(&[], &[]);
+        let out = render(&[], 0);
         let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert!(parsed.get("skipped").is_none());
     }
@@ -148,7 +147,7 @@ mod tests {
             unimplemented: vec!["Custom/Foo".into(), "Custom/Bar".into()],
             outside_baseline: vec!["Unknown/Baz".into()],
         };
-        let out = render_with_skips(&[], &[], summary);
+        let out = render_with_skips(&[], 0, summary);
         let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         let skipped = &parsed["skipped"];
         assert_eq!(skipped["total"], 4);
@@ -167,7 +166,7 @@ mod tests {
             message: "bad".to_string(),
             corrected: false,
         };
-        let out = render(&[d], &[PathBuf::from("foo.rb")]);
+        let out = render(&[d], 1);
         let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(parsed["metadata"]["files_inspected"], 1);
         assert_eq!(parsed["metadata"]["offense_count"], 1);
@@ -198,7 +197,7 @@ mod tests {
             message: "not fixed".to_string(),
             corrected: false,
         };
-        let out = render(&[d1, d2], &[PathBuf::from("a.rb")]);
+        let out = render(&[d1, d2], 1);
         let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(parsed["metadata"]["corrected_count"], 1);
         assert_eq!(parsed["offenses"][0]["corrected"], true);

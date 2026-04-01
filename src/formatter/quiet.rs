@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::path::PathBuf;
 
 use crate::diagnostic::Diagnostic;
 use crate::formatter::Formatter;
@@ -7,11 +6,10 @@ use crate::formatter::Formatter;
 pub struct QuietFormatter;
 
 impl Formatter for QuietFormatter {
-    fn format_to(&self, diagnostics: &[Diagnostic], files: &[PathBuf], out: &mut dyn Write) {
+    fn format_to(&self, diagnostics: &[Diagnostic], file_count: usize, out: &mut dyn Write) {
         if diagnostics.is_empty() {
             return;
         }
-        let file_count = files.len();
         for d in diagnostics {
             let _ = writeln!(out, "{d}");
         }
@@ -34,15 +32,15 @@ mod tests {
     use super::*;
     use crate::diagnostic::{Location, Severity};
 
-    fn render(diagnostics: &[Diagnostic], files: &[PathBuf]) -> String {
+    fn render(diagnostics: &[Diagnostic], file_count: usize) -> String {
         let mut buf = Vec::new();
-        QuietFormatter.format_to(diagnostics, files, &mut buf);
+        QuietFormatter.format_to(diagnostics, file_count, &mut buf);
         String::from_utf8(buf).unwrap()
     }
 
     #[test]
     fn empty_produces_no_output() {
-        let out = render(&[], &[PathBuf::from("a.rb"), PathBuf::from("b.rb")]);
+        let out = render(&[], 2);
         assert_eq!(out, "");
     }
 
@@ -57,14 +55,14 @@ mod tests {
 
             corrected: false,
         };
-        let out = render(&[d], &[PathBuf::from("foo.rb")]);
+        let out = render(&[d], 1);
         assert!(out.contains("foo.rb:3:5: C: Style/Foo: bad style"));
         assert!(out.contains("1 file inspected, 1 offense detected"));
     }
 
     #[test]
     fn zero_offenses_zero_files_still_silent() {
-        let out = render(&[], &[]);
+        let out = render(&[], 0);
         assert_eq!(out, "");
     }
 }
