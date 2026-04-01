@@ -1,5 +1,6 @@
 use crate::cop::node_type::{BLOCK_NODE, CALL_NODE, CLASS_NODE, MODULE_NODE, SINGLETON_CLASS_NODE};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -40,6 +41,10 @@ impl Cop for AccessModifierIndentation {
         "Layout/AccessModifierIndentation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             BLOCK_NODE,
@@ -57,7 +62,7 @@ impl Cop for AccessModifierIndentation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "indent");
         let indent_width = config.get_usize("IndentationWidth", 2);
@@ -162,12 +167,24 @@ impl Cop for AccessModifierIndentation {
                     "Indent"
                 };
                 let modifier_name = std::str::from_utf8(method_name).unwrap_or("private");
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     mod_line,
                     mod_col,
                     format!("{style_word} access modifiers like `{modifier_name}`."),
-                ));
+                );
+                if let Some(corrections) = corrections.as_mut() {
+                    let line_start = source.line_start_offset(mod_line);
+                    corrections.push(Correction {
+                        start: line_start,
+                        end: line_start + mod_col,
+                        replacement: " ".repeat(expected_col),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+                diagnostics.push(diagnostic);
             }
         }
     }
@@ -180,6 +197,10 @@ mod tests {
     use std::collections::HashMap;
 
     crate::cop_fixture_tests!(
+        AccessModifierIndentation,
+        "cops/layout/access_modifier_indentation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         AccessModifierIndentation,
         "cops/layout/access_modifier_indentation"
     );
