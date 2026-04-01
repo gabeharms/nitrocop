@@ -282,6 +282,10 @@ impl Cop for InvertibleUnlessCondition {
         "Style/InvertibleUnlessCondition"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     /// This cop is disabled by default in RuboCop (Enabled: false in vendor config/default.yml).
     fn default_enabled(&self) -> bool {
         false
@@ -308,7 +312,7 @@ impl Cop for InvertibleUnlessCondition {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let unless_node = match node.as_unless_node() {
             Some(u) => u,
@@ -349,7 +353,43 @@ impl Cop for InvertibleUnlessCondition {
         // spans multiple lines before the `unless` keyword.
         let loc = node.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(source, line, column, message));
+        let mut diagnostic = self.diagnostic(source, line, column, message);
+
+        if let Some(corrections) = corrections {
+            let kw_loc = unless_node.keyword_loc();
+            let pred_loc = predicate.location();
+
+            if kw_loc.start_offset() > node.location().start_offset() {
+                // Modifier form: `body unless cond` -> `body if <inverted-cond>`
+                corrections.push(crate::correction::Correction {
+                    start: kw_loc.start_offset(),
+                    end: pred_loc.end_offset(),
+                    replacement: format!("if {}", preferred),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            } else {
+                // Block form: `unless cond ... end` -> `if <inverted-cond> ... end`
+                corrections.push(crate::correction::Correction {
+                    start: kw_loc.start_offset(),
+                    end: kw_loc.end_offset(),
+                    replacement: "if".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                corrections.push(crate::correction::Correction {
+                    start: pred_loc.start_offset(),
+                    end: pred_loc.end_offset(),
+                    replacement: preferred,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+        }
+
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -357,6 +397,10 @@ impl Cop for InvertibleUnlessCondition {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        InvertibleUnlessCondition,
+        "cops/style/invertible_unless_condition"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         InvertibleUnlessCondition,
         "cops/style/invertible_unless_condition"
     );
