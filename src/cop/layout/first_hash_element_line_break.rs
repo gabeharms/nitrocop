@@ -1,5 +1,6 @@
 use crate::cop::node_type::{HASH_NODE, KEYWORD_HASH_NODE};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -13,6 +14,10 @@ pub struct FirstHashElementLineBreak;
 impl Cop for FirstHashElementLineBreak {
     fn name(&self) -> &'static str {
         "Layout/FirstHashElementLineBreak"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn default_enabled(&self) -> bool {
@@ -30,7 +35,7 @@ impl Cop for FirstHashElementLineBreak {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let allow_multiline_final = config.get_bool("AllowMultilineFinalElement", false);
 
@@ -86,14 +91,38 @@ impl Cop for FirstHashElementLineBreak {
         }
 
         if first_line == open_line {
-            diagnostics.push(self.diagnostic(
+            let mut diagnostic = self.diagnostic(
                 source,
                 first_line,
                 first_col,
                 "Add a line break before the first element of a multi-line hash.".to_string(),
-            ));
+            );
+            if let Some(corrections) = corrections.as_mut() {
+                let indent = next_line_indent(source, first_line).unwrap_or(2);
+                corrections.push(Correction {
+                    start: opening.end_offset(),
+                    end: first.location().start_offset(),
+                    replacement: format!("\n{}", " ".repeat(indent)),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+            diagnostics.push(diagnostic);
         }
     }
+}
+
+fn next_line_indent(source: &SourceFile, line: usize) -> Option<usize> {
+    let lines: Vec<&[u8]> = source.lines().collect();
+    if line >= lines.len() {
+        return None;
+    }
+    let next = lines[line];
+    let indent = next
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t' && b != b'\r')?;
+    Some(indent)
 }
 
 #[cfg(test)]
@@ -104,6 +133,10 @@ mod tests {
     use std::collections::HashMap;
 
     crate::cop_fixture_tests!(
+        FirstHashElementLineBreak,
+        "cops/layout/first_hash_element_line_break"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         FirstHashElementLineBreak,
         "cops/layout/first_hash_element_line_break"
     );
