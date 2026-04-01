@@ -1,5 +1,6 @@
 use crate::cop::node_type::{CASE_MATCH_NODE, CASE_NODE, WHEN_NODE};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -16,9 +17,38 @@ use crate::parse::source::SourceFile;
 ///   guard, nitrocop would flag `when`/`in` in compact trailing forms as misindented.
 pub struct CaseIndentation;
 
+fn push_case_indent_offense(
+    cop: &dyn Cop,
+    source: &SourceFile,
+    line: usize,
+    col: usize,
+    expected_col: usize,
+    message: String,
+    diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Option<&mut Vec<Correction>>,
+) {
+    let mut diagnostic = cop.diagnostic(source, line, col, message);
+    if let Some(corrections) = corrections.as_mut() {
+        let line_start = source.line_start_offset(line);
+        corrections.push(Correction {
+            start: line_start,
+            end: line_start + col,
+            replacement: " ".repeat(expected_col),
+            cop_name: cop.name(),
+            cop_index: 0,
+        });
+        diagnostic.corrected = true;
+    }
+    diagnostics.push(diagnostic);
+}
+
 impl Cop for CaseIndentation {
     fn name(&self) -> &'static str {
         "Layout/CaseIndentation"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -32,7 +62,7 @@ impl Cop for CaseIndentation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "case");
         let indent_one_step = config.get_bool("IndentOneStep", false);
@@ -100,12 +130,16 @@ impl Cop for CaseIndentation {
                     let (when_line, when_col) = source.offset_to_line_col(when_loc.start_offset());
 
                     if when_col != expected_col {
-                        diagnostics.push(self.diagnostic(
+                        push_case_indent_offense(
+                            self,
                             source,
                             when_line,
                             when_col,
+                            expected_col,
                             message.clone(),
-                        ));
+                            diagnostics,
+                            &mut corrections,
+                        );
                     }
                 }
             }
@@ -170,7 +204,16 @@ impl Cop for CaseIndentation {
                     let (in_line, in_col) = source.offset_to_line_col(in_loc.start_offset());
 
                     if in_col != expected_col {
-                        diagnostics.push(self.diagnostic(source, in_line, in_col, message.clone()));
+                        push_case_indent_offense(
+                            self,
+                            source,
+                            in_line,
+                            in_col,
+                            expected_col,
+                            message.clone(),
+                            diagnostics,
+                            &mut corrections,
+                        );
                     }
                 }
             }
@@ -184,6 +227,7 @@ mod tests {
     use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(CaseIndentation, "cops/layout/case_indentation");
+    crate::cop_autocorrect_fixture_tests!(CaseIndentation, "cops/layout/case_indentation");
 
     #[test]
     fn nested_case_respects_own_indent() {

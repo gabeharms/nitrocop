@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -79,6 +80,10 @@ impl Cop for CommentIndentation {
         "Layout/CommentIndentation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -86,7 +91,7 @@ impl Cop for CommentIndentation {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let allow_for_alignment = config.get_bool("AllowForAlignment", false);
         let indent_width = config.get_usize("IndentationWidth", 2);
@@ -221,7 +226,7 @@ impl Cop for CommentIndentation {
                 }
             }
 
-            diagnostics.push(self.diagnostic(
+            let mut diagnostic = self.diagnostic(
                 source,
                 i + 1,
                 comment_col,
@@ -229,7 +234,20 @@ impl Cop for CommentIndentation {
                     "Incorrect indentation detected (column {} instead of column {}).",
                     comment_col, expected
                 ),
-            ));
+            );
+            if let Some(corrections) = corrections.as_mut() {
+                let line_number = i + 1;
+                let line_start = source.line_start_offset(line_number);
+                corrections.push(Correction {
+                    start: line_start,
+                    end: line_start + comment_col,
+                    replacement: " ".repeat(expected),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+            diagnostics.push(diagnostic);
         }
     }
 }
@@ -239,6 +257,7 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(CommentIndentation, "cops/layout/comment_indentation");
+    crate::cop_autocorrect_fixture_tests!(CommentIndentation, "cops/layout/comment_indentation");
 
     #[test]
     fn crlf_blank_lines_not_treated_as_content() {
