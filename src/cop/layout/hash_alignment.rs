@@ -1,5 +1,6 @@
 use crate::cop::node_type::{HASH_NODE, KEYWORD_HASH_NODE};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -120,13 +121,16 @@ struct PairInfo {
     is_kwsplat: bool,
     /// Whether this uses hash rocket (=>). False for colon style and kwsplats.
     is_rocket: bool,
-    /// Key end column (column after last char of key).
+    /// Key end offset and column (offset/column after last char of key).
+    key_end_offset: usize,
     key_end_col: usize,
-    /// Separator (=> or :) column, if any. For colon style, this is part of the key.
+    /// Separator (=> or :) start/end offsets and columns, if any. For colon style, this is part of the key.
+    sep_start_offset: Option<usize>,
+    sep_end_offset: Option<usize>,
     sep_col: Option<usize>,
-    /// Separator end column (column after last char of separator).
     sep_end_col: Option<usize>,
-    /// Value start column, if value exists and is on the same line.
+    /// Value start offset/column, if value exists and is on the same line.
+    value_start_offset: Option<usize>,
     value_col: Option<usize>,
     /// Whether the value is on a new line relative to the key.
     #[allow(dead_code)]
@@ -182,9 +186,25 @@ fn extract_pair_info(source: &SourceFile, elem: &ruby_prism::Node<'_>) -> Option
             begins_line,
             is_kwsplat: false,
             is_rocket,
+            key_end_offset: key_end,
             key_end_col,
+            sep_start_offset: if assoc.operator_loc().is_some() {
+                assoc.operator_loc().map(|loc| loc.start_offset())
+            } else {
+                None
+            },
+            sep_end_offset: if assoc.operator_loc().is_some() {
+                assoc.operator_loc().map(|loc| loc.end_offset())
+            } else {
+                None
+            },
             sep_col,
             sep_end_col,
+            value_start_offset: if !value_on_new_line && !is_value_omission {
+                Some(value_start)
+            } else {
+                None
+            },
             value_col: if !value_on_new_line && !is_value_omission {
                 Some(value_col_v)
             } else {
@@ -205,9 +225,13 @@ fn extract_pair_info(source: &SourceFile, elem: &ruby_prism::Node<'_>) -> Option
             begins_line,
             is_kwsplat: true,
             is_rocket: false,
+            key_end_offset: elem_start,
             key_end_col: col, // not used for kwsplat
+            sep_start_offset: None,
+            sep_end_offset: None,
             sep_col: None,
             sep_end_col: None,
+            value_start_offset: None,
             value_col: None,
             value_on_new_line: false,
             is_value_omission: false,
@@ -540,6 +564,10 @@ impl Cop for HashAlignment {
         "Layout/HashAlignment"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[HASH_NODE, KEYWORD_HASH_NODE]
     }
@@ -551,7 +579,7 @@ impl Cop for HashAlignment {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let _allow_multiple = config.get_bool("AllowMultipleStyles", true);
         let rocket_styles = parse_styles(config, "EnforcedHashRocketStyle", "key");
@@ -688,19 +716,128 @@ impl Cop for HashAlignment {
         let kwsplat_offenses = check_kwsplat_alignment(source, &pairs);
 
         // Emit diagnostics
-        for offense in rocket_pair_offenses
+        let all_offenses: Vec<&AlignOffense> = rocket_pair_offenses
             .iter()
             .chain(colon_pair_offenses.iter())
             .chain(kwsplat_offenses.iter())
-        {
-            diagnostics.push(self.diagnostic(
+            .collect();
+
+        for offense in all_offenses {
+            let mut diagnostic = self.diagnostic(
                 source,
                 offense.line,
                 offense.col,
                 offense.message.to_string(),
-            ));
+            );
+
+            if let Some(corrections_vec) = corrections.as_mut() {
+                if apply_correction_for_offense(source, offense, &pairs, first.col, corrections_vec)
+                {
+                    diagnostic.corrected = true;
+                }
+            }
+
+            diagnostics.push(diagnostic);
         }
     }
+}
+
+fn push_unique_correction(corrections: &mut Vec<Correction>, correction: Correction) {
+    let duplicate = corrections.iter().any(|c| {
+        c.start == correction.start
+            && c.end == correction.end
+            && c.replacement == correction.replacement
+    });
+    if !duplicate {
+        corrections.push(correction);
+    }
+}
+
+fn apply_correction_for_offense(
+    source: &SourceFile,
+    offense: &AlignOffense,
+    pairs: &[PairInfo],
+    first_col: usize,
+    corrections: &mut Vec<Correction>,
+) -> bool {
+    let Some(pair) = pairs
+        .iter()
+        .find(|p| p.line == offense.line && p.col == offense.col)
+    else {
+        return false;
+    };
+
+    let mut corrected = false;
+
+    // Key/kwsplat alignment: normalize leading indentation to first pair column.
+    if pair.begins_line && pair.col != first_col {
+        let line_start = source.line_start_offset(pair.line);
+        push_unique_correction(
+            corrections,
+            Correction {
+                start: line_start,
+                end: pair.elem_start,
+                replacement: " ".repeat(first_col),
+                cop_name: "Layout/HashAlignment",
+                cop_index: 0,
+            },
+        );
+        corrected = true;
+    }
+
+    // Spacing normalization for key style offenses on non-kwsplat pairs.
+    if offense.message == MSG_KEY && !pair.is_kwsplat && !pair.is_value_omission {
+        if pair.is_rocket {
+            if let (Some(sep_start), Some(sep_end), Some(value_start)) = (
+                pair.sep_start_offset,
+                pair.sep_end_offset,
+                pair.value_start_offset,
+            ) {
+                if pair.key_end_offset <= sep_start {
+                    push_unique_correction(
+                        corrections,
+                        Correction {
+                            start: pair.key_end_offset,
+                            end: sep_start,
+                            replacement: " ".to_string(),
+                            cop_name: "Layout/HashAlignment",
+                            cop_index: 0,
+                        },
+                    );
+                    corrected = true;
+                }
+                if sep_end <= value_start {
+                    push_unique_correction(
+                        corrections,
+                        Correction {
+                            start: sep_end,
+                            end: value_start,
+                            replacement: " ".to_string(),
+                            cop_name: "Layout/HashAlignment",
+                            cop_index: 0,
+                        },
+                    );
+                    corrected = true;
+                }
+            }
+        } else if let Some(value_start) = pair.value_start_offset {
+            if pair.key_end_offset <= value_start {
+                push_unique_correction(
+                    corrections,
+                    Correction {
+                        start: pair.key_end_offset,
+                        end: value_start,
+                        replacement: " ".to_string(),
+                        cop_name: "Layout/HashAlignment",
+                        cop_index: 0,
+                    },
+                );
+                corrected = true;
+            }
+        }
+    }
+
+    corrected
 }
 
 /// Check if a style is checkable for the given pairs.
@@ -824,6 +961,7 @@ mod tests {
     use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(HashAlignment, "cops/layout/hash_alignment");
+    crate::cop_autocorrect_fixture_tests!(HashAlignment, "cops/layout/hash_alignment");
 
     #[test]
     fn single_line_hash_no_offense() {

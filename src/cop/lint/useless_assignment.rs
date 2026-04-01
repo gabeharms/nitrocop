@@ -319,7 +319,10 @@ impl ScopeAnalyzer {
                 state,
                 &name,
                 offset,
-                Some((write_node.location().start_offset(), write_node.location().end_offset())),
+                Some((
+                    write_node.location().start_offset(),
+                    write_node.location().end_offset(),
+                )),
             );
             return;
         }
@@ -1676,7 +1679,8 @@ impl UselessAssignVisitor<'_, '_, '_> {
         let Some((start, end)) = analyzer.write_spans.get(&offset).copied() else {
             return false;
         };
-        let Some((delete_start, delete_end)) = standalone_line_range_from_span(self.source, start, end)
+        let Some((delete_start, delete_end)) =
+            standalone_line_range_from_span(self.source, start, end)
         else {
             return false;
         };
