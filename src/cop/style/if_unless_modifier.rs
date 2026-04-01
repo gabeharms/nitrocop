@@ -193,6 +193,10 @@ impl Cop for IfUnlessModifier {
         "Style/IfUnlessModifier"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[IF_NODE, UNLESS_NODE]
     }
@@ -204,7 +208,7 @@ impl Cop for IfUnlessModifier {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Extract keyword location, predicate, statements, has_else, and keyword name
         // from either IfNode or UnlessNode
@@ -516,12 +520,44 @@ impl Cop for IfUnlessModifier {
 
         if !line_length_enabled || modifier_len <= max_line_length {
             let (line, column) = source.offset_to_line_col(kw_loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diagnostic = self.diagnostic(
                 source,
                 line,
                 column,
                 format!("Favor modifier `{keyword}` usage when having a single-line body."),
-            ));
+            );
+
+            if let Some(corrections) = corrections {
+                // Conservative whole-node replacement subset:
+                // - keep only single-line predicates to avoid multiline whitespace normalization
+                // - skip assignment-parenthesized contexts (would require wrapping in parens)
+                let (pred_start_line, _) = source.offset_to_line_col(predicate.location().start_offset());
+                let pred_end_off = predicate
+                    .location()
+                    .end_offset()
+                    .saturating_sub(1)
+                    .max(predicate.location().start_offset());
+                let (pred_end_line, _) = source.offset_to_line_col(pred_end_off);
+
+                if pred_start_line == pred_end_line && parens_overhead == 0 {
+                    let replacement = format!(
+                        "{} {} {}",
+                        String::from_utf8_lossy(body_text).trim(),
+                        keyword,
+                        String::from_utf8_lossy(cond_text).trim()
+                    );
+                    corrections.push(crate::correction::Correction {
+                        start: node.location().start_offset(),
+                        end: node.location().end_offset(),
+                        replacement,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+            }
+
+            diagnostics.push(diagnostic);
         }
     }
 }
@@ -531,6 +567,7 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(IfUnlessModifier, "cops/style/if_unless_modifier");
+    crate::cop_autocorrect_fixture_tests!(IfUnlessModifier, "cops/style/if_unless_modifier");
 
     #[test]
     fn config_max_line_length() {
