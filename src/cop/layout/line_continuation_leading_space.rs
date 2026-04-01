@@ -1,6 +1,7 @@
 use ruby_prism::Visit;
 
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -81,6 +82,10 @@ impl Cop for LineContinuationLeadingSpace {
         "Layout/LineContinuationLeadingSpace"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -88,7 +93,7 @@ impl Cop for LineContinuationLeadingSpace {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<Correction>>,
     ) {
         let mut visitor = LineContinuationVisitor {
             cop: self,
@@ -96,9 +101,14 @@ impl Cop for LineContinuationLeadingSpace {
             lines: source.lines().collect(),
             enforced_style: config.get_str("EnforcedStyle", "trailing"),
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            enable_autocorrect: corrections.is_some(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = corrections {
+            corrections.extend(visitor.corrections);
+        }
     }
 }
 
@@ -108,6 +118,8 @@ struct LineContinuationVisitor<'a> {
     lines: Vec<&'a [u8]>,
     enforced_style: &'a str,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<Correction>,
+    enable_autocorrect: bool,
 }
 
 impl LineContinuationVisitor<'_> {
@@ -163,7 +175,7 @@ impl LineContinuationVisitor<'_> {
                         }
                         continue;
                     }
-                    self.check_trailing_style(second_line, line_num + 1);
+                    self.check_trailing_style(first_line, line_num, second_line, line_num + 1);
                 }
             }
         }
@@ -179,15 +191,24 @@ impl LineContinuationVisitor<'_> {
         })
     }
 
-    fn check_trailing_style(&mut self, line: &[u8], line_num: usize) {
-        let Some(quote_idx) = line.iter().position(|b| !is_horizontal_whitespace(*b)) else {
+    fn check_trailing_style(
+        &mut self,
+        first_line: &[u8],
+        first_line_num: usize,
+        second_line: &[u8],
+        second_line_num: usize,
+    ) {
+        let Some(quote_idx) = second_line
+            .iter()
+            .position(|b| !is_horizontal_whitespace(*b))
+        else {
             return;
         };
-        if !matches!(line[quote_idx], b'\'' | b'"') {
+        if !matches!(second_line[quote_idx], b'\'' | b'"') {
             return;
         }
 
-        let leading_len = line[quote_idx + 1..]
+        let leading_len = second_line[quote_idx + 1..]
             .iter()
             .take_while(|b| is_horizontal_whitespace(**b))
             .count();
@@ -195,12 +216,43 @@ impl LineContinuationVisitor<'_> {
             return;
         }
 
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diagnostic = self.cop.diagnostic(
             self.source,
-            line_num,
+            second_line_num,
             quote_idx + 1,
             "Move leading spaces to the end of the previous line.".to_string(),
-        ));
+        );
+
+        if self.enable_autocorrect {
+            let Some(first_quote_idx) = quote_before_backslash_index(first_line) else {
+                self.diagnostics.push(diagnostic);
+                return;
+            };
+
+            let first_line_start = self.source.line_start_offset(first_line_num);
+            let second_line_start = self.source.line_start_offset(second_line_num);
+            let moved_whitespace =
+                String::from_utf8_lossy(&second_line[quote_idx + 1..quote_idx + 1 + leading_len])
+                    .into_owned();
+
+            self.corrections.push(Correction {
+                start: first_line_start + first_quote_idx,
+                end: first_line_start + first_quote_idx,
+                replacement: moved_whitespace,
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+            self.corrections.push(Correction {
+                start: second_line_start + quote_idx + 1,
+                end: second_line_start + quote_idx + 1 + leading_len,
+                replacement: String::new(),
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+
+        self.diagnostics.push(diagnostic);
     }
 
     fn check_leading_style(&mut self, line: &[u8], line_num: usize) {
@@ -273,6 +325,15 @@ fn would_trigger_trailing_offense(line: &[u8]) -> bool {
         > 0
 }
 
+fn quote_before_backslash_index(line: &[u8]) -> Option<usize> {
+    let backslash_idx = line.iter().rposition(|b| *b == b'\\')?;
+    let before_backslash = &line[..backslash_idx];
+    let quote_idx = before_backslash
+        .iter()
+        .rposition(|b| !is_horizontal_whitespace(*b))?;
+    matches!(before_backslash[quote_idx], b'\'' | b'"').then_some(quote_idx)
+}
+
 /// Returns true if the line ends with `['"] \s* \\` — i.e., a standard quote
 /// delimiter before the backslash continuation. Returns false for percent
 /// strings like `%Q{...} \` where the line ends with `} \`.
@@ -337,6 +398,10 @@ mod tests {
         LineContinuationLeadingSpace,
         "cops/layout/line_continuation_leading_space"
     );
+    crate::cop_autocorrect_fixture_tests!(
+        LineContinuationLeadingSpace,
+        "cops/layout/line_continuation_leading_space"
+    );
 
     #[test]
     fn leading_style_flags_trailing_whitespace() {
@@ -363,5 +428,14 @@ mod tests {
             diags[0].message,
             "Move trailing spaces to the start of the next line."
         );
+    }
+
+    #[test]
+    fn autocorrect_moves_spaces_to_previous_line() {
+        let source = b"x = 'too' \\\n    ' long'\n";
+        let (_diagnostics, corrections) =
+            crate::testutil::run_cop_autocorrect(&LineContinuationLeadingSpace, source);
+        let corrected = crate::correction::CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"x = 'too ' \\\n    'long'\n");
     }
 }

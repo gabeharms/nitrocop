@@ -1,4 +1,5 @@
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
@@ -27,9 +28,43 @@ use crate::parse::source::SourceFile;
 /// are not incorrectly skipped.
 pub struct LineContinuationSpacing;
 
+const SPACE_STYLE_MESSAGE: &str = "Use one space before backslash.";
+const NO_SPACE_STYLE_MESSAGE: &str = "No space before backslash.";
+
+#[allow(clippy::too_many_arguments)]
+fn push_line_continuation_spacing_offense(
+    cop: &dyn Cop,
+    source: &SourceFile,
+    line_num: usize,
+    column: usize,
+    message: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Option<&mut Vec<Correction>>,
+    correction_start: usize,
+    correction_end: usize,
+    replacement: &str,
+) {
+    let mut diagnostic = cop.diagnostic(source, line_num, column, message.to_string());
+    if let Some(corrections) = corrections.as_mut() {
+        corrections.push(Correction {
+            start: correction_start,
+            end: correction_end,
+            replacement: replacement.to_string(),
+            cop_name: cop.name(),
+            cop_index: 0,
+        });
+        diagnostic.corrected = true;
+    }
+    diagnostics.push(diagnostic);
+}
+
 impl Cop for LineContinuationSpacing {
     fn name(&self) -> &'static str {
         "Layout/LineContinuationSpacing"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn check_source(
@@ -39,7 +74,7 @@ impl Cop for LineContinuationSpacing {
         code_map: &CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "space");
 
@@ -133,12 +168,18 @@ impl Cop for LineContinuationSpacing {
                     if before != b' ' && before != b'\t' {
                         // No space before backslash
                         let line_num = i + 1;
-                        diagnostics.push(self.diagnostic(
+                        push_line_continuation_spacing_offense(
+                            self,
                             source,
                             line_num,
                             backslash_pos,
-                            "Use one space before backslash.".to_string(),
-                        ));
+                            SPACE_STYLE_MESSAGE,
+                            diagnostics,
+                            &mut corrections,
+                            backslash_offset,
+                            backslash_offset,
+                            " ",
+                        );
                     } else if backslash_pos >= 2
                         && (trimmed_end[backslash_pos - 2] == b' '
                             || trimmed_end[backslash_pos - 2] == b'\t')
@@ -153,12 +194,18 @@ impl Cop for LineContinuationSpacing {
                         {
                             space_start -= 1;
                         }
-                        diagnostics.push(self.diagnostic(
+                        push_line_continuation_spacing_offense(
+                            self,
                             source,
                             line_num,
                             space_start,
-                            "Use one space before backslash.".to_string(),
-                        ));
+                            SPACE_STYLE_MESSAGE,
+                            diagnostics,
+                            &mut corrections,
+                            line_starts[i] + space_start,
+                            backslash_offset,
+                            " ",
+                        );
                     }
                 }
                 "no_space" => {
@@ -175,12 +222,18 @@ impl Cop for LineContinuationSpacing {
                         {
                             space_start -= 1;
                         }
-                        diagnostics.push(self.diagnostic(
+                        push_line_continuation_spacing_offense(
+                            self,
                             source,
                             line_num,
                             space_start,
-                            "No space before backslash.".to_string(),
-                        ));
+                            NO_SPACE_STYLE_MESSAGE,
+                            diagnostics,
+                            &mut corrections,
+                            line_starts[i] + space_start,
+                            backslash_offset,
+                            "",
+                        );
                     }
                 }
                 _ => {}
@@ -194,6 +247,10 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(
+        LineContinuationSpacing,
+        "cops/layout/line_continuation_spacing"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         LineContinuationSpacing,
         "cops/layout/line_continuation_spacing"
     );
@@ -285,5 +342,23 @@ mod tests {
             !diags.is_empty(),
             "Should flag backslash with no space after closing quote"
         );
+    }
+
+    #[test]
+    fn autocorrect_no_space_style_removes_whitespace() {
+        let source = b"x = 1 \\\n  + 2\n";
+        let mut config = CopConfig::default();
+        config.options.insert(
+            "EnforcedStyle".to_string(),
+            serde_yml::Value::from("no_space"),
+        );
+
+        let (_diagnostics, corrections) = crate::testutil::run_cop_autocorrect_with_config(
+            &LineContinuationSpacing,
+            source,
+            config,
+        );
+        let corrected = crate::correction::CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"x = 1\\\n  + 2\n");
     }
 }

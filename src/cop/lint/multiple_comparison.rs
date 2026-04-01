@@ -116,9 +116,7 @@ impl Cop for MultipleComparison {
                 corr.push(crate::correction::Correction {
                     start: loc.start_offset(),
                     end: loc.end_offset(),
-                    replacement: format!(
-                        "{lhs} {inner_op} {center} && {center} {outer_op} {rhs}"
-                    ),
+                    replacement: format!("{lhs} {inner_op} {center} && {center} {outer_op} {rhs}"),
                     cop_name: self.name(),
                     cop_index: 0,
                 });

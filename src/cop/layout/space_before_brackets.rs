@@ -3,6 +3,7 @@ use crate::cop::node_type::{
     INDEX_AND_WRITE_NODE, INDEX_OPERATOR_WRITE_NODE, INDEX_OR_WRITE_NODE,
 };
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -20,9 +21,15 @@ use crate::parse::source::SourceFile;
 /// applies the same whitespace-gap check to both families.
 pub struct SpaceBeforeBrackets;
 
+const MESSAGE: &str = "Remove the space before the opening brackets.";
+
 impl Cop for SpaceBeforeBrackets {
     fn name(&self) -> &'static str {
         "Layout/SpaceBeforeBrackets"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -44,7 +51,7 @@ impl Cop for SpaceBeforeBrackets {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         if let Some(call) = node.as_call_node() {
             let method_name = call.name().as_slice();
@@ -68,6 +75,7 @@ impl Cop for SpaceBeforeBrackets {
                 receiver.location().end_offset(),
                 call.opening_loc().map(|loc| loc.start_offset()),
                 diagnostics,
+                &mut corrections,
             );
             return;
         }
@@ -83,6 +91,7 @@ impl Cop for SpaceBeforeBrackets {
                 receiver.location().end_offset(),
                 Some(write.opening_loc().start_offset()),
                 diagnostics,
+                &mut corrections,
             );
             return;
         }
@@ -98,6 +107,7 @@ impl Cop for SpaceBeforeBrackets {
                 receiver.location().end_offset(),
                 Some(write.opening_loc().start_offset()),
                 diagnostics,
+                &mut corrections,
             );
             return;
         }
@@ -113,6 +123,7 @@ impl Cop for SpaceBeforeBrackets {
                 receiver.location().end_offset(),
                 Some(write.opening_loc().start_offset()),
                 diagnostics,
+                &mut corrections,
             );
             return;
         }
@@ -131,6 +142,7 @@ impl Cop for SpaceBeforeBrackets {
                 receiver.location().end_offset(),
                 write.location().end_offset(),
                 diagnostics,
+                &mut corrections,
             );
             return;
         }
@@ -149,6 +161,7 @@ impl Cop for SpaceBeforeBrackets {
                 receiver.location().end_offset(),
                 write.location().end_offset(),
                 diagnostics,
+                &mut corrections,
             );
             return;
         }
@@ -167,6 +180,7 @@ impl Cop for SpaceBeforeBrackets {
                 receiver.location().end_offset(),
                 write.location().end_offset(),
                 diagnostics,
+                &mut corrections,
             );
         }
     }
@@ -178,6 +192,7 @@ fn check_receiver_gap_before_brackets(
     receiver_end: usize,
     selector_start: Option<usize>,
     diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Option<&mut Vec<Correction>>,
 ) {
     let Some(selector_start) = selector_start else {
         return;
@@ -194,12 +209,18 @@ fn check_receiver_gap_before_brackets(
     }
 
     let (line, col) = source.offset_to_line_col(receiver_end);
-    diagnostics.push(cop.diagnostic(
-        source,
-        line,
-        col,
-        "Remove the space before the opening brackets.".to_string(),
-    ));
+    let mut diagnostic = cop.diagnostic(source, line, col, MESSAGE.to_string());
+    if let Some(corrections) = corrections.as_mut() {
+        corrections.push(Correction {
+            start: receiver_end,
+            end: selector_start,
+            replacement: String::new(),
+            cop_name: cop.name(),
+            cop_index: 0,
+        });
+        diagnostic.corrected = true;
+    }
+    diagnostics.push(diagnostic);
 }
 
 fn check_receiver_gap_before_scanned_brackets(
@@ -208,13 +229,21 @@ fn check_receiver_gap_before_scanned_brackets(
     receiver_end: usize,
     node_end: usize,
     diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Option<&mut Vec<Correction>>,
 ) {
     let bytes = source.as_bytes();
     let selector_start = bytes[receiver_end..node_end]
         .iter()
         .position(|&byte| byte == b'[')
         .map(|offset| receiver_end + offset);
-    check_receiver_gap_before_brackets(cop, source, receiver_end, selector_start, diagnostics);
+    check_receiver_gap_before_brackets(
+        cop,
+        source,
+        receiver_end,
+        selector_start,
+        diagnostics,
+        corrections,
+    );
 }
 
 #[cfg(test)]
@@ -222,6 +251,7 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(SpaceBeforeBrackets, "cops/layout/space_before_brackets");
+    crate::cop_autocorrect_fixture_tests!(SpaceBeforeBrackets, "cops/layout/space_before_brackets");
 
     #[test]
     fn index_operator_write_offense() {
@@ -232,5 +262,14 @@ mod tests {
             1,
             "Expected one offense: {diagnostics:?}"
         );
+    }
+
+    #[test]
+    fn autocorrect_index_operator_write_offense() {
+        let source = b"value = nil\nvalue [0] += 1\n";
+        let (_diagnostics, corrections) =
+            crate::testutil::run_cop_autocorrect(&SpaceBeforeBrackets, source);
+        let corrected = crate::correction::CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"value = nil\nvalue[0] += 1\n");
     }
 }

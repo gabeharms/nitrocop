@@ -216,13 +216,14 @@ impl LambdaWalker<'_> {
             )
             .to_string();
             let call_loc = call.location();
-            self.emitted_corrections.push(crate::correction::Correction {
-                start: call_loc.start_offset(),
-                end: call_loc.end_offset(),
-                replacement,
-                cop_name: self.cop.name(),
-                cop_index: 0,
-            });
+            self.emitted_corrections
+                .push(crate::correction::Correction {
+                    start: call_loc.start_offset(),
+                    end: call_loc.end_offset(),
+                    replacement,
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
             return;
         }
 
@@ -235,13 +236,14 @@ impl LambdaWalker<'_> {
                 )
                 .to_string();
                 let call_loc = call.location();
-                self.emitted_corrections.push(crate::correction::Correction {
-                    start: call_loc.start_offset(),
-                    end: call_loc.end_offset(),
-                    replacement,
-                    cop_name: self.cop.name(),
-                    cop_index: 0,
-                });
+                self.emitted_corrections
+                    .push(crate::correction::Correction {
+                        start: call_loc.start_offset(),
+                        end: call_loc.end_offset(),
+                        replacement,
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
             }
         }
     }

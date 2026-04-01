@@ -4,6 +4,7 @@ use crate::cop::node_type::{
 };
 use crate::cop::util::assignment_context_base_col;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -65,6 +66,10 @@ impl Cop for EndAlignment {
         "Layout/EndAlignment"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             CASE_MATCH_NODE,
@@ -86,28 +91,32 @@ impl Cop for EndAlignment {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let style = config.get_str("EnforcedStyleAlignWith", "keyword");
         if let Some(class_node) = node.as_class_node() {
-            diagnostics.extend(self.check_keyword_end(
+            self.check_keyword_end(
                 source,
                 class_node.class_keyword_loc().start_offset(),
                 class_node.end_keyword_loc().start_offset(),
                 "class",
                 style,
-            ));
+                diagnostics,
+                &mut corrections,
+            );
             return;
         }
 
         if let Some(module_node) = node.as_module_node() {
-            diagnostics.extend(self.check_keyword_end(
+            self.check_keyword_end(
                 source,
                 module_node.module_keyword_loc().start_offset(),
                 module_node.end_keyword_loc().start_offset(),
                 "module",
                 style,
-            ));
+                diagnostics,
+                &mut corrections,
+            );
             return;
         }
 
@@ -126,26 +135,30 @@ impl Cop for EndAlignment {
                 None => return,
             };
             let keyword = if kw_slice == b"if" { "if" } else { "unless" };
-            diagnostics.extend(self.check_keyword_end(
+            self.check_keyword_end(
                 source,
                 kw_loc.start_offset(),
                 end_kw_loc.start_offset(),
                 keyword,
                 style,
-            ));
+                diagnostics,
+                &mut corrections,
+            );
             return;
         }
 
         if let Some(while_node) = node.as_while_node() {
             let kw_loc = while_node.keyword_loc();
             if let Some(end_loc) = while_node.closing_loc() {
-                diagnostics.extend(self.check_keyword_end(
+                self.check_keyword_end(
                     source,
                     kw_loc.start_offset(),
                     end_loc.start_offset(),
                     "while",
                     style,
-                ));
+                    diagnostics,
+                    &mut corrections,
+                );
                 return;
             }
         }
@@ -153,13 +166,15 @@ impl Cop for EndAlignment {
         if let Some(until_node) = node.as_until_node() {
             let kw_loc = until_node.keyword_loc();
             if let Some(end_loc) = until_node.closing_loc() {
-                diagnostics.extend(self.check_keyword_end(
+                self.check_keyword_end(
                     source,
                     kw_loc.start_offset(),
                     end_loc.start_offset(),
                     "until",
                     style,
-                ));
+                    diagnostics,
+                    &mut corrections,
+                );
                 return;
             }
         }
@@ -167,26 +182,30 @@ impl Cop for EndAlignment {
         if let Some(case_node) = node.as_case_node() {
             let kw_loc = case_node.case_keyword_loc();
             let end_loc = case_node.end_keyword_loc();
-            diagnostics.extend(self.check_keyword_end(
+            self.check_keyword_end(
                 source,
                 kw_loc.start_offset(),
                 end_loc.start_offset(),
                 "case",
                 style,
-            ));
+                diagnostics,
+                &mut corrections,
+            );
             return;
         }
 
         if let Some(case_match_node) = node.as_case_match_node() {
             let kw_loc = case_match_node.case_keyword_loc();
             let end_loc = case_match_node.end_keyword_loc();
-            diagnostics.extend(self.check_keyword_end(
+            self.check_keyword_end(
                 source,
                 kw_loc.start_offset(),
                 end_loc.start_offset(),
                 "case",
                 style,
-            ));
+                diagnostics,
+                &mut corrections,
+            );
             return;
         }
 
@@ -194,25 +213,29 @@ impl Cop for EndAlignment {
             let kw_loc = unless_node.keyword_loc();
             // Only check statement-form unless (has end keyword), not modifier form
             if let Some(end_loc) = unless_node.end_keyword_loc() {
-                diagnostics.extend(self.check_keyword_end(
+                self.check_keyword_end(
                     source,
                     kw_loc.start_offset(),
                     end_loc.start_offset(),
                     "unless",
                     style,
-                ));
+                    diagnostics,
+                    &mut corrections,
+                );
             }
             return;
         }
 
         if let Some(sclass_node) = node.as_singleton_class_node() {
-            diagnostics.extend(self.check_keyword_end(
+            self.check_keyword_end(
                 source,
                 sclass_node.class_keyword_loc().start_offset(),
                 sclass_node.end_keyword_loc().start_offset(),
                 "class",
                 style,
-            ));
+                diagnostics,
+                &mut corrections,
+            );
         }
 
         // NOTE: `begin` blocks are not checked here — that's handled by
@@ -228,7 +251,9 @@ impl EndAlignment {
         end_offset: usize,
         keyword: &str,
         style: &str,
-    ) -> Vec<Diagnostic> {
+        diagnostics: &mut Vec<Diagnostic>,
+        corrections: &mut Option<&mut Vec<Correction>>,
+    ) {
         let (kw_line, mut kw_col) = source.offset_to_line_col(kw_offset);
         let (end_line, end_col) = source.offset_to_line_col(end_offset);
 
@@ -245,7 +270,7 @@ impl EndAlignment {
 
         // Skip single-line constructs (e.g., `class Foo; end`)
         if kw_line == end_line {
-            return Vec::new();
+            return;
         }
 
         let expected_col = match style {
@@ -278,16 +303,25 @@ impl EndAlignment {
         };
 
         if end_col != expected_col {
-            let msg = match style {
-                "variable" | "start_of_line" => {
-                    format!("Align `end` with `{keyword}`.")
-                }
-                _ => format!("Align `end` with `{keyword}`."),
-            };
-            return vec![self.diagnostic(source, end_line, end_col, msg)];
+            let mut diagnostic = self.diagnostic(
+                source,
+                end_line,
+                end_col,
+                format!("Align `end` with `{keyword}`."),
+            );
+            if let Some(corrections) = corrections.as_mut() {
+                let line_start = source.line_start_offset(end_line);
+                corrections.push(Correction {
+                    start: line_start,
+                    end: line_start + end_col,
+                    replacement: " ".repeat(expected_col),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+            diagnostics.push(diagnostic);
         }
-
-        Vec::new()
     }
 }
 
@@ -297,6 +331,7 @@ mod tests {
     use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(EndAlignment, "cops/layout/end_alignment");
+    crate::cop_autocorrect_fixture_tests!(EndAlignment, "cops/layout/end_alignment");
 
     #[test]
     fn modifier_if_no_offense() {
