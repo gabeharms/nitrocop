@@ -87,12 +87,12 @@ impl Cop for SafeNavigationConsistency {
         Severity::Warning
     }
 
-    fn interested_node_types(&self) -> &'static [u8] {
-        &[AND_NODE, OR_NODE]
-    }
-
     fn supports_autocorrect(&self) -> bool {
         true
+    }
+
+    fn interested_node_types(&self) -> &'static [u8] {
+        &[AND_NODE, OR_NODE]
     }
 
     fn check_node(
@@ -169,30 +169,37 @@ impl Cop for SafeNavigationConsistency {
                         .iter()
                         .any(|d| d.location.line == line && d.location.column == column);
                     if !already_reported {
-                        let mut diagnostic =
-                            self.diagnostic(source, line, column, message.to_string());
+                        let mut diagnostic = self.diagnostic(
+                            source,
+                            line,
+                            column,
+                            message.to_string(),
+                        );
 
-                        if let Some(corrs) = corrections.as_mut()
-                            && !op.is_operator_method
-                            && op.call_operator_end > op.call_operator_offset
-                        {
-                            let replacement = if expected_op == "." && op.is_safe_nav {
-                                Some(".")
-                            } else if expected_op == "&." && !op.is_safe_nav {
-                                Some("&.")
-                            } else {
-                                None
-                            };
-
-                            if let Some(replacement) = replacement {
-                                corrs.push(crate::correction::Correction {
-                                    start: op.call_operator_offset,
-                                    end: op.call_operator_end,
-                                    replacement: replacement.to_string(),
-                                    cop_name: self.name(),
-                                    cop_index: 0,
-                                });
-                                diagnostic.corrected = true;
+                        if let Some(corrections) = corrections.as_mut() {
+                            let has_call_operator = op.call_operator_len > 0;
+                            if has_call_operator {
+                                let start = op.call_operator_offset;
+                                let end = start + op.call_operator_len;
+                                if expected_op == "." && op.is_safe_nav {
+                                    corrections.push(crate::correction::Correction {
+                                        start,
+                                        end,
+                                        replacement: ".".to_string(),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    diagnostic.corrected = true;
+                                } else if expected_op == "&." && !op.is_safe_nav {
+                                    corrections.push(crate::correction::Correction {
+                                        start,
+                                        end,
+                                        replacement: "&.".to_string(),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                    diagnostic.corrected = true;
+                                }
                             }
                         }
 
@@ -213,7 +220,7 @@ struct OperandInfo {
     and_group_key: Option<(usize, usize)>,
     is_operator_method: bool,
     call_operator_offset: usize,
-    call_operator_end: usize,
+    call_operator_len: usize,
     receiver_offset: usize,
 }
 
@@ -280,7 +287,10 @@ fn extract_operand_info(
     let is_operator_method = is_ruby_operator_method(&method_name);
 
     let call_operator_offset = call_op.as_ref().map(|loc| loc.start_offset()).unwrap_or(0);
-    let call_operator_end = call_op.as_ref().map(|loc| loc.end_offset()).unwrap_or(0);
+    let call_operator_len = call_op
+        .as_ref()
+        .map(|loc| loc.end_offset() - loc.start_offset())
+        .unwrap_or(0);
     let receiver_offset = recv.location().start_offset();
 
     Some(OperandInfo {
@@ -291,7 +301,7 @@ fn extract_operand_info(
         and_group_key,
         is_operator_method,
         call_operator_offset,
-        call_operator_end,
+        call_operator_len,
         receiver_offset,
     })
 }
@@ -535,6 +545,10 @@ fn already_appropriate(op: &OperandInfo, expected_op: &str) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        SafeNavigationConsistency,
+        "cops/lint/safe_navigation_consistency"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         SafeNavigationConsistency,
         "cops/lint/safe_navigation_consistency"
     );
