@@ -168,20 +168,31 @@ impl Cop for HeredocIndentation {
             }
 
             let (line, col) = source.offset_to_line_col(content_start);
-            push_heredoc_indent_diagnostic(
-                self,
+            let mut diagnostic = self.diagnostic(
                 source,
-                opening_loc.start_offset(),
-                opening,
                 line,
                 col,
                 format!(
                     "Use {} spaces for indentation in a heredoc.",
                     indentation_width,
                 ),
-                diagnostics,
-                &mut corrections,
             );
+            if let Some(corrections) = corrections.as_deref_mut() {
+                if add_heredoc_indent_corrections(
+                    source,
+                    opening_loc.start_offset(),
+                    opening_loc.end_offset(),
+                    content_start,
+                    content_end,
+                    body_indent,
+                    expected,
+                    corrections,
+                    self.name(),
+                ) {
+                    diagnostic.corrected = true;
+                }
+            }
+            diagnostics.push(diagnostic);
         }
 
         // For <<- and bare << heredocs:
@@ -193,20 +204,33 @@ impl Cop for HeredocIndentation {
 
         if body_indent == 0 {
             let (line, col) = source.offset_to_line_col(content_start);
-            push_heredoc_indent_diagnostic(
-                self,
+            let mut diagnostic = self.diagnostic(
                 source,
-                opening_loc.start_offset(),
-                opening,
                 line,
                 col,
                 format!(
                     "Use {} spaces for indentation in a heredoc by using `<<~` instead of `{}`.",
                     indentation_width, indent_type_str,
                 ),
-                diagnostics,
-                &mut corrections,
             );
+            let expected =
+                base_indent_level(source, opening_loc.start_offset()) + indentation_width;
+            if let Some(corrections) = corrections.as_deref_mut() {
+                if add_heredoc_indent_corrections(
+                    source,
+                    opening_loc.start_offset(),
+                    opening_loc.end_offset(),
+                    content_start,
+                    content_end,
+                    body_indent,
+                    expected,
+                    corrections,
+                    self.name(),
+                ) {
+                    diagnostic.corrected = true;
+                }
+            }
+            diagnostics.push(diagnostic);
         }
 
         // Check if the heredoc has .squish/.squish! called on it.
@@ -223,62 +247,107 @@ impl Cop for HeredocIndentation {
             let expected = base_indent + indentation_width;
             if !line_too_long_after_adjust(body, expected, body_indent, config) {
                 let (line, col) = source.offset_to_line_col(content_start);
-                push_heredoc_indent_diagnostic(
-                    self,
+                let mut diagnostic = self.diagnostic(
                     source,
-                    opening_loc.start_offset(),
-                    opening,
                     line,
                     col,
                     format!(
                         "Use {} spaces for indentation in a heredoc by using `<<~` instead of `{}`.",
                         indentation_width, indent_type_str,
                     ),
-                    diagnostics,
-                    &mut corrections,
                 );
+                if let Some(corrections) = corrections.as_deref_mut() {
+                    if add_heredoc_indent_corrections(
+                        source,
+                        opening_loc.start_offset(),
+                        opening_loc.end_offset(),
+                        content_start,
+                        content_end,
+                        body_indent,
+                        expected,
+                        corrections,
+                        self.name(),
+                    ) {
+                        diagnostic.corrected = true;
+                    }
+                }
+                diagnostics.push(diagnostic);
             }
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push_heredoc_indent_diagnostic(
-    cop: &HeredocIndentation,
+fn add_heredoc_indent_corrections(
     source: &SourceFile,
     opening_start: usize,
-    opening: &[u8],
-    line: usize,
-    col: usize,
-    message: String,
-    diagnostics: &mut Vec<Diagnostic>,
-    corrections: &mut Option<&mut Vec<Correction>>,
-) {
-    let mut diagnostic = cop.diagnostic(source, line, col, message);
+    opening_end: usize,
+    content_start: usize,
+    content_end: usize,
+    body_indent: usize,
+    expected_indent: usize,
+    corrections: &mut Vec<Correction>,
+    cop_name: &'static str,
+) -> bool {
+    let bytes = source.as_bytes();
+    let opening = &bytes[opening_start..opening_end];
 
-    if let Some(corrections) = corrections.as_mut() {
-        if opening.starts_with(b"<<-") {
-            corrections.push(Correction {
-                start: opening_start,
-                end: opening_start + 3,
-                replacement: "<<~".to_string(),
-                cop_name: cop.name(),
-                cop_index: 0,
-            });
-            diagnostic.corrected = true;
-        } else if opening.starts_with(b"<<") && !opening.starts_with(b"<<~") {
-            corrections.push(Correction {
-                start: opening_start,
-                end: opening_start + 2,
-                replacement: "<<~".to_string(),
-                cop_name: cop.name(),
-                cop_index: 0,
-            });
-            diagnostic.corrected = true;
-        }
+    // Convert << or <<- to <<~
+    if opening.starts_with(b"<<-") {
+        corrections.push(Correction {
+            start: opening_start + 2,
+            end: opening_start + 3,
+            replacement: "~".to_string(),
+            cop_name,
+            cop_index: 0,
+        });
+    } else if opening.starts_with(b"<<") && !opening.starts_with(b"<<~") {
+        corrections.push(Correction {
+            start: opening_start + 2,
+            end: opening_start + 2,
+            replacement: "~".to_string(),
+            cop_name,
+            cop_index: 0,
+        });
     }
 
-    diagnostics.push(diagnostic);
+    let mut line_start = content_start;
+    while line_start < content_end {
+        let mut line_end = line_start;
+        while line_end < content_end && bytes[line_end] != b'\n' {
+            line_end += 1;
+        }
+
+        let line = &bytes[line_start..line_end];
+        if !line.iter().all(|&b| b == b' ' || b == b'\t' || b == b'\r') {
+            let mut trim_count = 0usize;
+            let mut trim_end = 0usize;
+            while trim_end < line.len() && trim_count < body_indent {
+                let b = line[trim_end];
+                if b == b' ' || b == b'\t' {
+                    trim_end += 1;
+                    trim_count += 1;
+                } else {
+                    break;
+                }
+            }
+            let remainder = String::from_utf8_lossy(&line[trim_end..]);
+            corrections.push(Correction {
+                start: line_start,
+                end: line_end,
+                replacement: format!("{}{}", " ".repeat(expected_indent), remainder),
+                cop_name,
+                cop_index: 0,
+            });
+        }
+
+        if line_end == content_end {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+
+    true
 }
 
 /// Check if the bytes after the heredoc opening contain `.squish` or `.squish!`.

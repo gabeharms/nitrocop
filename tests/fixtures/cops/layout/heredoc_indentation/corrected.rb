@@ -1,13 +1,13 @@
 x = <<~RUBY
-something
+  something
 RUBY
 
 y = <<~TEXT
-hello world
+  hello world
 TEXT
 
 z = <<~SQL
-SELECT * FROM users
+  SELECT * FROM users
 SQL
 
 # <<- with .squish and indented body should be flagged
@@ -16,16 +16,16 @@ execute <<~SQL.squish
 SQL
 
 result = ActiveRecord::Base.connection.exec_insert(<<~SQL.squish)
-    SELECT id, name
-    FROM users
-    WHERE id = 1
+  SELECT id, name
+  FROM users
+  WHERE id = 1
 SQL
 
 Status.find_by_sql(<<~SQL.squish)
-      WITH RECURSIVE search_tree(id, path) AS (
-        SELECT id, ARRAY[id] FROM statuses WHERE id = :id
-      )
-      SELECT id FROM search_tree
+  WITH RECURSIVE search_tree(id, path) AS (
+    SELECT id, ARRAY[id] FROM statuses WHERE id = :id
+  )
+  SELECT id FROM search_tree
 SQL
 
 # <<- with .squish on separate line after closing delimiter
@@ -51,13 +51,13 @@ TEXT
 
 # Bare <<WORD heredocs with body at column 0 should be flagged
 a = <<~RUBY
-something
+  something
 RUBY
 
 b = <<~TEXT
-hello world
+  hello world
 TEXT
 
 c = <<~SQL
-SELECT * FROM users
+  SELECT * FROM users
 SQL

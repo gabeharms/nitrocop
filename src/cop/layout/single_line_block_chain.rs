@@ -115,7 +115,10 @@ impl Cop for SingleLineBlockChain {
             corrections.push(Correction {
                 start: dot_loc.start_offset(),
                 end: dot_loc.end_offset(),
-                replacement: format!("\n{}", std::str::from_utf8(dot_loc.as_slice()).unwrap_or(".")),
+                replacement: format!(
+                    "\n{}",
+                    std::str::from_utf8(dot_loc.as_slice()).unwrap_or(".")
+                ),
                 cop_name: self.name(),
                 cop_index: 0,
             });

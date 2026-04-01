@@ -338,7 +338,11 @@ impl Cop for IndentationConsistency {
             if let Some(kw_loc) = if_node.if_keyword_loc() {
                 self.emit_offenses(
                     source,
-                    self.check_statements_consistency(source, kw_loc.start_offset(), if_node.statements()),
+                    self.check_statements_consistency(
+                        source,
+                        kw_loc.start_offset(),
+                        if_node.statements(),
+                    ),
                     diagnostics,
                     &mut corrections,
                 );
@@ -456,7 +460,11 @@ impl Cop for IndentationConsistency {
             if let Some(kw_loc) = begin_node.begin_keyword_loc() {
                 self.emit_offenses(
                     source,
-                    self.check_statements_consistency(source, kw_loc.start_offset(), begin_node.statements()),
+                    self.check_statements_consistency(
+                        source,
+                        kw_loc.start_offset(),
+                        begin_node.statements(),
+                    ),
                     diagnostics,
                     &mut corrections,
                 );
