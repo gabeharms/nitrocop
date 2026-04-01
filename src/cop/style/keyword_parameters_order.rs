@@ -13,6 +13,10 @@ impl Cop for KeywordParametersOrder {
         "Style/KeywordParametersOrder"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             BLOCK_NODE,
@@ -30,7 +34,7 @@ impl Cop for KeywordParametersOrder {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Check both def and block parameters
         let parameters = if let Some(def_node) = node.as_def_node() {
@@ -75,6 +79,7 @@ impl Cop for KeywordParametersOrder {
 
         // Second pass: report each optional keyword that appears before a required keyword
         seen_required = false;
+        let mut offense_count = 0usize;
         for kw in keywords.iter().rev() {
             if kw.as_required_keyword_parameter_node().is_some() {
                 seen_required = true;
@@ -90,6 +95,63 @@ impl Cop for KeywordParametersOrder {
                             .to_string(),
                     ),
                 );
+                offense_count += 1;
+            }
+        }
+
+        if offense_count == 0 {
+            return;
+        }
+
+        if let Some(corrections) = corrections {
+            let first_kw = match keywords.first() {
+                Some(kw) => kw,
+                None => return,
+            };
+            let last_kw = match keywords.last() {
+                Some(kw) => kw,
+                None => return,
+            };
+
+            let first_line = source.offset_to_line_col(first_kw.location().start_offset()).0;
+            let last_line = source.offset_to_line_col(last_kw.location().end_offset()).0;
+            if first_line != last_line {
+                return;
+            }
+
+            let mut required_src: Vec<&str> = Vec::new();
+            let mut optional_src: Vec<&str> = Vec::new();
+            for kw in &keywords {
+                let loc = kw.location();
+                let kw_src = match std::str::from_utf8(&source.as_bytes()[loc.start_offset()..loc.end_offset()]) {
+                    Ok(s) => s.trim(),
+                    Err(_) => return,
+                };
+                if kw.as_required_keyword_parameter_node().is_some() {
+                    required_src.push(kw_src);
+                } else if kw.as_optional_keyword_parameter_node().is_some() {
+                    optional_src.push(kw_src);
+                }
+            }
+
+            let mut reordered: Vec<&str> = Vec::new();
+            reordered.extend(required_src);
+            reordered.extend(optional_src);
+            if reordered.is_empty() {
+                return;
+            }
+
+            let replacement = reordered.join(", ");
+            corrections.push(crate::correction::Correction {
+                start: first_kw.location().start_offset(),
+                end: last_kw.location().end_offset(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+
+            for diag in diagnostics.iter_mut().rev().take(offense_count) {
+                diag.corrected = true;
             }
         }
     }
@@ -99,6 +161,10 @@ impl Cop for KeywordParametersOrder {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        KeywordParametersOrder,
+        "cops/style/keyword_parameters_order"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         KeywordParametersOrder,
         "cops/style/keyword_parameters_order"
     );
