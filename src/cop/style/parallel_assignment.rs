@@ -40,6 +40,10 @@ impl Cop for ParallelAssignment {
         &[ARRAY_NODE, MULTI_WRITE_NODE, SPLAT_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -47,7 +51,7 @@ impl Cop for ParallelAssignment {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Look for multi-write nodes (parallel assignment: a, b = 1, 2)
         let multi_write = match node.as_multi_write_node() {
@@ -95,12 +99,51 @@ impl Cop for ParallelAssignment {
 
             let loc = multi_write.location();
             let (line, column) = source.offset_to_line_col(loc.start_offset());
-            diagnostics.push(self.diagnostic(
+            let mut diag = self.diagnostic(
                 source,
                 line,
                 column,
                 "Do not use parallel assignment.".to_string(),
-            ));
+            );
+
+            if let Some(ref mut corr) = corrections {
+                let line_start = source.line_start_offset(line);
+                let indent = source
+                    .try_byte_slice(line_start, loc.start_offset())
+                    .unwrap_or("");
+
+                let assignments: Option<Vec<String>> = targets
+                    .iter()
+                    .zip(elements.iter())
+                    .map(|(target, value)| {
+                        let lhs = source.try_byte_slice(
+                            target.location().start_offset(),
+                            target.location().end_offset(),
+                        )?;
+                        let rhs = source.try_byte_slice(
+                            value.location().start_offset(),
+                            value.location().end_offset(),
+                        )?;
+                        if lhs.contains('\n') || rhs.contains('\n') {
+                            return None;
+                        }
+                        Some(format!("{lhs} = {rhs}"))
+                    })
+                    .collect();
+
+                if let Some(assignments) = assignments {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: assignments.join(&format!("\n{indent}")),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+            }
+
+            diagnostics.push(diag);
         }
     }
 }
@@ -156,6 +199,7 @@ fn is_swap_assignment(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ParallelAssignment, "cops/style/parallel_assignment");
+    crate::cop_autocorrect_fixture_tests!(ParallelAssignment, "cops/style/parallel_assignment");
 
     #[test]
     fn trailing_comma_lhs() {
