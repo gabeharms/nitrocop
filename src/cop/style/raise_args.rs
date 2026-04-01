@@ -1,5 +1,6 @@
 use crate::cop::node_type::CALL_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -32,6 +33,10 @@ impl Cop for RaiseArgs {
         "Style/RaiseArgs"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE]
     }
@@ -43,7 +48,7 @@ impl Cop for RaiseArgs {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -64,7 +69,9 @@ impl Cop for RaiseArgs {
         let enforced_style = config.get_str("EnforcedStyle", "exploded");
 
         match enforced_style {
-            "exploded" => self.check_exploded(source, &call, config, diagnostics, method_name),
+            "exploded" => {
+                self.check_exploded(source, &call, config, diagnostics, corrections, method_name)
+            }
             "compact" => self.check_compact(source, &call, diagnostics, method_name),
             _ => {}
         }
@@ -78,6 +85,7 @@ impl RaiseArgs {
         call: &ruby_prism::CallNode<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
         method_name: &str,
     ) {
         let args = match call.arguments() {
@@ -133,12 +141,40 @@ impl RaiseArgs {
 
         let loc = call.message_loc().unwrap_or_else(|| call.location());
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             line,
             column,
             format!("Provide an exception class and message as arguments to `{method_name}`."),
-        ));
+        );
+
+        if let Some(corrections) = corrections.as_mut() {
+            let receiver_source = receiver.location().as_slice();
+            let receiver_source = std::str::from_utf8(receiver_source).unwrap_or("");
+
+            let replacement = if let Some(new_args) = arg_call.arguments() {
+                let new_arg_list: Vec<_> = new_args.arguments().iter().collect();
+                if let Some(first_arg) = new_arg_list.first() {
+                    let arg_source = std::str::from_utf8(first_arg.location().as_slice()).unwrap_or("");
+                    format!("{method_name} {receiver_source}, {arg_source}")
+                } else {
+                    format!("{method_name} {receiver_source}")
+                }
+            } else {
+                format!("{method_name} {receiver_source}")
+            };
+
+            corrections.push(Correction {
+                start: call.location().start_offset(),
+                end: call.location().end_offset(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+
+        diagnostics.push(diagnostic);
     }
 
     fn check_compact(
@@ -192,6 +228,7 @@ mod tests {
     use crate::testutil::{run_cop_full, run_cop_full_with_config};
 
     crate::cop_fixture_tests!(RaiseArgs, "cops/style/raise_args");
+    crate::cop_autocorrect_fixture_tests!(RaiseArgs, "cops/style/raise_args");
 
     #[test]
     fn bare_raise_is_ignored() {
