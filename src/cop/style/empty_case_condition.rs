@@ -37,6 +37,10 @@ impl Cop for EmptyCaseCondition {
         "Style/EmptyCaseCondition"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -44,16 +48,21 @@ impl Cop for EmptyCaseCondition {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = EmptyCaseVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            emit_corrections: corrections.is_some(),
             parent_kind: ParentKind::Other,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
+        }
     }
 }
 
@@ -69,6 +78,8 @@ struct EmptyCaseVisitor<'a> {
     cop: &'a EmptyCaseCondition,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
     parent_kind: ParentKind,
 }
 
@@ -129,15 +140,77 @@ impl<'pr> Visit<'pr> for EmptyCaseVisitor<'_> {
                 let case_kw_loc = node.case_keyword_loc();
                 let case_offset = case_kw_loc.start_offset();
                 let (line, column) = self.source.offset_to_line_col(case_offset);
-                self.diagnostics.push(
-                    self.cop.diagnostic(
-                        self.source,
-                        line,
-                        column,
-                        "Do not use empty `case` condition, instead use an `if` expression."
-                            .to_string(),
-                    ),
+                let mut diag = self.cop.diagnostic(
+                    self.source,
+                    line,
+                    column,
+                    "Do not use empty `case` condition, instead use an `if` expression."
+                        .to_string(),
                 );
+
+                if self.emit_corrections {
+                    let when_nodes: Vec<_> = node
+                        .conditions()
+                        .iter()
+                        .filter_map(|cond| cond.as_when_node())
+                        .collect();
+
+                    if let Some(first_when) = when_nodes.first() {
+                        // `case` ... first `when` => `if`
+                        let first_when_start = first_when.location().start_offset();
+                        self.corrections.push(crate::correction::Correction {
+                            start: case_kw_loc.start_offset(),
+                            end: first_when_start + 4,
+                            replacement: "if".to_string(),
+                            cop_name: self.cop.name(),
+                            cop_index: 0,
+                        });
+
+                        // Remaining `when` => `elsif`
+                        for when_node in when_nodes.iter().skip(1) {
+                            let when_start = when_node.location().start_offset();
+                            self.corrections.push(crate::correction::Correction {
+                                start: when_start,
+                                end: when_start + 4,
+                                replacement: "elsif".to_string(),
+                                cop_name: self.cop.name(),
+                                cop_index: 0,
+                            });
+                        }
+
+                        // `when a, b` => `if/elsif a || b`
+                        for when_node in &when_nodes {
+                            let conditions = when_node.conditions();
+                            if conditions.len() <= 1 {
+                                continue;
+                            }
+
+                            let first = conditions.iter().next();
+                            let last = conditions.iter().last();
+                            if let (Some(first), Some(last)) = (first, last) {
+                                let replacement = conditions
+                                    .iter()
+                                    .map(|c| {
+                                        String::from_utf8_lossy(c.location().as_slice()).to_string()
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(" || ");
+
+                                self.corrections.push(crate::correction::Correction {
+                                    start: first.location().start_offset(),
+                                    end: last.location().end_offset(),
+                                    replacement,
+                                    cop_name: self.cop.name(),
+                                    cop_index: 0,
+                                });
+                            }
+                        }
+
+                        diag.corrected = true;
+                    }
+                }
+
+                self.diagnostics.push(diag);
             }
         }
 
@@ -255,4 +328,5 @@ impl<'pr> Visit<'pr> for EmptyCaseVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(EmptyCaseCondition, "cops/style/empty_case_condition");
+    crate::cop_autocorrect_fixture_tests!(EmptyCaseCondition, "cops/style/empty_case_condition");
 }
