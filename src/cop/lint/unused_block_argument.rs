@@ -94,12 +94,12 @@ impl Cop for UnusedBlockArgument {
         "Lint/UnusedBlockArgument"
     }
 
-    fn default_severity(&self) -> Severity {
-        Severity::Warning
-    }
-
     fn supports_autocorrect(&self) -> bool {
         true
+    }
+
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
     }
 
     fn check_source(
@@ -109,7 +109,7 @@ impl Cop for UnusedBlockArgument {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let ignore_empty = config.get_bool("IgnoreEmptyBlocks", true);
         let allow_unused_keyword = config.get_bool("AllowUnusedKeywordArguments", false);
@@ -120,10 +120,13 @@ impl Cop for UnusedBlockArgument {
             ignore_empty,
             allow_unused_keyword,
             diagnostics: Vec::new(),
-            corrections,
+            corrections: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = corrections.as_mut() {
+            corrections.extend(visitor.corrections);
+        }
     }
 }
 
@@ -133,7 +136,7 @@ struct BlockVisitor<'a, 'src> {
     ignore_empty: bool,
     allow_unused_keyword: bool,
     diagnostics: Vec<Diagnostic>,
-    corrections: Option<&'a mut Vec<crate::correction::Correction>>,
+    corrections: Vec<crate::correction::Correction>,
 }
 
 /// Info about a parameter that may be unused.
@@ -420,19 +423,14 @@ impl BlockVisitor<'_, '_> {
                     column,
                     format!("Unused {var_type} - `{display_name}`."),
                 );
-
-                if let Some(corrections) = self.corrections.as_deref_mut() {
-                    let name_str = String::from_utf8_lossy(&info.name);
-                    corrections.push(crate::correction::Correction {
-                        start: info.offset,
-                        end: info.offset + name_str.len(),
-                        replacement: format!("_{name_str}"),
-                        cop_name: self.cop.name(),
-                        cop_index: 0,
-                    });
-                    diag.corrected = true;
-                }
-
+                self.corrections.push(crate::correction::Correction {
+                    start: info.offset,
+                    end: info.offset + info.name.len(),
+                    replacement: format!("_{}", String::from_utf8_lossy(&info.name)),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
+                diag.corrected = true;
                 self.diagnostics.push(diag);
             }
         }
