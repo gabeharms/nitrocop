@@ -1,4 +1,5 @@
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 use ruby_prism::Visit;
@@ -31,6 +32,10 @@ impl Cop for SuperArguments {
         "Style/SuperArguments"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -38,15 +43,43 @@ impl Cop for SuperArguments {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = SuperArgumentsVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            offenses: Vec::new(),
         };
         visitor.visit(&parse_result.node());
-        diagnostics.extend(visitor.diagnostics);
+
+        for offense in visitor.offenses {
+            let (line, column) = source.offset_to_line_col(offense.start_offset);
+            let mut diagnostic = self.diagnostic(source, line, column, offense.message.to_string());
+
+            if let Some(corrections) = corrections.as_mut() {
+                let replacement = if let Some((block_start, block_end)) = offense.block_range {
+                    let block_src = &source.as_bytes()[block_start..block_end];
+                    match std::str::from_utf8(block_src) {
+                        Ok(block_src) => format!("super {}", block_src),
+                        Err(_) => "super".to_string(),
+                    }
+                } else {
+                    "super".to_string()
+                };
+
+                corrections.push(Correction {
+                    start: offense.start_offset,
+                    end: offense.end_offset,
+                    replacement,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+
+            diagnostics.push(diagnostic);
+        }
     }
 }
 
@@ -54,6 +87,14 @@ struct SuperArgumentsVisitor<'a> {
     cop: &'a SuperArguments,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    offenses: Vec<SuperOffense>,
+}
+
+struct SuperOffense {
+    start_offset: usize,
+    end_offset: usize,
+    message: &'static str,
+    block_range: Option<(usize, usize)>,
 }
 
 /// Represents the kind of parameter in a method definition.
@@ -244,7 +285,7 @@ fn flatten_super_args<'a>(
 struct SuperChecker<'a> {
     def_params: &'a [DefParam],
     has_forwarding: bool,
-    offsets: Vec<(usize, &'static str)>,
+    offenses: Vec<SuperOffense>,
 }
 
 impl<'pr> Visit<'pr> for SuperChecker<'_> {
@@ -293,10 +334,21 @@ impl<'pr> Visit<'pr> for SuperChecker<'_> {
             && effective_def_params.len() == 1
             && matches!(effective_def_params[0], DefParam::Forwarding)
         {
-            self.offsets.push((
-                node.location().start_offset(),
-                "Call `super` without arguments and parentheses when the signature is identical.",
-            ));
+            self.offenses.push(SuperOffense {
+                start_offset: node.location().start_offset(),
+                end_offset: node.location().end_offset(),
+                message:
+                    "Call `super` without arguments and parentheses when the signature is identical.",
+                block_range: node
+                    .block()
+                    .and_then(|block| block.as_block_node())
+                    .map(|block| {
+                        (
+                            block.location().start_offset(),
+                            block.location().end_offset(),
+                        )
+                    }),
+            });
             return;
         }
 
@@ -321,10 +373,21 @@ impl<'pr> Visit<'pr> for SuperChecker<'_> {
                         .zip(non_block_params.iter())
                         .all(|(arg, param)| super_arg_matches_def_param(arg, param))
                 {
-                    self.offsets.push((
-                        node.location().start_offset(),
-                        "Call `super` without arguments and parentheses when all positional and keyword arguments are forwarded.",
-                    ));
+                    self.offenses.push(SuperOffense {
+                        start_offset: node.location().start_offset(),
+                        end_offset: node.location().end_offset(),
+                        message:
+                            "Call `super` without arguments and parentheses when all positional and keyword arguments are forwarded.",
+                        block_range: node
+                            .block()
+                            .and_then(|block| block.as_block_node())
+                            .map(|block| {
+                                (
+                                    block.location().start_offset(),
+                                    block.location().end_offset(),
+                                )
+                            }),
+                    });
                 }
             }
             return;
@@ -348,7 +411,20 @@ impl<'pr> Visit<'pr> for SuperChecker<'_> {
             } else {
                 "Call `super` without arguments and parentheses when the signature is identical."
             };
-            self.offsets.push((node.location().start_offset(), message));
+            self.offenses.push(SuperOffense {
+                start_offset: node.location().start_offset(),
+                end_offset: node.location().end_offset(),
+                message,
+                block_range: node
+                    .block()
+                    .and_then(|block| block.as_block_node())
+                    .map(|block| {
+                        (
+                            block.location().start_offset(),
+                            block.location().end_offset(),
+                        )
+                    }),
+            });
         }
     }
 
@@ -453,18 +529,19 @@ impl<'pr> Visit<'pr> for SuperArgumentsVisitor<'_> {
             let mut checker = SuperChecker {
                 def_params: &effective_params,
                 has_forwarding,
-                offsets: Vec::new(),
+                offenses: Vec::new(),
             };
             checker.visit(&body);
 
-            for (offset, message) in checker.offsets {
-                let (line, column) = self.source.offset_to_line_col(offset);
+            for offense in checker.offenses {
+                let (line, column) = self.source.offset_to_line_col(offense.start_offset);
                 self.diagnostics.push(self.cop.diagnostic(
                     self.source,
                     line,
                     column,
-                    message.to_string(),
+                    offense.message.to_string(),
                 ));
+                self.offenses.push(offense);
             }
         }
 
@@ -493,4 +570,5 @@ impl<'pr> Visit<'pr> for NestedDefFinder<'_, '_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(SuperArguments, "cops/style/super_arguments");
+    crate::cop_autocorrect_fixture_tests!(SuperArguments, "cops/style/super_arguments");
 }
