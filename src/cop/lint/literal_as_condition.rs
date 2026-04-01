@@ -351,26 +351,42 @@ fn unless_should_skip_for_empty_else(
     is_truthy_literal(predicate)
 }
 
+fn build_literal_offense(
+    cop: &LiteralAsCondition,
+    source: &SourceFile,
+    node: &ruby_prism::Node<'_>,
+) -> Diagnostic {
+    let loc = node.location();
+    let literal_text = node_source_text(node);
+    let (line, column) = source.offset_to_line_col(loc.start_offset());
+    cop.diagnostic(
+        source,
+        line,
+        column,
+        format!("Literal `{literal_text}` appeared as a condition."),
+    )
+}
+
 fn add_literal_offense(
     cop: &LiteralAsCondition,
     source: &SourceFile,
     node: &ruby_prism::Node<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let loc = node.location();
-    let literal_text = node_source_text(node);
-    let (line, column) = source.offset_to_line_col(loc.start_offset());
-    diagnostics.push(cop.diagnostic(
-        source,
-        line,
-        column,
-        format!("Literal `{literal_text}` appeared as a condition."),
-    ));
+    diagnostics.push(build_literal_offense(cop, source, node));
+}
+
+fn rhs_is_control_flow(node: &ruby_prism::Node<'_>) -> bool {
+    node.as_return_node().is_some() || node.as_break_node().is_some() || node.as_next_node().is_some()
 }
 
 impl Cop for LiteralAsCondition {
     fn name(&self) -> &'static str {
         "Lint/LiteralAsCondition"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn default_severity(&self) -> Severity {
@@ -398,13 +414,34 @@ impl Cop for LiteralAsCondition {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // on_and: truthy literal on LHS of &&
         if let Some(and_node) = node.as_and_node() {
             let lhs = and_node.left();
             if is_truthy_literal(&lhs) {
-                add_literal_offense(self, source, &lhs, diagnostics);
+                let mut diag = build_literal_offense(self, source, &lhs);
+
+                let rhs = and_node.right();
+                if !rhs_is_control_flow(&rhs) {
+                    if let Some(corr) = corrections.as_mut() {
+                        let rhs_loc = rhs.location();
+                        let replacement = source
+                            .byte_slice(rhs_loc.start_offset(), rhs_loc.end_offset(), "")
+                            .to_string();
+                        let node_loc = node.location();
+                        corr.push(crate::correction::Correction {
+                            start: node_loc.start_offset(),
+                            end: node_loc.end_offset(),
+                            replacement,
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                }
+
+                diagnostics.push(diag);
             }
             return;
         }
@@ -413,7 +450,28 @@ impl Cop for LiteralAsCondition {
         if let Some(or_node) = node.as_or_node() {
             let lhs = or_node.left();
             if is_falsey_literal(&lhs) {
-                add_literal_offense(self, source, &lhs, diagnostics);
+                let mut diag = build_literal_offense(self, source, &lhs);
+
+                let rhs = or_node.right();
+                if !rhs_is_control_flow(&rhs) {
+                    if let Some(corr) = corrections.as_mut() {
+                        let rhs_loc = rhs.location();
+                        let replacement = source
+                            .byte_slice(rhs_loc.start_offset(), rhs_loc.end_offset(), "")
+                            .to_string();
+                        let node_loc = node.location();
+                        corr.push(crate::correction::Correction {
+                            start: node_loc.start_offset(),
+                            end: node_loc.end_offset(),
+                            replacement,
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diag.corrected = true;
+                    }
+                }
+
+                diagnostics.push(diag);
             }
             return;
         }
@@ -634,6 +692,19 @@ fn has_match_var_descendant(node: &ruby_prism::CaseMatchNode<'_>) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(LiteralAsCondition, "cops/lint/literal_as_condition");
+
+    #[test]
+    fn autocorrects_and_or_conditions_conservatively() {
+        crate::testutil::assert_cop_autocorrect(
+            &LiteralAsCondition,
+            include_bytes!(
+                "../../../tests/fixtures/cops/lint/literal_as_condition/offense/autocorrect_and_or.rb"
+            ),
+            include_bytes!(
+                "../../../tests/fixtures/cops/lint/literal_as_condition/corrected/autocorrect_and_or.rb"
+            ),
+        );
+    }
 
     #[test]
     fn test_if_true_semicolon() {
