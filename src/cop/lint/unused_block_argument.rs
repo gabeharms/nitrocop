@@ -98,6 +98,10 @@ impl Cop for UnusedBlockArgument {
         Severity::Warning
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -105,7 +109,7 @@ impl Cop for UnusedBlockArgument {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let ignore_empty = config.get_bool("IgnoreEmptyBlocks", true);
         let allow_unused_keyword = config.get_bool("AllowUnusedKeywordArguments", false);
@@ -116,6 +120,7 @@ impl Cop for UnusedBlockArgument {
             ignore_empty,
             allow_unused_keyword,
             diagnostics: Vec::new(),
+            corrections,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -128,6 +133,7 @@ struct BlockVisitor<'a, 'src> {
     ignore_empty: bool,
     allow_unused_keyword: bool,
     diagnostics: Vec<Diagnostic>,
+    corrections: Option<&'a mut Vec<crate::correction::Correction>>,
 }
 
 /// Info about a parameter that may be unused.
@@ -408,12 +414,26 @@ impl BlockVisitor<'_, '_> {
                 } else {
                     "block argument"
                 };
-                self.diagnostics.push(self.cop.diagnostic(
+                let mut diag = self.cop.diagnostic(
                     self.source,
                     line,
                     column,
                     format!("Unused {var_type} - `{display_name}`."),
-                ));
+                );
+
+                if let Some(corrections) = self.corrections.as_deref_mut() {
+                    let name_str = String::from_utf8_lossy(&info.name);
+                    corrections.push(crate::correction::Correction {
+                        start: info.offset,
+                        end: info.offset + name_str.len(),
+                        replacement: format!("_{name_str}"),
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                self.diagnostics.push(diag);
             }
         }
     }
@@ -711,4 +731,5 @@ impl<'pr> Visit<'pr> for VarWriteFinder<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(UnusedBlockArgument, "cops/lint/unused_block_argument");
+    crate::cop_autocorrect_fixture_tests!(UnusedBlockArgument, "cops/lint/unused_block_argument");
 }

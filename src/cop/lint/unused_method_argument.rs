@@ -60,6 +60,10 @@ impl Cop for UnusedMethodArgument {
         &[DEF_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -67,7 +71,7 @@ impl Cop for UnusedMethodArgument {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let def_node = match node.as_def_node() {
             Some(d) => d,
@@ -250,12 +254,26 @@ impl Cop for UnusedMethodArgument {
                 } else {
                     String::from_utf8_lossy(name).to_string()
                 };
-                diagnostics.push(self.diagnostic(
+                let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
                     format!("Unused method argument - `{display_name}`."),
-                ));
+                );
+
+                if let Some(corrections) = corrections.as_deref_mut() {
+                    let name_str = String::from_utf8_lossy(name);
+                    corrections.push(crate::correction::Correction {
+                        start: *offset,
+                        end: *offset + name_str.len(),
+                        replacement: format!("_{name_str}"),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                diagnostics.push(diag);
             }
         }
     }
@@ -489,6 +507,7 @@ impl<'pr> Visit<'pr> for VarReadFinder {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(UnusedMethodArgument, "cops/lint/unused_method_argument");
+    crate::cop_autocorrect_fixture_tests!(UnusedMethodArgument, "cops/lint/unused_method_argument");
 
     #[test]
     fn test_block_param_unused() {
