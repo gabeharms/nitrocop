@@ -1,5 +1,6 @@
 use crate::cop::node_type::DEF_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -31,6 +32,10 @@ impl Cop for FirstMethodParameterLineBreak {
         "Layout/FirstMethodParameterLineBreak"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -46,7 +51,7 @@ impl Cop for FirstMethodParameterLineBreak {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let allow_multiline_final = config.get_bool("AllowMultilineFinalElement", false);
 
@@ -79,13 +84,38 @@ impl Cop for FirstMethodParameterLineBreak {
             return;
         }
 
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             first_line,
             first_col,
             "Add a line break before the first parameter of a multi-line method parameter definition.".to_string(),
-        ));
+        );
+        if let Some(corrections) = corrections.as_mut() {
+            let indent = next_line_indent(source, first_line).unwrap_or(first_col);
+            let lparen = def_node.lparen_loc().unwrap();
+            corrections.push(Correction {
+                start: lparen.end_offset(),
+                end: first_start,
+                replacement: format!("\n{}", " ".repeat(indent)),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+        diagnostics.push(diagnostic);
     }
+}
+
+fn next_line_indent(source: &SourceFile, line: usize) -> Option<usize> {
+    let lines: Vec<&[u8]> = source.lines().collect();
+    if line >= lines.len() {
+        return None;
+    }
+    let next = lines[line];
+    let indent = next
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t' && b != b'\r')?;
+    Some(indent)
 }
 
 fn collect_param_locs(params: ruby_prism::ParametersNode<'_>) -> Vec<(usize, usize)> {
@@ -155,6 +185,10 @@ mod tests {
     use std::collections::HashMap;
 
     crate::cop_fixture_tests!(
+        FirstMethodParameterLineBreak,
+        "cops/layout/first_method_parameter_line_break"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         FirstMethodParameterLineBreak,
         "cops/layout/first_method_parameter_line_break"
     );

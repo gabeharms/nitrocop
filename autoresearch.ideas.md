@@ -1,3 +1,4 @@
-- `Style/SafeNavigation`: conservative subset candidate — start with simple `foo && foo.bar` / `foo ? foo.bar : nil` style rewrites where receiver/source equality is exact and side-effect risk is already excluded by current offense guards.
-- `Lint/HeredocMethodCallPosition`: defer for now; naive location-based suffix move corrupted heredoc structure. Revisit with robust line/parser-aware opener/body/terminator reconstruction before retrying.
-- Keep Layout backlog staged (spacing-first, then alignment/indentation) until remaining non-Layout low-risk cops are exhausted.
+- `Style/SafeNavigation`: conservative subset candidate — start with simple `foo && foo.bar` / `foo ? foo.bar : nil` rewrites where receiver/source equality is exact and existing side-effect guards already pass.
+- `Lint/HeredocMethodCallPosition`: defer for now; naive location-based suffix move corrupted heredoc structure. Revisit with robust opener/body/terminator line reconstruction before retrying.
+- `Layout/FirstMethodParameterLineBreak`: likely same bounded delimiter rewrite as FirstMethodArgumentLineBreak (`(`-to-first-param separator -> newline + indent) for multiline def params.
+- `Layout/FirstParameterIndentation`: follow-up indentation-only candidate once first-param line-break autocorrect lands; likely line-leading whitespace replacement on flagged first-param lines.
