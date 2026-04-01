@@ -1,6 +1,7 @@
 use ruby_prism::Visit;
 
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -35,12 +36,12 @@ impl Cop for MissingElse {
         "Style/MissingElse"
     }
 
-    fn supports_autocorrect(&self) -> bool {
-        true
-    }
-
     fn default_enabled(&self) -> bool {
         false // Matches vendor config/default.yml: Enabled: false
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn check_source(
@@ -65,7 +66,6 @@ impl Cop for MissingElse {
             style,
             unless_else_enabled,
             empty_else_style,
-            autocorrect_enabled: corrections.is_some(),
             diagnostics: Vec::new(),
             corrections: Vec::new(),
         };
@@ -91,9 +91,8 @@ struct MissingElseVisitor<'a> {
     style: &'a str,
     unless_else_enabled: bool,
     empty_else_style: &'a str,
-    autocorrect_enabled: bool,
     diagnostics: Vec<Diagnostic>,
-    corrections: Vec<crate::correction::Correction>,
+    corrections: Vec<Correction>,
 }
 
 impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
@@ -147,11 +146,16 @@ impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
                             make_message(self.empty_else_style, "if"),
                         ));
 
-                        if self.autocorrect_enabled {
-                            self.push_else_clause_if_missing(
-                                node.location().start_offset(),
-                                node.end_keyword_loc().map(|loc| loc.start_offset()),
-                            );
+                        if let Some(end_loc) = node.end_keyword_loc() {
+                            if let Some(replacement) = else_replacement(self.empty_else_style) {
+                                self.corrections.push(Correction {
+                                    start: end_loc.start_offset(),
+                                    end: end_loc.start_offset(),
+                                    replacement: replacement.to_string(),
+                                    cop_name: self.cop.name(),
+                                    cop_index: 0,
+                                });
+                            }
                         }
                     }
                 } else if kw == b"unless" && node.end_keyword_loc().is_some() {
@@ -166,13 +170,6 @@ impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
                             column,
                             make_message(self.empty_else_style, "if"),
                         ));
-
-                        if self.autocorrect_enabled {
-                            self.push_else_clause_if_missing(
-                                node.location().start_offset(),
-                                node.end_keyword_loc().map(|loc| loc.start_offset()),
-                            );
-                        }
                     }
                 }
                 // elsif nodes: don't visit independently — handled by the
@@ -201,11 +198,15 @@ impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
                 make_message(self.empty_else_style, "case"),
             ));
 
-            if self.autocorrect_enabled {
-                self.push_else_clause_if_missing(
-                    node.location().start_offset(),
-                    Some(node.end_keyword_loc().start_offset()),
-                );
+            let end_loc = node.end_keyword_loc();
+            if let Some(replacement) = else_replacement(self.empty_else_style) {
+                self.corrections.push(Correction {
+                    start: end_loc.start_offset(),
+                    end: end_loc.start_offset(),
+                    replacement: replacement.to_string(),
+                    cop_name: self.cop.name(),
+                    cop_index: 0,
+                });
             }
         }
 
@@ -226,36 +227,47 @@ impl<'pr> Visit<'pr> for MissingElseVisitor<'_> {
     // NoMatchingPatternError if no branch matches, so an else is not required.
 }
 
-impl MissingElseVisitor<'_> {
-    fn push_else_clause_if_missing(&mut self, node_start: usize, end_start: Option<usize>) {
-        let Some(end_start) = end_start else {
-            return;
-        };
-
-        let (_, column) = self.source.offset_to_line_col(node_start);
-        let (end_line, _) = self.source.offset_to_line_col(end_start);
-        let insertion_start = self.source.line_start_offset(end_line);
-
-        let indent = " ".repeat(column);
-        let else_clause = if self.empty_else_style == "empty" {
-            format!("{indent}else\n{indent}  nil\n")
-        } else {
-            format!("{indent}else\n")
-        };
-
-        self.corrections.push(crate::correction::Correction {
-            start: insertion_start,
-            end: insertion_start,
-            replacement: else_clause,
-            cop_name: self.cop.name(),
-            cop_index: 0,
-        });
+fn else_replacement(empty_else_style: &str) -> Option<&'static str> {
+    match empty_else_style {
+        "empty" => Some("else; nil; "),
+        "nil" => Some("else; "),
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cop::CopConfig;
+
     crate::cop_fixture_tests!(MissingElse, "cops/style/missing_else");
-    crate::cop_autocorrect_fixture_tests!(MissingElse, "cops/style/missing_else");
+
+    fn config_with_empty_else_style(style: &str) -> CopConfig {
+        let mut config = CopConfig::default();
+        config.options.insert(
+            "EmptyElseStyle".to_string(),
+            serde_yml::Value::String(style.to_string()),
+        );
+        config
+    }
+
+    #[test]
+    fn autocorrect_inserts_else_nil_when_empty_else_style_is_empty() {
+        crate::testutil::assert_cop_autocorrect_with_config(
+            &MissingElse,
+            b"if cond\n  foo\nend\n",
+            b"if cond\n  foo\nelse; nil; end\n",
+            config_with_empty_else_style("empty"),
+        );
+    }
+
+    #[test]
+    fn autocorrect_inserts_empty_else_when_empty_else_style_is_nil() {
+        crate::testutil::assert_cop_autocorrect_with_config(
+            &MissingElse,
+            b"if cond\n  foo\nend\n",
+            b"if cond\n  foo\nelse; end\n",
+            config_with_empty_else_style("nil"),
+        );
+    }
 }

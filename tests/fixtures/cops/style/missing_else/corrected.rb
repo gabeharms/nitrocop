@@ -1,17 +1,14 @@
 if cond
   foo
-else
 end
 
 if x > 1
   bar
-else
 end
 
 case status
 when :active
   activate
-else
 end
 
 # elsif without final else — offense on the last elsif
@@ -19,7 +16,6 @@ if x > 1
   bar
 elsif x < 0
   baz
-else
 end
 
 # Multiple elsif without final else — offense on LAST elsif only
@@ -29,14 +25,12 @@ elsif cond_2
   two
 elsif cond_3
   three
-else
 end
 
 while ppid != '1'
   if (agent = agents[ppid])
     ENV['SSH_AUTH_SOCK'] = agent
     break
-  else
   end
   File.open("/proc/#{ppid}/status", "r") do |file|
     ppid = file.read().match(/PPid:\s+(\d+)/)[1]
@@ -52,7 +46,6 @@ def restart_service(service_name)
       notifies :restart, "service[#{service_name}]"
       only_if "true"
     end
-  else
   end
 end
 
@@ -73,7 +66,6 @@ if node['ariadne']['clean']
       only_if "test -d #{dir}"
     end
   end
-else
 end
 
 if node['instance_role'] == 'vagrant'
@@ -83,7 +75,6 @@ if node['instance_role'] == 'vagrant'
       give_ssh_agent_root
     end
   end
-else
 end
 
 case node['platform']
@@ -91,5 +82,4 @@ when "debian", "ubuntu"
   package "php5-memcached" do
     action :install
   end
-else
 end

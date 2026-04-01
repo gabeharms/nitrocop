@@ -157,9 +157,14 @@ fn get_assignment_target(node: &ruby_prism::Node<'_>) -> Option<String> {
     None
 }
 
-fn get_assignment_parts(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<(String, String)> {
+fn get_assignment_parts(
+    source: &SourceFile,
+    node: &ruby_prism::Node<'_>,
+) -> Option<(String, String)> {
     if let Some(write) = node.as_local_variable_write_node() {
-        let target = std::str::from_utf8(write.name().as_slice()).ok()?.to_string();
+        let target = std::str::from_utf8(write.name().as_slice())
+            .ok()?
+            .to_string();
         let value = write.value();
         let rhs = String::from_utf8_lossy(
             &source.as_bytes()[value.location().start_offset()..value.location().end_offset()],
@@ -169,7 +174,9 @@ fn get_assignment_parts(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Opt
         return Some((target, rhs));
     }
     if let Some(write) = node.as_instance_variable_write_node() {
-        let target = std::str::from_utf8(write.name().as_slice()).ok()?.to_string();
+        let target = std::str::from_utf8(write.name().as_slice())
+            .ok()?
+            .to_string();
         let value = write.value();
         let rhs = String::from_utf8_lossy(
             &source.as_bytes()[value.location().start_offset()..value.location().end_offset()],
@@ -185,5 +192,8 @@ fn get_assignment_parts(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Opt
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ConditionalAssignment, "cops/style/conditional_assignment");
-    crate::cop_autocorrect_fixture_tests!(ConditionalAssignment, "cops/style/conditional_assignment");
+    crate::cop_autocorrect_fixture_tests!(
+        ConditionalAssignment,
+        "cops/style/conditional_assignment"
+    );
 }
