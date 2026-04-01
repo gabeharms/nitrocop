@@ -51,11 +51,21 @@ struct AttrOccurrence {
     visibility: Visibility,
     line: usize,
     column: usize,
+    call_start: usize,
+    call_end: usize,
+    message_start: usize,
+    message_end: usize,
+    arg_count: usize,
+    is_reader: bool,
 }
 
 impl Cop for BisectedAttrAccessor {
     fn name(&self) -> &'static str {
         "Style/BisectedAttrAccessor"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -76,7 +86,7 @@ impl Cop for BisectedAttrAccessor {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let body = if let Some(class_node) = node.as_class_node() {
             class_node.body()
@@ -143,11 +153,21 @@ impl Cop for BisectedAttrAccessor {
                         let loc = arg.location();
                         let (line, column) = source.offset_to_line_col(loc.start_offset());
 
+                        let call_loc = call.location();
+                        let Some(msg_loc) = call.message_loc() else {
+                            continue;
+                        };
                         let occurrence = AttrOccurrence {
                             name: attr_name,
                             visibility: current_visibility,
                             line,
                             column,
+                            call_start: call_loc.start_offset(),
+                            call_end: call_loc.end_offset(),
+                            message_start: msg_loc.start_offset(),
+                            message_end: msg_loc.end_offset(),
+                            arg_count: args.arguments().iter().count(),
+                            is_reader,
                         };
 
                         if is_reader {
@@ -198,6 +218,90 @@ impl Cop for BisectedAttrAccessor {
                 ));
             }
         }
+
+        if let Some(corrections) = corrections.as_mut() {
+            for (vis, name) in common {
+                let reader = readers.iter().find(|r| {
+                    r.visibility == vis && r.name == name && r.arg_count == 1 && r.is_reader
+                });
+                let writer = writers.iter().find(|w| {
+                    w.visibility == vis && w.name == name && w.arg_count == 1 && !w.is_reader
+                });
+
+                let (Some(reader), Some(writer)) = (reader, writer) else {
+                    continue;
+                };
+
+                let (keep, remove) = if reader.call_start <= writer.call_start {
+                    (reader, writer)
+                } else {
+                    (writer, reader)
+                };
+
+                if !line_contains_only_call(source, remove.call_start, remove.call_end) {
+                    continue;
+                }
+
+                corrections.push(crate::correction::Correction {
+                    start: keep.message_start,
+                    end: keep.message_end,
+                    replacement: "attr_accessor".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+
+                let delete_end = extend_to_line_break(source, remove.call_end);
+                let delete_start = line_start_offset(source, remove.call_start);
+                corrections.push(crate::correction::Correction {
+                    start: delete_start,
+                    end: delete_end,
+                    replacement: "".to_string(),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+            }
+        }
+    }
+}
+
+fn line_start_offset(source: &SourceFile, offset: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut line_start = offset;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+    line_start
+}
+
+fn line_contains_only_call(source: &SourceFile, call_start: usize, call_end: usize) -> bool {
+    let bytes = source.as_bytes();
+    let line_start = line_start_offset(source, call_start);
+
+    let mut line_end = call_end;
+    while line_end < bytes.len() && bytes[line_end] != b'\n' {
+        line_end += 1;
+    }
+
+    bytes[line_start..call_start]
+        .iter()
+        .all(|b| b.is_ascii_whitespace())
+        && bytes[call_end..line_end]
+            .iter()
+            .all(|b| b.is_ascii_whitespace())
+}
+
+fn extend_to_line_break(source: &SourceFile, end: usize) -> usize {
+    let bytes = source.as_bytes();
+    if end >= bytes.len() {
+        return end;
+    }
+
+    if bytes[end] == b'\r' && end + 1 < bytes.len() && bytes[end + 1] == b'\n' {
+        end + 2
+    } else if bytes[end] == b'\n' {
+        end + 1
+    } else {
+        end
     }
 }
 
@@ -205,4 +309,5 @@ impl Cop for BisectedAttrAccessor {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(BisectedAttrAccessor, "cops/style/bisected_attr_accessor");
+    crate::cop_autocorrect_fixture_tests!(BisectedAttrAccessor, "cops/style/bisected_attr_accessor");
 }
