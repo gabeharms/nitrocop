@@ -1,5 +1,6 @@
 use crate::cop::node_type::ARRAY_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -29,6 +30,10 @@ impl Cop for FirstArrayElementLineBreak {
         "Layout/FirstArrayElementLineBreak"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -44,7 +49,7 @@ impl Cop for FirstArrayElementLineBreak {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let allow_implicit = config.get_bool("AllowImplicitArrayLiterals", false);
         let allow_multiline_final = config.get_bool("AllowMultilineFinalElement", false);
@@ -74,12 +79,28 @@ impl Cop for FirstArrayElementLineBreak {
 
         let last_line = last_line(source, &elements, allow_multiline_final);
         if start_line != last_line {
-            diagnostics.push(self.diagnostic(
+            let mut diagnostic = self.diagnostic(
                 source,
                 first_line,
                 first_col,
                 "Add a line break before the first element of a multi-line array.".to_string(),
-            ));
+            );
+            if let Some(corrections) = corrections.as_mut() {
+                let insertion_start = array
+                    .opening_loc()
+                    .map(|open| open.end_offset())
+                    .unwrap_or(first.location().start_offset());
+                let indent = next_line_indent(source, first_line).unwrap_or(2);
+                corrections.push(Correction {
+                    start: insertion_start,
+                    end: first.location().start_offset(),
+                    replacement: format!("\n{}", " ".repeat(indent)),
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+            diagnostics.push(diagnostic);
         }
     }
 }
@@ -108,6 +129,18 @@ fn last_line(source: &SourceFile, nodes: &[ruby_prism::Node<'_>], ignore_last: b
         })
         .max()
         .unwrap_or(0)
+}
+
+fn next_line_indent(source: &SourceFile, line: usize) -> Option<usize> {
+    let lines: Vec<&[u8]> = source.lines().collect();
+    if line >= lines.len() {
+        return None;
+    }
+    let next = lines[line];
+    let indent = next
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t' && b != b'\r')?;
+    Some(indent)
 }
 
 fn assignment_on_same_line(source: &SourceFile, start_offset: usize) -> bool {
@@ -140,6 +173,10 @@ mod tests {
     use std::collections::HashMap;
 
     crate::cop_fixture_tests!(
+        FirstArrayElementLineBreak,
+        "cops/layout/first_array_element_line_break"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         FirstArrayElementLineBreak,
         "cops/layout/first_array_element_line_break"
     );
