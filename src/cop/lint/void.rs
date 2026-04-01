@@ -161,6 +161,10 @@ impl Cop for Void {
         "Lint/Void"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -172,7 +176,7 @@ impl Cop for Void {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let check_methods = config.get_bool("CheckForMethodsWithNoSideEffects", false);
 
@@ -182,6 +186,8 @@ impl Cop for Void {
             diagnostics: Vec::new(),
             in_each_block: false,
             check_methods,
+            corrections,
+            correction_ranges: Vec::new(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -229,7 +235,7 @@ const NONMUTATING_METHODS_WITH_BANG: &[&[u8]] = &[
 /// Methods replaceable by `each` (e.g., `collect`, `map`).
 const METHODS_REPLACEABLE_BY_EACH: &[&[u8]] = &[b"collect", b"map"];
 
-struct VoidVisitor<'a, 'src> {
+struct VoidVisitor<'a, 'src, 'corr> {
     cop: &'a Void,
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
@@ -238,32 +244,66 @@ struct VoidVisitor<'a, 'src> {
     in_each_block: bool,
     /// Whether to check for nonmutating methods without side effects.
     check_methods: bool,
+    corrections: Option<&'corr mut Vec<crate::correction::Correction>>,
+    correction_ranges: Vec<(usize, usize)>,
 }
 
-impl VoidVisitor<'_, '_> {
+impl VoidVisitor<'_, '_, '_> {
+    fn report_offense(
+        &mut self,
+        report_offset: usize,
+        autocorrect_node: Option<&ruby_prism::Node<'_>>,
+    ) {
+        let (line, column) = self.source.offset_to_line_col(report_offset);
+        let mut diagnostic = self.cop.diagnostic(
+            self.source,
+            line,
+            column,
+            "Void value expression detected.".to_string(),
+        );
+        if let Some(node) = autocorrect_node {
+            if self.add_line_delete_correction(node) {
+                diagnostic.corrected = true;
+            }
+        }
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn add_line_delete_correction(&mut self, node: &ruby_prism::Node<'_>) -> bool {
+        let Some(corrections) = self.corrections.as_deref_mut() else {
+            return false;
+        };
+        let Some((start, end)) = standalone_line_range(self.source, node) else {
+            return false;
+        };
+        if self
+            .correction_ranges
+            .iter()
+            .any(|(existing_start, existing_end)| *existing_start == start && *existing_end == end)
+        {
+            return false;
+        }
+        corrections.push(crate::correction::Correction {
+            start,
+            end,
+            replacement: String::new(),
+            cop_name: self.cop.name(),
+            cop_index: 0,
+        });
+        self.correction_ranges.push((start, end));
+        true
+    }
+
     fn check_void_expression(&mut self, stmt: &ruby_prism::Node<'_>) {
         // Check non-operator void expressions (report at expression start)
         if is_void_non_operator(stmt) {
-            let loc = stmt.location();
-            let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-            self.diagnostics.push(self.cop.diagnostic(
-                self.source,
-                line,
-                column,
-                "Void value expression detected.".to_string(),
-            ));
+            self.report_offense(stmt.location().start_offset(), Some(stmt));
             return;
         }
         // Check void operators separately (report at operator/selector position)
         // RuboCop reports operators at node.loc.selector (the operator name)
         if let Some(op_offset) = void_operator_name_offset(stmt, self.in_each_block) {
-            let (line, column) = self.source.offset_to_line_col(op_offset);
-            self.diagnostics.push(self.cop.diagnostic(
-                self.source,
-                line,
-                column,
-                "Void value expression detected.".to_string(),
-            ));
+            self.report_offense(op_offset, None);
             return;
         }
         // RuboCop unwraps if/unless/ternary nodes to check their body for void
@@ -283,14 +323,7 @@ impl VoidVisitor<'_, '_> {
     /// which does NOT call check_void_op).
     fn check_void_expression_no_op(&mut self, stmt: &ruby_prism::Node<'_>) {
         if is_void_non_operator(stmt) {
-            let loc = stmt.location();
-            let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-            self.diagnostics.push(self.cop.diagnostic(
-                self.source,
-                line,
-                column,
-                "Void value expression detected.".to_string(),
-            ));
+            self.report_offense(stmt.location().start_offset(), Some(stmt));
             return;
         }
         self.check_conditional_body(stmt);
@@ -314,14 +347,7 @@ impl VoidVisitor<'_, '_> {
             if body.len() == 1 {
                 let inner = &body[0];
                 if is_void_non_operator(inner) {
-                    let loc = inner.location();
-                    let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-                    self.diagnostics.push(self.cop.diagnostic(
-                        self.source,
-                        line,
-                        column,
-                        "Void value expression detected.".to_string(),
-                    ));
+                    self.report_offense(inner.location().start_offset(), Some(inner));
                 }
             }
         }
@@ -350,13 +376,7 @@ impl VoidVisitor<'_, '_> {
             return;
         }
 
-        let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
-            self.source,
-            line,
-            column,
-            "Void value expression detected.".to_string(),
-        ));
+        self.report_offense(loc.start_offset(), Some(stmt));
     }
 
     /// Check statements in a body, optionally including the last expression
@@ -376,6 +396,53 @@ impl VoidVisitor<'_, '_> {
             self.check_void_expression(stmt);
         }
     }
+}
+
+fn standalone_line_range(
+    source: &SourceFile,
+    node: &ruby_prism::Node<'_>,
+) -> Option<(usize, usize)> {
+    let loc = node.location();
+    let start = loc.start_offset();
+    let end = loc.end_offset();
+    if start >= end {
+        return None;
+    }
+
+    let bytes = source.as_bytes();
+    if bytes.get(start..end)?.contains(&b'\n') {
+        return None;
+    }
+
+    let mut line_start = start;
+    while line_start > 0 && bytes[line_start - 1] != b'\n' {
+        line_start -= 1;
+    }
+
+    let mut line_end = end;
+    while line_end < bytes.len() && bytes[line_end] != b'\n' {
+        line_end += 1;
+    }
+
+    if bytes[line_start..start]
+        .iter()
+        .any(|b| !matches!(*b, b' ' | b'\t'))
+    {
+        return None;
+    }
+    if bytes[end..line_end]
+        .iter()
+        .any(|b| !matches!(*b, b' ' | b'\t'))
+    {
+        return None;
+    }
+
+    let delete_end = if line_end < bytes.len() {
+        line_end + 1
+    } else {
+        line_end
+    };
+    Some((line_start, delete_end))
 }
 
 /// Check if a node is an `each` or `tap` method call (for void context detection).
@@ -650,7 +717,7 @@ fn void_operator_name_offset(node: &ruby_prism::Node<'_>, in_each_block: bool) -
     }
 }
 
-impl<'pr> Visit<'pr> for VoidVisitor<'_, '_> {
+impl<'pr> Visit<'pr> for VoidVisitor<'_, '_, '_> {
     fn visit_statements_node(&mut self, node: &ruby_prism::StatementsNode<'pr>) {
         let body: Vec<_> = node.body().iter().collect();
         // For regular statements nodes (not in special void contexts),
@@ -866,5 +933,12 @@ mod tests {
             source,
             config_with_check_methods(),
         );
+    }
+
+    #[test]
+    fn test_autocorrect_removes_simple_standalone_void_expressions() {
+        let source = b"def demo\n  42\n  x = 1\n  x\n  puts x\nend\n";
+        let expected = b"def demo\n  x = 1\n  puts x\nend\n";
+        crate::testutil::assert_cop_autocorrect(&Void, source, expected);
     }
 }
