@@ -59,6 +59,10 @@ impl Cop for WhileUntilModifier {
         "Style/WhileUntilModifier"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[UNTIL_NODE, WHILE_NODE]
     }
@@ -70,7 +74,7 @@ impl Cop for WhileUntilModifier {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let (kw_loc, statements, keyword) = if let Some(while_node) = node.as_while_node() {
             (while_node.keyword_loc(), while_node.statements(), "while")
@@ -281,7 +285,7 @@ impl Cop for WhileUntilModifier {
         }
 
         let (line, column) = source.offset_to_line_col(kw_loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             line,
             column,
@@ -289,7 +293,24 @@ impl Cop for WhileUntilModifier {
                 "Favor modifier `{}` usage when having a single-line body.",
                 keyword
             ),
-        ));
+        );
+
+        if let Some(corrections) = corrections {
+            // Conservative subset: avoid comments/trailing code to keep rewrite bounded.
+            if !has_first_line_comment && !has_code_after {
+                let replacement = format!("{} {} {}", body_trimmed, keyword, pred_str.trim());
+                corrections.push(crate::correction::Correction {
+                    start: node.location().start_offset(),
+                    end: node.location().end_offset(),
+                    replacement,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+        }
+
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -297,4 +318,5 @@ impl Cop for WhileUntilModifier {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(WhileUntilModifier, "cops/style/while_until_modifier");
+    crate::cop_autocorrect_fixture_tests!(WhileUntilModifier, "cops/style/while_until_modifier");
 }
