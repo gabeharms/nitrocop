@@ -36,6 +36,10 @@ impl Cop for UselessNumericOperation {
         &[CALL_NODE, INTEGER_NODE, LOCAL_VARIABLE_OPERATOR_WRITE_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -43,7 +47,7 @@ impl Cop for UselessNumericOperation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Check for binary operator calls: x + 0, x - 0, x * 1, x / 1, x ** 1
         // RuboCop only matches `(call (call nil? $_) $_ (int $_))`, meaning the
@@ -94,7 +98,23 @@ impl Cop for UselessNumericOperation {
             if is_useless {
                 let loc = call.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
+                let mut diag = self.diagnostic(source, line, column, MSG.to_string());
+
+                if let Some(ref mut corr) = corrections {
+                    let replacement = std::str::from_utf8(recv.location().as_slice())
+                        .unwrap_or_default()
+                        .to_string();
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                diagnostics.push(diag);
             }
         }
 
@@ -112,7 +132,23 @@ impl Cop for UselessNumericOperation {
             if is_useless {
                 let loc = op_assign.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
+                let mut diag = self.diagnostic(source, line, column, MSG.to_string());
+
+                if let Some(ref mut corr) = corrections {
+                    let variable = std::str::from_utf8(op_assign.name().as_slice())
+                        .unwrap_or_default()
+                        .to_string();
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: format!("{variable} = {variable}"),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+
+                diagnostics.push(diag);
             }
         }
     }
@@ -140,6 +176,10 @@ fn is_one(node: &ruby_prism::Node<'_>, source: &SourceFile) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        UselessNumericOperation,
+        "cops/lint/useless_numeric_operation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         UselessNumericOperation,
         "cops/lint/useless_numeric_operation"
     );
