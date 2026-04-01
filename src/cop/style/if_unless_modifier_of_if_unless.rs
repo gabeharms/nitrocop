@@ -10,6 +10,10 @@ impl Cop for IfUnlessModifierOfIfUnless {
         "Style/IfUnlessModifierOfIfUnless"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[IF_NODE, UNLESS_NODE]
     }
@@ -21,7 +25,7 @@ impl Cop for IfUnlessModifierOfIfUnless {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Check modifier `if`
         if let Some(if_node) = node.as_if_node() {
@@ -46,18 +50,40 @@ impl Cop for IfUnlessModifierOfIfUnless {
                 if body.len() == 1 && is_conditional(&body[0]) {
                     let keyword = "if";
                     let (line, column) = source.offset_to_line_col(kw_loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         line,
                         column,
                         format!("Avoid modifier `{}` after another conditional.", keyword),
-                    ));
+                    );
+
+                    if let Some(corrections) = corrections {
+                        let body_src = String::from_utf8_lossy(&source.as_bytes()[
+                            body[0].location().start_offset()..body[0].location().end_offset()
+                        ]);
+                        let predicate = if_node.predicate();
+                        let predicate_src = String::from_utf8_lossy(&source.as_bytes()[
+                            predicate.location().start_offset()..predicate.location().end_offset()
+                        ]);
+                        let replacement =
+                            format!("if {}\n{}\nend", predicate_src.trim(), body_src.trim());
+                        corrections.push(crate::correction::Correction {
+                            start: node.location().start_offset(),
+                            end: node.location().end_offset(),
+                            replacement,
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+
+                    diagnostics.push(diagnostic);
                 }
             }
         }
 
         // Check modifier `unless`
-        if let Some(unless_node) = node.as_unless_node() {
+        else if let Some(unless_node) = node.as_unless_node() {
             // Must be modifier form (no end keyword)
             if unless_node.end_keyword_loc().is_some() {
                 return;
@@ -73,12 +99,37 @@ impl Cop for IfUnlessModifierOfIfUnless {
                 let body: Vec<_> = stmts.body().iter().collect();
                 if body.len() == 1 && is_conditional(&body[0]) {
                     let (line, column) = source.offset_to_line_col(kw_loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         line,
                         column,
                         "Avoid modifier `unless` after another conditional.".to_string(),
-                    ));
+                    );
+
+                    if let Some(corrections) = corrections {
+                        let body_src = String::from_utf8_lossy(&source.as_bytes()[
+                            body[0].location().start_offset()..body[0].location().end_offset()
+                        ]);
+                        let predicate = unless_node.predicate();
+                        let predicate_src = String::from_utf8_lossy(&source.as_bytes()[
+                            predicate.location().start_offset()..predicate.location().end_offset()
+                        ]);
+                        let replacement = format!(
+                            "unless {}\n{}\nend",
+                            predicate_src.trim(),
+                            body_src.trim()
+                        );
+                        corrections.push(crate::correction::Correction {
+                            start: node.location().start_offset(),
+                            end: node.location().end_offset(),
+                            replacement,
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+
+                    diagnostics.push(diagnostic);
                 }
             }
         }
@@ -93,6 +144,10 @@ fn is_conditional(node: &ruby_prism::Node<'_>) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        IfUnlessModifierOfIfUnless,
+        "cops/style/if_unless_modifier_of_if_unless"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         IfUnlessModifierOfIfUnless,
         "cops/style/if_unless_modifier_of_if_unless"
     );
