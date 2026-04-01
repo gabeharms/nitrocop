@@ -212,7 +212,9 @@ impl Cop for UselessSetterCall {
         );
 
         if let Some(ref mut corr) = corrections {
-            let line_start = source.line_col_to_offset(line, 0).unwrap_or(loc.start_offset());
+            let line_start = source
+                .line_col_to_offset(line, 0)
+                .unwrap_or(loc.start_offset());
             let indent = source
                 .try_byte_slice(line_start, loc.start_offset())
                 .unwrap_or("");

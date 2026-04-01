@@ -144,6 +144,10 @@ impl Cop for InclusiveLanguage {
         false
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -151,7 +155,7 @@ impl Cop for InclusiveLanguage {
         code_map: &CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let check_identifiers = config.get_bool("CheckIdentifiers", true);
         let check_constants = config.get_bool("CheckConstants", true);
@@ -223,7 +227,20 @@ impl Cop for InclusiveLanguage {
                         );
                         if should_flag {
                             let msg = format_message(&term.name, &term.suggestions);
-                            diagnostics.push(self.diagnostic(source, line_num, abs_pos, msg));
+                            let mut diag = self.diagnostic(source, line_num, abs_pos, msg);
+                            if let (Some(corr), Some(replacement)) =
+                                (corrections.as_mut(), term.suggestions.first())
+                            {
+                                corr.push(crate::correction::Correction {
+                                    start: byte_offset,
+                                    end: byte_offset + match_len,
+                                    replacement: replacement.clone(),
+                                    cop_name: self.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                            diagnostics.push(diag);
                         }
                     }
                 } else {
@@ -252,7 +269,20 @@ impl Cop for InclusiveLanguage {
                                 || is_whole_word(&line_lower, abs_pos, term.pattern.len()))
                         {
                             let msg = format_message(&term.name, &term.suggestions);
-                            diagnostics.push(self.diagnostic(source, line_num, abs_pos, msg));
+                            let mut diag = self.diagnostic(source, line_num, abs_pos, msg);
+                            if let (Some(corr), Some(replacement)) =
+                                (corrections.as_mut(), term.suggestions.first())
+                            {
+                                corr.push(crate::correction::Correction {
+                                    start: byte_offset,
+                                    end: byte_offset + term.pattern.len(),
+                                    replacement: replacement.clone(),
+                                    cop_name: self.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+                            diagnostics.push(diag);
                         }
 
                         search_start = abs_pos + term.pattern.len();
@@ -276,7 +306,7 @@ impl Cop for InclusiveLanguage {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Handle `undef new_slave, new_safe_slave` — Prism represents undef
         // arguments as SymbolNodes, which the CodeMap marks as non-code. But
@@ -314,7 +344,22 @@ impl Cop for InclusiveLanguage {
                     let loc = sym.location();
                     let (line, column) = source.offset_to_line_col(loc.start_offset());
                     let msg = format_message(&term.name, &term.suggestions);
-                    diagnostics.push(self.diagnostic(source, line, column, msg));
+                    let mut diag = self.diagnostic(source, line, column, msg);
+                    if let Some(pos) = find_term(&name_lower, term) {
+                        if let (Some(corr), Some(replacement)) =
+                            (corrections.as_mut(), term.suggestions.first())
+                        {
+                            corr.push(crate::correction::Correction {
+                                start: loc.start_offset() + pos,
+                                end: loc.start_offset() + pos + term.pattern.len(),
+                                replacement: replacement.clone(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+                    }
+                    diagnostics.push(diag);
                 }
             }
         }
@@ -829,6 +874,7 @@ mod tests {
     use crate::testutil::run_cop_full_with_config;
 
     crate::cop_fixture_tests!(InclusiveLanguage, "cops/naming/inclusive_language");
+    crate::cop_autocorrect_fixture_tests!(InclusiveLanguage, "cops/naming/inclusive_language");
 
     #[test]
     fn regex_term_only_matches_at_start_of_line() {

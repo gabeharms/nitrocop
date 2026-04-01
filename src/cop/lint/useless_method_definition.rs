@@ -43,6 +43,10 @@ impl Cop for UselessMethodDefinition {
         Severity::Warning
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -50,12 +54,13 @@ impl Cop for UselessMethodDefinition {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = UselessMethodVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections,
             inside_non_access_modifier_call: false,
         };
         visitor.visit(&parse_result.node());
@@ -67,6 +72,7 @@ struct UselessMethodVisitor<'a, 'src> {
     cop: &'a UselessMethodDefinition,
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Option<&'a mut Vec<crate::correction::Correction>>,
     /// True when we are inside a CallNode that is NOT an access modifier
     /// (e.g., `memoize def foo; super; end`). DefNodes in this context should
     /// not be flagged.
@@ -170,12 +176,26 @@ impl UselessMethodVisitor<'_, '_> {
     fn report(&mut self, def_node: &ruby_prism::DefNode<'_>) {
         let loc = def_node.location();
         let (line, column) = self.source.offset_to_line_col(loc.start_offset());
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diag = self.cop.diagnostic(
             self.source,
             line,
             column,
             "Useless method definition detected. The method just delegates to `super`.".to_string(),
-        ));
+        );
+
+        if let Some(corrections) = self.corrections.as_deref_mut() {
+            let loc = def_node.location();
+            corrections.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: "".to_string(),
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        self.diagnostics.push(diag);
     }
 }
 
@@ -286,6 +306,10 @@ fn super_args_match_params_by_source(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        UselessMethodDefinition,
+        "cops/lint/useless_method_definition"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         UselessMethodDefinition,
         "cops/lint/useless_method_definition"
     );
