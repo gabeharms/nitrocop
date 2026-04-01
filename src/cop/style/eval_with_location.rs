@@ -32,6 +32,10 @@ impl Cop for EvalWithLocation {
         "Style/EvalWithLocation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             CALL_NODE,
@@ -51,7 +55,7 @@ impl Cop for EvalWithLocation {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let call = match node.as_call_node() {
             Some(c) => c,
@@ -140,7 +144,40 @@ impl Cop for EvalWithLocation {
             } else {
                 format!("Pass `__FILE__` and `__LINE__` to `{}`.", method_str)
             };
-            diagnostics.push(self.diagnostic(source, line, column, msg));
+            let mut diag = self.diagnostic(source, line, column, msg);
+
+            if let Some(ref mut corr) = corrections {
+                let missing_args = if needs_binding {
+                    match arg_list.len() {
+                        1 => ", binding, __FILE__, __LINE__",
+                        2 => ", __FILE__, __LINE__",
+                        3 => ", __LINE__",
+                        _ => "",
+                    }
+                } else {
+                    match arg_list.len() {
+                        1 => ", __FILE__, __LINE__",
+                        2 => ", __LINE__",
+                        _ => "",
+                    }
+                };
+
+                if !missing_args.is_empty() {
+                    let insert_at = arg_list
+                        .last()
+                        .map_or(loc.end_offset(), |arg| arg.location().end_offset());
+                    corr.push(crate::correction::Correction {
+                        start: insert_at,
+                        end: insert_at,
+                        replacement: missing_args.to_string(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+            }
+
+            diagnostics.push(diag);
         }
     }
 }
@@ -149,4 +186,5 @@ impl Cop for EvalWithLocation {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(EvalWithLocation, "cops/style/eval_with_location");
+    crate::cop_autocorrect_fixture_tests!(EvalWithLocation, "cops/style/eval_with_location");
 }
