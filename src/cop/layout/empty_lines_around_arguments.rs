@@ -131,7 +131,7 @@ fn check_blank_lines_before(
     offset: usize,
     diagnostics: &mut Vec<Diagnostic>,
     cop: &EmptyLinesAroundArguments,
-    mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+    corrections: Option<&mut Vec<crate::correction::Correction>>,
 ) {
     // Find the start of the line containing `offset`
     let (target_line, _) = source.offset_to_line_col(offset);
@@ -163,27 +163,26 @@ fn check_blank_lines_before(
             && line_num <= lines.len()
             && is_blank_or_whitespace_line(lines[line_num - 1])
         {
-            let mut diag = cop.diagnostic(
+            diagnostics.push(cop.diagnostic(
                 source,
                 line_num,
                 0,
                 "Empty line detected around arguments.".to_string(),
-            );
-
-            if let Some(ref mut corr) = corrections {
-                if let Some(target_line_start) = source.line_col_to_offset(target_line, 0) {
-                    corr.push(crate::correction::Correction {
-                        start: pos,
-                        end: target_line_start,
-                        replacement: "\n".to_string(),
+            ));
+            if let Some(corrections) = corrections {
+                if let (Some(start), Some(end)) = (
+                    source.line_col_to_offset(line_num, 0),
+                    source.line_col_to_offset(line_num + 1, 0),
+                ) {
+                    corrections.push(crate::correction::Correction {
+                        start,
+                        end,
+                        replacement: String::new(),
                         cop_name: cop.name(),
                         cop_index: 0,
                     });
-                    diag.corrected = true;
                 }
             }
-
-            diagnostics.push(diag);
         }
     }
 }

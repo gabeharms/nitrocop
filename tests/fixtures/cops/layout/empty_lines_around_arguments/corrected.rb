@@ -41,6 +41,7 @@ multi(
 # Multiple blank lines in one gap still report only the last blank line
 double_gap(
   foo,
+
   bar
 )
 
