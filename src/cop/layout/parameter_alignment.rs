@@ -110,7 +110,8 @@ impl Cop for ParameterAlignment {
                     "Align the parameters of a method definition if they span more than one line."
                 };
 
-                let mut diagnostic = self.diagnostic(source, param_line, param_col, msg.to_string());
+                let mut diagnostic =
+                    self.diagnostic(source, param_line, param_col, msg.to_string());
                 if let Some(corrections) = corrections.as_mut() {
                     let line_start = source.line_start_offset(param_line);
                     corrections.push(Correction {

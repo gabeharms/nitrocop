@@ -49,6 +49,10 @@ impl Cop for RedundantInitialize {
         "Style/RedundantInitialize"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[DEF_NODE, FORWARDING_SUPER_NODE, STATEMENTS_NODE, SUPER_NODE]
     }
@@ -60,7 +64,7 @@ impl Cop for RedundantInitialize {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allow_comments = config.get_bool("AllowComments", true);
 
@@ -105,12 +109,23 @@ impl Cop for RedundantInitialize {
                 }
                 let loc = def_node.location();
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     line,
                     column,
                     "Remove unnecessary empty `initialize` method.".to_string(),
-                ));
+                );
+                if let Some(corrections) = corrections.as_mut() {
+                    corrections.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: String::new(),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+                diagnostics.push(diagnostic);
                 return;
             }
         };
@@ -193,12 +208,23 @@ impl Cop for RedundantInitialize {
 
         let loc = def_node.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             line,
             column,
             "Remove unnecessary `initialize` method.".to_string(),
-        ));
+        );
+        if let Some(corrections) = corrections.as_mut() {
+            corrections.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement: String::new(),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -339,6 +365,7 @@ fn super_args_match_params(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantInitialize, "cops/style/redundant_initialize");
+    crate::cop_autocorrect_fixture_tests!(RedundantInitialize, "cops/style/redundant_initialize");
 
     #[test]
     fn single_line_def_with_inline_comment_no_offense() {

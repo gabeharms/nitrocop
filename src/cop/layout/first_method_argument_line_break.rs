@@ -85,7 +85,9 @@ impl Cop for FirstMethodArgumentLineBreak {
             .get_string_array("AllowedMethods")
             .unwrap_or_default();
 
-        let (start_offset, insert_start, force_first_col_indent, arg_locs) = if let Some(call) = node.as_call_node() {
+        let (start_offset, insert_start, force_first_col_indent, arg_locs) = if let Some(call) =
+            node.as_call_node()
+        {
             if allowed_methods
                 .iter()
                 .any(|method| method.as_bytes() == call.name().as_slice())

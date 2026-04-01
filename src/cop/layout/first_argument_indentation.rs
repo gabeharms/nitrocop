@@ -196,13 +196,12 @@ impl FirstArgVisitor<'_> {
 
             let line_start = self.source.line_start_offset(arg_line);
             let current_indent = &self.source.as_bytes()[line_start..first_arg_loc.start_offset()];
-            let replacement = if !current_indent.is_empty()
-                && current_indent.iter().all(|&b| b == b'\t')
-            {
-                "\t".repeat(expected)
-            } else {
-                " ".repeat(expected)
-            };
+            let replacement =
+                if !current_indent.is_empty() && current_indent.iter().all(|&b| b == b'\t') {
+                    "\t".repeat(expected)
+                } else {
+                    " ".repeat(expected)
+                };
 
             self.corrections.push(Correction {
                 start: line_start,

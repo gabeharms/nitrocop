@@ -250,13 +250,12 @@ impl HashIndentVisitor<'_> {
             );
             let line_start = self.source.line_start_offset(brace_line);
             let current_indent = &self.source.as_bytes()[line_start..brace_start];
-            let replacement = if !current_indent.is_empty()
-                && current_indent.iter().all(|&b| b == b'\t')
-            {
-                "\t".repeat(expected_col)
-            } else {
-                " ".repeat(expected_col)
-            };
+            let replacement =
+                if !current_indent.is_empty() && current_indent.iter().all(|&b| b == b'\t') {
+                    "\t".repeat(expected_col)
+                } else {
+                    " ".repeat(expected_col)
+                };
             self.corrections.push(Correction {
                 start: line_start,
                 end: brace_start,
@@ -307,13 +306,12 @@ impl HashIndentVisitor<'_> {
                 let line_start = self.source.line_start_offset(elem_line);
                 let elem_start = first_loc.start_offset();
                 let current_indent = &self.source.as_bytes()[line_start..elem_start];
-                let replacement = if !current_indent.is_empty()
-                    && current_indent.iter().all(|&b| b == b'\t')
-                {
-                    "\t".repeat(expected)
-                } else {
-                    " ".repeat(expected)
-                };
+                let replacement =
+                    if !current_indent.is_empty() && current_indent.iter().all(|&b| b == b'\t') {
+                        "\t".repeat(expected)
+                    } else {
+                        " ".repeat(expected)
+                    };
                 self.corrections.push(Correction {
                     start: line_start,
                     end: elem_start,

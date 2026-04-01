@@ -43,6 +43,10 @@ impl Cop for RedundantConditional {
         "Style/RedundantConditional"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE, ELSE_NODE, FALSE_NODE, IF_NODE, TRUE_NODE]
     }
@@ -54,7 +58,7 @@ impl Cop for RedundantConditional {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let if_node = match node.as_if_node() {
             Some(n) => n,
@@ -111,7 +115,7 @@ impl Cop for RedundantConditional {
 
         let loc = if_node.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             line,
             column,
@@ -119,7 +123,20 @@ impl Cop for RedundantConditional {
                 "This conditional expression can just be replaced by `{}`.",
                 replacement
             ),
-        ));
+        );
+
+        if let Some(corrections) = corrections.as_mut() {
+            corrections.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -127,4 +144,5 @@ impl Cop for RedundantConditional {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantConditional, "cops/style/redundant_conditional");
+    crate::cop_autocorrect_fixture_tests!(RedundantConditional, "cops/style/redundant_conditional");
 }

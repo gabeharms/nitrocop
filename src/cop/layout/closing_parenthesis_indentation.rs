@@ -172,7 +172,10 @@ fn check_parens(
                     close_line,
                     close_col,
                     open_line_indent,
-                    format!("Indent `)` to column {} (not {}).", open_line_indent, close_col),
+                    format!(
+                        "Indent `)` to column {} (not {}).",
+                        open_line_indent, close_col
+                    ),
                     &mut corrections,
                 )];
             }
@@ -207,27 +210,29 @@ fn check_parens(
     }
 
     let first_arg = args.arguments().iter().next().unwrap();
-    let element_columns: Vec<usize> =
-        if first_arg.as_keyword_hash_node().is_some() || first_arg.as_hash_node().is_some() {
-            let pairs: Vec<ruby_prism::Node<'_>> = if let Some(kh) = first_arg.as_keyword_hash_node() {
-                kh.elements().iter().collect()
-            } else if let Some(h) = first_arg.as_hash_node() {
-                h.elements().iter().collect()
-            } else {
-                vec![]
-            };
-            pairs
-                .iter()
-                .map(|p| source.offset_to_line_col(p.location().start_offset()).1)
-                .collect()
+    let element_columns: Vec<usize> = if first_arg.as_keyword_hash_node().is_some()
+        || first_arg.as_hash_node().is_some()
+    {
+        let pairs: Vec<ruby_prism::Node<'_>> = if let Some(kh) = first_arg.as_keyword_hash_node() {
+            kh.elements().iter().collect()
+        } else if let Some(h) = first_arg.as_hash_node() {
+            h.elements().iter().collect()
         } else {
-            args.arguments()
-                .iter()
-                .map(|a| source.offset_to_line_col(a.location().start_offset()).1)
-                .collect()
+            vec![]
         };
+        pairs
+            .iter()
+            .map(|p| source.offset_to_line_col(p.location().start_offset()).1)
+            .collect()
+    } else {
+        args.arguments()
+            .iter()
+            .map(|a| source.offset_to_line_col(a.location().start_offset()).1)
+            .collect()
+    };
 
-    let all_aligned = !element_columns.is_empty() && element_columns.iter().all(|&c| c == element_columns[0]);
+    let all_aligned =
+        !element_columns.is_empty() && element_columns.iter().all(|&c| c == element_columns[0]);
     if all_aligned {
         if close_col != open_col {
             return vec![corrected_close_paren_diagnostic(
@@ -256,7 +261,10 @@ fn check_parens(
             close_line,
             close_col,
             open_line_indent,
-            format!("Indent `)` to column {} (not {}).", open_line_indent, close_col),
+            format!(
+                "Indent `)` to column {} (not {}).",
+                open_line_indent, close_col
+            ),
             &mut corrections,
         )];
     }
@@ -293,7 +301,10 @@ fn check_def_parens(
                     close_line,
                     close_col,
                     open_line_indent,
-                    format!("Indent `)` to column {} (not {}).", open_line_indent, close_col),
+                    format!(
+                        "Indent `)` to column {} (not {}).",
+                        open_line_indent, close_col
+                    ),
                     &mut corrections,
                 )];
             }
@@ -314,10 +325,15 @@ fn check_def_parens(
     let keyword_rest_offset = params.keyword_rest().map(|kr| kr.location().start_offset());
     let block_offset = params.block().map(|b| b.location().start_offset());
 
-    let earliest_offset = [first_param_offset, rest_offset, keyword_rest_offset, block_offset]
-        .into_iter()
-        .flatten()
-        .min();
+    let earliest_offset = [
+        first_param_offset,
+        rest_offset,
+        keyword_rest_offset,
+        block_offset,
+    ]
+    .into_iter()
+    .flatten()
+    .min();
     let earliest_offset = match earliest_offset {
         Some(o) => o,
         None => return Vec::new(),
@@ -346,7 +362,8 @@ fn check_def_parens(
     }
 
     let param_columns: Vec<usize> = collect_def_param_columns(source, &params);
-    let all_aligned = !param_columns.is_empty() && param_columns.iter().all(|&c| c == param_columns[0]);
+    let all_aligned =
+        !param_columns.is_empty() && param_columns.iter().all(|&c| c == param_columns[0]);
 
     if all_aligned {
         if close_col != open_col {
@@ -376,7 +393,10 @@ fn check_def_parens(
             close_line,
             close_col,
             open_line_indent,
-            format!("Indent `)` to column {} (not {}).", open_line_indent, close_col),
+            format!(
+                "Indent `)` to column {} (not {}).",
+                open_line_indent, close_col
+            ),
             &mut corrections,
         )];
     }
@@ -454,7 +474,10 @@ fn check_grouped_parens(
                     close_line,
                     close_col,
                     open_line_indent,
-                    format!("Indent `)` to column {} (not {}).", open_line_indent, close_col),
+                    format!(
+                        "Indent `)` to column {} (not {}).",
+                        open_line_indent, close_col
+                    ),
                     &mut corrections,
                 )];
             }
@@ -503,7 +526,10 @@ fn check_grouped_parens(
             close_line,
             close_col,
             open_line_indent,
-            format!("Indent `)` to column {} (not {}).", open_line_indent, close_col),
+            format!(
+                "Indent `)` to column {} (not {}).",
+                open_line_indent, close_col
+            ),
             &mut corrections,
         )];
     }
