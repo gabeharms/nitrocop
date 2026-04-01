@@ -67,6 +67,10 @@ impl Cop for EndlessMethod {
         "Style/EndlessMethod"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[DEF_NODE]
     }
@@ -78,7 +82,7 @@ impl Cop for EndlessMethod {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // RuboCop: minimum_target_ruby_version 3.0
         let ruby_version = config
@@ -132,6 +136,7 @@ impl Cop for EndlessMethod {
                         column,
                         "Avoid endless method definitions.".to_string(),
                     ));
+                    self.push_autocorrect(source, &def_node, config, corrections);
                 }
             }
             "allow_single_line" => {
@@ -147,6 +152,7 @@ impl Cop for EndlessMethod {
                             column,
                             "Avoid endless method definitions with multiple lines.".to_string(),
                         ));
+                        self.push_autocorrect(source, &def_node, config, corrections);
                     }
                 }
             }
@@ -169,11 +175,60 @@ impl Cop for EndlessMethod {
                             column,
                             "Avoid endless method definitions with multiple lines.".to_string(),
                         ));
+                        self.push_autocorrect(source, &def_node, config, corrections);
                     }
                 }
             }
             _ => {}
         }
+    }
+}
+
+impl EndlessMethod {
+    fn push_autocorrect(
+        &self,
+        source: &SourceFile,
+        def_node: &ruby_prism::DefNode<'_>,
+        config: &CopConfig,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
+    ) {
+        let Some(corrections) = corrections else {
+            return;
+        };
+        let Some(equal_loc) = def_node.equal_loc() else {
+            return;
+        };
+
+        let loc = def_node.location();
+        let def_start = loc.start_offset();
+        let def_end = loc.end_offset();
+        let eq_start = equal_loc.start_offset();
+        let body_start = equal_loc.end_offset();
+
+        let (_, column) = source.offset_to_line_col(def_start);
+        let base_indent = " ".repeat(column);
+        let body_indent = format!(
+            "{base_indent}{}",
+            " ".repeat(config.get_usize("IndentationWidth", 2))
+        );
+
+        let header = source
+            .byte_slice(def_start, eq_start, "")
+            .trim_end()
+            .to_string();
+        let body = source.byte_slice(body_start, def_end, "").trim();
+        if body.is_empty() {
+            return;
+        }
+
+        let replacement = format!("{header}\n{body_indent}{body}\n{base_indent}end");
+        corrections.push(crate::correction::Correction {
+            start: def_start,
+            end: def_end,
+            replacement,
+            cop_name: self.name(),
+            cop_index: 0,
+        });
     }
 }
 
@@ -205,6 +260,16 @@ mod tests {
         crate::testutil::assert_cop_no_offenses_full_with_config(
             &EndlessMethod,
             include_bytes!("../../../tests/fixtures/cops/style/endless_method/no_offense.rb"),
+            ruby30_config(),
+        );
+    }
+
+    #[test]
+    fn autocorrect_offense_with_ruby30() {
+        crate::testutil::assert_cop_autocorrect_with_config(
+            &EndlessMethod,
+            include_bytes!("../../../tests/fixtures/cops/style/endless_method/offense.rb"),
+            include_bytes!("../../../tests/fixtures/cops/style/endless_method/corrected.rb"),
             ruby30_config(),
         );
     }
