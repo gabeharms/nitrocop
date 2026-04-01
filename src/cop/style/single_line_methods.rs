@@ -100,7 +100,11 @@ fn multiline_replacement(
         .unwrap_or(end_start);
 
     let mut header = String::from_utf8_lossy(&source.as_bytes()[def_start..header_end]).to_string();
-    header = header.trim_end().trim_end_matches(';').trim_end().to_string();
+    header = header
+        .trim_end()
+        .trim_end_matches(';')
+        .trim_end()
+        .to_string();
 
     let mut replacement = String::new();
     replacement.push_str(&header);

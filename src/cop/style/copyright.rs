@@ -14,12 +14,16 @@ impl Cop for Copyright {
         false // Matches vendor config/default.yml: Enabled: false
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_lines(
         &self,
         source: &SourceFile,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let notice_pattern = config.get_str("Notice", r"^Copyright (\(c\) )?2[0-9]{3} .+");
         let autocorrect_notice = config.get_str("AutocorrectNotice", "");
@@ -67,7 +71,7 @@ impl Cop for Copyright {
         }
 
         // No copyright notice found
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             1,
             0,
@@ -75,7 +79,20 @@ impl Cop for Copyright {
                 "Include a copyright notice matching `{}` before any code.",
                 notice_pattern
             ),
-        ));
+        );
+
+        if let Some(corrections) = corrections.as_mut() {
+            corrections.push(crate::correction::Correction {
+                start: 0,
+                end: 0,
+                replacement: format!("{}\n", autocorrect_notice),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+
+        diagnostics.push(diagnostic);
     }
 }
 
@@ -83,6 +100,7 @@ impl Cop for Copyright {
 mod tests {
     use super::*;
     use crate::cop::CopConfig;
+    use crate::testutil::assert_cop_autocorrect_with_config;
     use std::collections::HashMap;
 
     /// Build a CopConfig with a non-empty AutocorrectNotice so the cop actually runs.
@@ -153,6 +171,26 @@ mod tests {
             diagnostics.is_empty(),
             "Expected no offenses with empty AutocorrectNotice, got: {:?}",
             diagnostics,
+        );
+    }
+
+    #[test]
+    fn autocorrect_inserts_notice_at_top() {
+        assert_cop_autocorrect_with_config(
+            &Copyright,
+            b"class Foo; end\n",
+            b"# Copyright (c) 2024 Acme Inc.\nclass Foo; end\n",
+            config_with_autocorrect_notice(),
+        );
+    }
+
+    #[test]
+    fn autocorrect_preserves_existing_comments_and_code() {
+        assert_cop_autocorrect_with_config(
+            &Copyright,
+            b"# some other banner\nclass Foo\nend\n",
+            b"# Copyright (c) 2024 Acme Inc.\n# some other banner\nclass Foo\nend\n",
+            config_with_autocorrect_notice(),
         );
     }
 }
