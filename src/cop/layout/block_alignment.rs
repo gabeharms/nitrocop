@@ -1,5 +1,6 @@
 use crate::cop::node_type::{CALL_NODE, LAMBDA_NODE};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -211,6 +212,10 @@ impl Cop for BlockAlignment {
         "Layout/BlockAlignment"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[CALL_NODE, LAMBDA_NODE]
     }
@@ -222,11 +227,18 @@ impl Cop for BlockAlignment {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
+        let mut corrections = corrections;
         // Handle LambdaNode (-> { } or -> do end) separately
         if let Some(lambda_node) = node.as_lambda_node() {
-            self.check_lambda_alignment(source, &lambda_node, config, diagnostics);
+            self.check_lambda_alignment(
+                source,
+                &lambda_node,
+                config,
+                diagnostics,
+                corrections.as_deref_mut(),
+            );
             return;
         }
 
@@ -306,6 +318,13 @@ impl Cop for BlockAlignment {
             "start_of_block" => {
                 // closing must align with do/{-line indent (first non-ws on that line)
                 if end_col != start_of_line_indent {
+                    self.push_alignment_correction(
+                        source,
+                        end_line,
+                        closing_loc.start_offset(),
+                        start_of_line_indent,
+                        corrections.as_deref_mut(),
+                    );
                     diagnostics.push(self.diagnostic(
                         source,
                         end_line,
@@ -317,6 +336,13 @@ impl Cop for BlockAlignment {
             "start_of_line" => {
                 // closing must align with start of the expression
                 if end_col != expression_start_col && end_col != expression_start_indent {
+                    self.push_alignment_correction(
+                        source,
+                        end_line,
+                        closing_loc.start_offset(),
+                        expression_start_col,
+                        corrections.as_deref_mut(),
+                    );
                     diagnostics.push(self.diagnostic(
                         source,
                         end_line,
@@ -379,6 +405,13 @@ impl Cop for BlockAlignment {
                     && end_col != call_expr_col
                     && same_line_operator_col.is_none_or(|c| end_col != c)
                 {
+                    self.push_alignment_correction(
+                        source,
+                        end_line,
+                        closing_loc.start_offset(),
+                        expression_start_col,
+                        corrections.as_deref_mut(),
+                    );
                     diagnostics.push(self.diagnostic(
                         source,
                         end_line,
@@ -395,6 +428,27 @@ impl Cop for BlockAlignment {
 }
 
 impl BlockAlignment {
+    fn push_alignment_correction(
+        &self,
+        source: &SourceFile,
+        line: usize,
+        start_offset: usize,
+        expected_col: usize,
+        corrections: Option<&mut Vec<Correction>>,
+    ) {
+        let Some(corrections) = corrections else {
+            return;
+        };
+
+        corrections.push(Correction {
+            start: source.line_start_offset(line),
+            end: start_offset,
+            replacement: " ".repeat(expected_col),
+            cop_name: self.name(),
+            cop_index: 0,
+        });
+    }
+
     /// Check alignment for lambda/proc blocks (`-> { }` or `-> do end`).
     /// LambdaNode has opening_loc/closing_loc like BlockNode but is its own node type.
     fn check_lambda_alignment(
@@ -403,6 +457,7 @@ impl BlockAlignment {
         lambda_node: &ruby_prism::LambdaNode<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let style = config.get_str("EnforcedStyleAlignWith", "either");
 
@@ -444,6 +499,13 @@ impl BlockAlignment {
         match style {
             "start_of_block" => {
                 if end_col != start_of_line_indent {
+                    self.push_alignment_correction(
+                        source,
+                        end_line,
+                        closing_loc.start_offset(),
+                        start_of_line_indent,
+                        corrections.as_deref_mut(),
+                    );
                     diagnostics.push(self.diagnostic(
                         source,
                         end_line,
@@ -454,6 +516,13 @@ impl BlockAlignment {
             }
             "start_of_line" => {
                 if end_col != expression_start_col && end_col != expression_start_indent {
+                    self.push_alignment_correction(
+                        source,
+                        end_line,
+                        closing_loc.start_offset(),
+                        expression_start_col,
+                        corrections.as_deref_mut(),
+                    );
                     diagnostics.push(self.diagnostic(
                         source,
                         end_line,
@@ -476,6 +545,13 @@ impl BlockAlignment {
                     && end_col != expression_start_indent
                     && end_col != lambda_start_col
                 {
+                    self.push_alignment_correction(
+                        source,
+                        end_line,
+                        closing_loc.start_offset(),
+                        expression_start_col,
+                        corrections.as_deref_mut(),
+                    );
                     diagnostics.push(self.diagnostic(
                         source,
                         end_line,
@@ -1045,7 +1121,8 @@ fn find_same_line_operator_lhs(bytes: &[u8], call_start_offset: usize) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::run_cop_full;
+    use crate::correction::CorrectionSet;
+    use crate::testutil::{run_cop_autocorrect, run_cop_full};
 
     crate::cop_fixture_tests!(BlockAlignment, "cops/layout/block_alignment");
 
@@ -1054,6 +1131,22 @@ mod tests {
         let source = b"items.each { |x|\n  puts x\n}\n";
         let diags = run_cop_full(&BlockAlignment, source);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn autocorrect_rewrites_misaligned_end_indentation() {
+        let source = b"items.each do |x|\n  puts x\n    end\n";
+        let (_diags, corrections) = run_cop_autocorrect(&BlockAlignment, source);
+        let corrected = CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"items.each do |x|\n  puts x\nend\n");
+    }
+
+    #[test]
+    fn autocorrect_rewrites_misaligned_lambda_end_indentation() {
+        let source = b"callback = ->(_) do\n  run\n    end\n";
+        let (_diags, corrections) = run_cop_autocorrect(&BlockAlignment, source);
+        let corrected = CorrectionSet::from_vec(corrections).apply(source);
+        assert_eq!(corrected, b"callback = ->(_) do\n  run\nend\n");
     }
 
     #[test]
