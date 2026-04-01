@@ -31,17 +31,15 @@ impl Cop for GuardClause {
             source,
             diagnostics: Vec::new(),
             corrections: Vec::new(),
-            autocorrect_enabled: corrections.is_some(),
+            emit_corrections: corrections.is_some(),
             min_body_length,
             max_line_length,
         };
         visitor.visit(&parse_result.node());
-
-        if let Some(corr) = corrections.as_mut() {
-            corr.extend(visitor.corrections);
-        }
-
         diagnostics.extend(visitor.diagnostics);
+        if let Some(ref mut corrs) = corrections {
+            corrs.extend(visitor.corrections);
+        }
     }
 }
 
@@ -50,7 +48,7 @@ struct GuardClauseVisitor<'a, 'src> {
     source: &'src SourceFile,
     diagnostics: Vec<Diagnostic>,
     corrections: Vec<crate::correction::Correction>,
-    autocorrect_enabled: bool,
+    emit_corrections: bool,
     min_body_length: usize,
     max_line_length: usize,
 }
@@ -147,12 +145,23 @@ impl GuardClauseVisitor<'_, '_> {
             ),
         );
 
-        if self.autocorrect_enabled {
-            if let Some(correction) =
-                self.build_guard_clause_correction_for_if(node, &condition_src)
-            {
-                self.corrections.push(correction);
-                diagnostic.corrected = true;
+        if self.emit_corrections {
+            if let Some(statements) = node.statements() {
+                if let Some(replacement) = self.build_guard_clause_replacement(
+                    "unless",
+                    &predicate,
+                    &statements,
+                    node.location().start_offset(),
+                ) {
+                    self.corrections.push(crate::correction::Correction {
+                        start: node.location().start_offset(),
+                        end: node.location().end_offset(),
+                        replacement,
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
             }
         }
 
@@ -221,94 +230,27 @@ impl GuardClauseVisitor<'_, '_> {
             ),
         );
 
-        if self.autocorrect_enabled {
-            if let Some(correction) =
-                self.build_guard_clause_correction_for_unless(node, &condition_src)
-            {
-                self.corrections.push(correction);
-                diagnostic.corrected = true;
+        if self.emit_corrections {
+            if let Some(statements) = node.statements() {
+                if let Some(replacement) = self.build_guard_clause_replacement(
+                    "if",
+                    &predicate,
+                    &statements,
+                    node.location().start_offset(),
+                ) {
+                    self.corrections.push(crate::correction::Correction {
+                        start: node.location().start_offset(),
+                        end: node.location().end_offset(),
+                        replacement,
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
             }
         }
 
         self.diagnostics.push(diagnostic);
-    }
-
-    fn build_guard_clause_correction_for_if(
-        &self,
-        node: &ruby_prism::IfNode<'_>,
-        condition_src: &str,
-    ) -> Option<crate::correction::Correction> {
-        let if_keyword_loc = node.if_keyword_loc()?;
-        let end_keyword_loc = node.end_keyword_loc()?;
-        let statements = node.statements()?;
-
-        let statements_loc = statements.location();
-        let body_src =
-            &self.source.as_bytes()[statements_loc.start_offset()..statements_loc.end_offset()];
-        let body_src = String::from_utf8_lossy(body_src);
-
-        let (_, column) = self
-            .source
-            .offset_to_line_col(if_keyword_loc.start_offset());
-        let indent = " ".repeat(column);
-        let normalized_body = body_src
-            .lines()
-            .map(|line| {
-                if line.is_empty() {
-                    String::new()
-                } else {
-                    format!("{indent}{line}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let replacement = format!("return unless {condition_src}\n{normalized_body}");
-
-        Some(crate::correction::Correction {
-            start: if_keyword_loc.start_offset(),
-            end: end_keyword_loc.end_offset(),
-            replacement,
-            cop_name: self.cop.name(),
-            cop_index: 0,
-        })
-    }
-
-    fn build_guard_clause_correction_for_unless(
-        &self,
-        node: &ruby_prism::UnlessNode<'_>,
-        condition_src: &str,
-    ) -> Option<crate::correction::Correction> {
-        let keyword_loc = node.keyword_loc();
-        let end_keyword_loc = node.end_keyword_loc()?;
-        let statements = node.statements()?;
-
-        let statements_loc = statements.location();
-        let body_src =
-            &self.source.as_bytes()[statements_loc.start_offset()..statements_loc.end_offset()];
-        let body_src = String::from_utf8_lossy(body_src);
-
-        let (_, column) = self.source.offset_to_line_col(keyword_loc.start_offset());
-        let indent = " ".repeat(column);
-        let normalized_body = body_src
-            .lines()
-            .map(|line| {
-                if line.is_empty() {
-                    String::new()
-                } else {
-                    format!("{indent}{line}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let replacement = format!("return if {condition_src}\n{normalized_body}");
-
-        Some(crate::correction::Correction {
-            start: keyword_loc.start_offset(),
-            end: end_keyword_loc.end_offset(),
-            replacement,
-            cop_name: self.cop.name(),
-            cop_index: 0,
-        })
     }
 
     /// Check if a node spans multiple lines.
@@ -389,6 +331,39 @@ impl GuardClauseVisitor<'_, '_> {
         let loc = node.location();
         let bytes = &self.source.as_bytes()[loc.start_offset()..loc.end_offset()];
         String::from_utf8_lossy(bytes).to_string()
+    }
+
+    fn build_guard_clause_replacement(
+        &self,
+        guard_keyword: &str,
+        predicate: &ruby_prism::Node<'_>,
+        statements: &ruby_prism::StatementsNode<'_>,
+        node_start_offset: usize,
+    ) -> Option<String> {
+        let condition_src = std::str::from_utf8(predicate.location().as_slice()).ok()?;
+        let body_src = std::str::from_utf8(statements.location().as_slice()).ok()?;
+
+        let bytes = self.source.as_bytes();
+        let line_start = bytes[..node_start_offset]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+        let line_indent = std::str::from_utf8(&bytes[line_start..node_start_offset]).ok()?;
+
+        let indented_body = body_src
+            .lines()
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("{line_indent}{line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Some(format!("return {guard_keyword} {condition_src}\n{indented_body}"))
     }
 }
 
