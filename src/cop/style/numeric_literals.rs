@@ -122,6 +122,10 @@ impl Cop for NumericLiterals {
         &[INTEGER_NODE, FLOAT_NODE]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -129,7 +133,7 @@ impl Cop for NumericLiterals {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Get the source location and text for either integer or float nodes
         let loc = if let Some(int_node) = node.as_integer_node() {
@@ -151,8 +155,76 @@ impl Cop for NumericLiterals {
             .unwrap_or(text);
         let int_part = unsigned.split(['e', 'E', '.']).next().unwrap_or(unsigned);
 
+        let before = diagnostics.len();
         self.check_integer_part(source, &loc, int_part, config, diagnostics);
+
+        if diagnostics.len() > before {
+            if let Some(corr) = corrections.as_deref_mut() {
+                if let Some(replacement) = normalize_numeric_literal(text) {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement,
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    if let Some(last) = diagnostics.last_mut() {
+                        last.corrected = true;
+                    }
+                }
+            }
+        }
     }
+}
+
+fn normalize_numeric_literal(text: &str) -> Option<String> {
+    let (sign, unsigned) = if let Some(rest) = text.strip_prefix('-') {
+        ("-", rest)
+    } else if let Some(rest) = text.strip_prefix('+') {
+        ("+", rest)
+    } else {
+        ("", text)
+    };
+
+    let split_at = unsigned
+        .char_indices()
+        .find_map(|(i, ch)| (ch == '.' || ch == 'e' || ch == 'E').then_some(i));
+
+    let (int_part, suffix) = if let Some(idx) = split_at {
+        (&unsigned[..idx], &unsigned[idx..])
+    } else {
+        (unsigned, "")
+    };
+
+    let digits: String = int_part.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+
+    let grouped = group_thousands(&digits);
+    let replacement = format!("{sign}{grouped}{suffix}");
+
+    if replacement == text {
+        None
+    } else {
+        Some(replacement)
+    }
+}
+
+fn group_thousands(digits: &str) -> String {
+    let bytes = digits.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len + (len.saturating_sub(1) / 3));
+
+    for (i, b) in bytes.iter().enumerate() {
+        out.push(*b as char);
+        let remaining = len - i - 1;
+        if remaining > 0 && remaining % 3 == 0 {
+            out.push('_');
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -160,6 +232,7 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(NumericLiterals, "cops/style/numeric_literals");
+    crate::cop_autocorrect_fixture_tests!(NumericLiterals, "cops/style/numeric_literals");
 
     #[test]
     fn config_min_digits_3() {
