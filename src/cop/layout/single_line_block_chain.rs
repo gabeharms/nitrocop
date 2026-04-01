@@ -1,5 +1,6 @@
 use crate::cop::node_type::{BLOCK_NODE, CALL_NODE, LAMBDA_NODE};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -40,7 +41,7 @@ impl Cop for SingleLineBlockChain {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         // We are looking for: receiver.method where receiver is a single-line block
         // e.g. example.select { |item| item.cond? }.join('-')
@@ -103,31 +104,25 @@ impl Cop for SingleLineBlockChain {
         // The offense spans from the dot to the end of the method name
         let _ = msg_end_col; // used for offset calculation in RuboCop, we just mark the dot
 
-        let mut diag = self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             dot_line,
             dot_col,
             "Put method call on a separate line if chained to a single line block.".to_string(),
         );
 
-        if let Some(ref mut corr) = corrections {
-            let dot_line_bytes = source.lines().nth(dot_line - 1).unwrap_or(b"");
-            let base_indent = dot_line_bytes
-                .iter()
-                .take_while(|&&b| b == b' ' || b == b'\t')
-                .count();
-            let indent = " ".repeat(base_indent + 2);
-            corr.push(crate::correction::Correction {
+        if let Some(corrections) = corrections.as_mut() {
+            corrections.push(Correction {
                 start: dot_loc.start_offset(),
                 end: dot_loc.end_offset(),
-                replacement: format!("\n{indent}{}", std::str::from_utf8(dot_loc.as_slice()).unwrap_or(".")),
+                replacement: format!("\n{}", std::str::from_utf8(dot_loc.as_slice()).unwrap_or(".")),
                 cop_name: self.name(),
                 cop_index: 0,
             });
-            diag.corrected = true;
+            diagnostic.corrected = true;
         }
 
-        diagnostics.push(diag);
+        diagnostics.push(diagnostic);
     }
 }
 

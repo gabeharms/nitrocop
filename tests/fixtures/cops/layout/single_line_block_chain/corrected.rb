@@ -1,12 +1,12 @@
 example.select { |item| item.cond? }
-  .join('-')
+.join('-')
 
 example.select { |item| item.cond? }
-  &.join('-')
+&.join('-')
 
 items.map { |x| x.to_s }
-  .first
+.first
 
 parent = Class.new { def foo(&block); block; end }
 child = Class.new(parent) { def foo; super { break 1 }
-  .call; end }
+.call; end }
