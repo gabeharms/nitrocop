@@ -101,7 +101,12 @@ impl Cop for ConditionalAssignment {
                         );
 
                         if let Some(corrs) = corrections.as_deref_mut() {
-                            if let Some(correction) = autocorrect_assignment_if(source, &if_node, &if_stmts[0], &else_list[0]) {
+                            if let Some(correction) = autocorrect_assignment_if(
+                                source,
+                                &if_node,
+                                &if_stmts[0],
+                                &else_list[0],
+                            ) {
                                 corrs.push(correction);
                                 diagnostic.corrected = true;
                             }
@@ -205,15 +210,13 @@ fn autocorrect_assignment_if(
 
     let (if_assign_line, _) = source.offset_to_line_col(if_assign_loc.start_offset());
     let if_assign_line_start = source.line_start_offset(if_assign_line);
-    let if_branch_indent = source.byte_slice(if_assign_line_start, if_assign_loc.start_offset(), "");
+    let if_branch_indent =
+        source.byte_slice(if_assign_line_start, if_assign_loc.start_offset(), "");
 
     let (else_assign_line, _) = source.offset_to_line_col(else_assign_loc.start_offset());
     let else_assign_line_start = source.line_start_offset(else_assign_line);
-    let else_branch_indent = source.byte_slice(
-        else_assign_line_start,
-        else_assign_loc.start_offset(),
-        "",
-    );
+    let else_branch_indent =
+        source.byte_slice(else_assign_line_start, else_assign_loc.start_offset(), "");
 
     let replacement = format!(
         "{if_indent}{target} = if {pred_src}\n{if_branch_indent}{if_value}\n{if_indent}else\n{else_branch_indent}{else_value}\n{if_indent}end"
@@ -232,5 +235,8 @@ fn autocorrect_assignment_if(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ConditionalAssignment, "cops/style/conditional_assignment");
-    crate::cop_autocorrect_fixture_tests!(ConditionalAssignment, "cops/style/conditional_assignment");
+    crate::cop_autocorrect_fixture_tests!(
+        ConditionalAssignment,
+        "cops/style/conditional_assignment"
+    );
 }

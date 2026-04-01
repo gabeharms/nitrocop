@@ -128,6 +128,10 @@ impl Cop for SoleNestedConditional {
         "Style/SoleNestedConditional"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[IF_NODE, UNLESS_NODE]
     }
@@ -139,7 +143,7 @@ impl Cop for SoleNestedConditional {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allow_modifier = config.get_bool("AllowModifier", false);
 
@@ -239,17 +243,151 @@ impl Cop for SoleNestedConditional {
         };
 
         let (line, column) = source.offset_to_line_col(inner_kw_loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             line,
             column,
             "Consider merging nested conditions into outer `if` conditions.".to_string(),
-        ));
+        );
+
+        if let Some(corrections) = corrections {
+            if let Some(replacement) = merged_nested_conditional_replacement(source, node, &body[0])
+            {
+                corrections.push(crate::correction::Correction {
+                    start: node.location().start_offset(),
+                    end: node.location().end_offset(),
+                    replacement,
+                    cop_name: self.name(),
+                    cop_index: 0,
+                });
+                diagnostic.corrected = true;
+            }
+        }
+
+        diagnostics.push(diagnostic);
     }
+}
+
+fn chainable_condition(
+    source: &SourceFile,
+    predicate: &ruby_prism::Node<'_>,
+    negate: bool,
+) -> Option<String> {
+    let cond = source
+        .try_byte_slice(
+            predicate.location().start_offset(),
+            predicate.location().end_offset(),
+        )?
+        .trim()
+        .to_string();
+
+    if negate {
+        Some(format!("!({cond})"))
+    } else {
+        Some(cond)
+    }
+}
+
+fn indent_body_lines(body: &str, outer_indent: &str) -> String {
+    body.lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                line.to_string()
+            } else {
+                format!("{outer_indent}  {}", line.trim_start())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn merged_nested_conditional_replacement(
+    source: &SourceFile,
+    outer_node: &ruby_prism::Node<'_>,
+    inner_node: &ruby_prism::Node<'_>,
+) -> Option<String> {
+    let (outer_kw_start, outer_predicate, outer_is_unless, outer_stmts) = if let Some(if_node) =
+        outer_node.as_if_node()
+    {
+        if if_node.if_keyword_loc()?.as_slice() == b"elsif" || if_node.end_keyword_loc().is_none() {
+            return None;
+        }
+        (
+            if_node.if_keyword_loc()?.start_offset(),
+            if_node.predicate(),
+            false,
+            if_node.statements()?,
+        )
+    } else if let Some(unless_node) = outer_node.as_unless_node() {
+        if unless_node.end_keyword_loc().is_none() {
+            return None;
+        }
+        (
+            unless_node.keyword_loc().start_offset(),
+            unless_node.predicate(),
+            true,
+            unless_node.statements()?,
+        )
+    } else {
+        return None;
+    };
+
+    let (inner_predicate, inner_is_unless, inner_stmts) =
+        if let Some(inner_if) = inner_node.as_if_node() {
+            if inner_if.end_keyword_loc().is_none() {
+                return None;
+            }
+            let kw = inner_if.if_keyword_loc()?;
+            let inner_is_unless = kw.as_slice() == b"unless";
+            (
+                inner_if.predicate(),
+                inner_is_unless,
+                inner_if.statements()?,
+            )
+        } else if let Some(inner_unless) = inner_node.as_unless_node() {
+            if inner_unless.end_keyword_loc().is_none() {
+                return None;
+            }
+            (inner_unless.predicate(), true, inner_unless.statements()?)
+        } else {
+            return None;
+        };
+
+    let (outer_line, _) = source.offset_to_line_col(outer_kw_start);
+    let outer_line_start = source.line_start_offset(outer_line);
+    let outer_indent = source
+        .try_byte_slice(outer_line_start, outer_kw_start)
+        .unwrap_or("")
+        .to_string();
+
+    // Conservative: require a concrete inner body range.
+    let inner_body_start = inner_stmts.location().start_offset();
+    let inner_body_end = inner_stmts.location().end_offset();
+    if inner_body_end <= inner_body_start {
+        return None;
+    }
+
+    let dedented_body = indent_body_lines(
+        source.try_byte_slice(inner_body_start, inner_body_end)?,
+        &outer_indent,
+    );
+
+    let outer_cond = chainable_condition(source, &outer_predicate, outer_is_unless)?;
+    let inner_cond = chainable_condition(source, &inner_predicate, inner_is_unless)?;
+
+    let _ = outer_stmts; // keep explicit outer statements extraction aligned with existing offense shape
+
+    Some(format!(
+        "{outer_indent}if {outer_cond} && {inner_cond}\n{dedented_body}\n{outer_indent}end"
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(SoleNestedConditional, "cops/style/sole_nested_conditional");
+    crate::cop_autocorrect_fixture_tests!(
+        SoleNestedConditional,
+        "cops/style/sole_nested_conditional"
+    );
 }

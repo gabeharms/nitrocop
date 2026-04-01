@@ -148,7 +148,9 @@ impl GuardClauseVisitor<'_, '_> {
         );
 
         if self.autocorrect_enabled {
-            if let Some(correction) = self.build_guard_clause_correction_for_if(node, &condition_src) {
+            if let Some(correction) =
+                self.build_guard_clause_correction_for_if(node, &condition_src)
+            {
                 self.corrections.push(correction);
                 diagnostic.corrected = true;
             }
@@ -241,10 +243,13 @@ impl GuardClauseVisitor<'_, '_> {
         let statements = node.statements()?;
 
         let statements_loc = statements.location();
-        let body_src = &self.source.as_bytes()[statements_loc.start_offset()..statements_loc.end_offset()];
+        let body_src =
+            &self.source.as_bytes()[statements_loc.start_offset()..statements_loc.end_offset()];
         let body_src = String::from_utf8_lossy(body_src);
 
-        let (_, column) = self.source.offset_to_line_col(if_keyword_loc.start_offset());
+        let (_, column) = self
+            .source
+            .offset_to_line_col(if_keyword_loc.start_offset());
         let indent = " ".repeat(column);
         let normalized_body = body_src
             .lines()
@@ -278,7 +283,8 @@ impl GuardClauseVisitor<'_, '_> {
         let statements = node.statements()?;
 
         let statements_loc = statements.location();
-        let body_src = &self.source.as_bytes()[statements_loc.start_offset()..statements_loc.end_offset()];
+        let body_src =
+            &self.source.as_bytes()[statements_loc.start_offset()..statements_loc.end_offset()];
         let body_src = String::from_utf8_lossy(body_src);
 
         let (_, column) = self.source.offset_to_line_col(keyword_loc.start_offset());

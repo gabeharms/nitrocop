@@ -30,6 +30,10 @@ impl Cop for MultilineMemoization {
         "Style/MultilineMemoization"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             BEGIN_NODE,
@@ -51,7 +55,7 @@ impl Cop for MultilineMemoization {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "keyword");
 
@@ -93,25 +97,88 @@ impl Cop for MultilineMemoization {
         // It's multiline. Check the wrapping style.
         if enforced_style == "keyword" {
             // keyword style: should use begin..end, not parentheses
-            if value.as_parentheses_node().is_some() {
+            if let Some(paren) = value.as_parentheses_node() {
                 let (line, column) = source.offset_to_line_col(assign_loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     line,
                     column,
                     "Wrap multiline memoization blocks in `begin` and `end`.".to_string(),
-                ));
+                );
+
+                if let Some(corrections) = corrections {
+                    let open_line = source
+                        .offset_to_line_col(paren.opening_loc().start_offset())
+                        .0;
+                    let close_line = source
+                        .offset_to_line_col(paren.closing_loc().start_offset())
+                        .0;
+                    let body_line_range = paren.body().map(|body| {
+                        (
+                            source.offset_to_line_col(body.location().start_offset()).0,
+                            source
+                                .offset_to_line_col(body.location().end_offset().saturating_sub(1))
+                                .0,
+                        )
+                    });
+
+                    if let Some((body_start_line, body_end_line)) = body_line_range {
+                        if open_line < body_start_line && close_line > body_end_line {
+                            corrections.push(crate::correction::Correction {
+                                start: paren.opening_loc().start_offset(),
+                                end: paren.opening_loc().end_offset(),
+                                replacement: "begin".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            corrections.push(crate::correction::Correction {
+                                start: paren.closing_loc().start_offset(),
+                                end: paren.closing_loc().end_offset(),
+                                replacement: "end".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diagnostic.corrected = true;
+                        }
+                    }
+                }
+
+                diagnostics.push(diagnostic);
             }
         } else if enforced_style == "braces" {
             // braces style: should use parentheses, not begin..end
-            if value.as_begin_node().is_some() {
+            if let Some(begin) = value.as_begin_node() {
                 let (line, column) = source.offset_to_line_col(assign_loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     line,
                     column,
                     "Wrap multiline memoization blocks in `(` and `)`.".to_string(),
-                ));
+                );
+
+                if let Some(corrections) = corrections {
+                    if let (Some(begin_kw), Some(end_kw)) =
+                        (begin.begin_keyword_loc(), begin.end_keyword_loc())
+                    {
+                        corrections.push(crate::correction::Correction {
+                            start: begin_kw.start_offset(),
+                            end: begin_kw.end_offset(),
+                            replacement: "(".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        corrections.push(crate::correction::Correction {
+                            start: end_kw.start_offset(),
+                            end: end_kw.end_offset(),
+                            replacement: ")".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+                }
+
+                diagnostics.push(diagnostic);
             }
         }
     }
@@ -121,4 +188,5 @@ impl Cop for MultilineMemoization {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(MultilineMemoization, "cops/style/multiline_memoization");
+    crate::cop_autocorrect_fixture_tests!(MultilineMemoization, "cops/style/multiline_memoization");
 }

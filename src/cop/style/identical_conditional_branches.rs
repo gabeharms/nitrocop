@@ -409,7 +409,11 @@ impl IdenticalConditionalBranches {
             .byte_slice(if_first_loc.start_offset(), if_first_loc.end_offset(), "")
             .trim();
         let else_first_src = source
-            .byte_slice(else_first_loc.start_offset(), else_first_loc.end_offset(), "")
+            .byte_slice(
+                else_first_loc.start_offset(),
+                else_first_loc.end_offset(),
+                "",
+            )
             .trim();
         if if_first_src.is_empty() || else_first_src.is_empty() {
             return None;
