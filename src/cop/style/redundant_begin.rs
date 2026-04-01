@@ -11,6 +11,10 @@ impl Cop for RedundantBegin {
         "Style/RedundantBegin"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -18,15 +22,20 @@ impl Cop for RedundantBegin {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = RedundantBeginVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            pending_corrections: Vec::new(),
+            autocorrect_enabled: corrections.is_some(),
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = corrections {
+            corrections.extend(visitor.pending_corrections);
+        }
     }
 }
 
@@ -34,6 +43,8 @@ struct RedundantBeginVisitor<'a> {
     cop: &'a RedundantBegin,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    pending_corrections: Vec<crate::correction::Correction>,
+    autocorrect_enabled: bool,
 }
 
 impl RedundantBeginVisitor<'_> {
@@ -175,12 +186,28 @@ impl RedundantBeginVisitor<'_> {
 
         let offset = begin_kw_loc.start_offset();
         let (line, column) = self.source.offset_to_line_col(offset);
-        self.diagnostics.push(self.cop.diagnostic(
+        let mut diagnostic = self.cop.diagnostic(
             self.source,
             line,
             column,
             "Redundant `begin` block detected.".to_string(),
-        ));
+        );
+
+        if self.autocorrect_enabled {
+            let replacement = std::str::from_utf8(body_nodes[0].location().as_slice())
+                .unwrap_or("")
+                .to_string();
+            self.pending_corrections.push(crate::correction::Correction {
+                start: begin_node.location().start_offset(),
+                end: begin_node.location().end_offset(),
+                replacement,
+                cop_name: self.cop.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+
+        self.diagnostics.push(diagnostic);
 
         // Visit the begin body for nested checks
         for child in body_nodes.iter() {
@@ -352,4 +379,5 @@ impl<'pr> Visit<'pr> for RedundantBeginVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(RedundantBegin, "cops/style/redundant_begin");
+    crate::cop_autocorrect_fixture_tests!(RedundantBegin, "cops/style/redundant_begin");
 }

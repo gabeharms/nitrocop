@@ -98,6 +98,10 @@ impl Cop for IfWithBooleanLiteralBranches {
         "Style/IfWithBooleanLiteralBranches"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             AND_NODE,
@@ -120,7 +124,7 @@ impl Cop for IfWithBooleanLiteralBranches {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allowed_methods = config.get_string_array("AllowedMethods");
 
@@ -199,6 +203,15 @@ impl Cop for IfWithBooleanLiteralBranches {
                         return;
                     }
 
+                    let condition_src = std::str::from_utf8(if_node.predicate().location().as_slice())
+                        .unwrap_or("condition");
+                    let replacement = if if_val {
+                        condition_src.to_string()
+                    } else {
+                        format!("!({})", condition_src)
+                    };
+                    let loc = if_node.location();
+
                     if is_ternary {
                         // For ternary, point at the `?`
                         let pred_end = if_node.predicate().location().start_offset()
@@ -209,26 +222,46 @@ impl Cop for IfWithBooleanLiteralBranches {
                             q_offset += 1;
                         }
                         let (line, column) = source.offset_to_line_col(q_offset);
-                        diagnostics.push(
-                            self.diagnostic(
-                                source,
-                                line,
-                                column,
-                                "Remove redundant ternary operator with boolean literal branches."
-                                    .to_string(),
-                            ),
+                        let mut diagnostic = self.diagnostic(
+                            source,
+                            line,
+                            column,
+                            "Remove redundant ternary operator with boolean literal branches."
+                                .to_string(),
                         );
+                        if let Some(corrections) = corrections.as_mut() {
+                            corrections.push(crate::correction::Correction {
+                                start: loc.start_offset(),
+                                end: loc.end_offset(),
+                                replacement,
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diagnostic.corrected = true;
+                        }
+                        diagnostics.push(diagnostic);
                         return;
                     }
 
                     let if_kw_loc = if_node.if_keyword_loc().unwrap();
                     let (line, column) = source.offset_to_line_col(if_kw_loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         line,
                         column,
                         "Remove redundant `if` with boolean literal branches.".to_string(),
-                    ));
+                    );
+                    if let Some(corrections) = corrections.as_mut() {
+                        corrections.push(crate::correction::Correction {
+                            start: loc.start_offset(),
+                            end: loc.end_offset(),
+                            replacement,
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+                    diagnostics.push(diagnostic);
                 }
             }
 
@@ -260,13 +293,32 @@ impl Cop for IfWithBooleanLiteralBranches {
                         return;
                     }
 
+                    let condition_src = std::str::from_utf8(unless_node.predicate().location().as_slice())
+                        .unwrap_or("condition");
+                    let replacement = if else_val {
+                        condition_src.to_string()
+                    } else {
+                        format!("!({})", condition_src)
+                    };
+                    let loc = unless_node.location();
                     let (line, column) = source.offset_to_line_col(kw_loc.start_offset());
-                    diagnostics.push(self.diagnostic(
+                    let mut diagnostic = self.diagnostic(
                         source,
                         line,
                         column,
                         "Remove redundant `unless` with boolean literal branches.".to_string(),
-                    ));
+                    );
+                    if let Some(corrections) = corrections.as_mut() {
+                        corrections.push(crate::correction::Correction {
+                            start: loc.start_offset(),
+                            end: loc.end_offset(),
+                            replacement,
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+                    diagnostics.push(diagnostic);
                 }
             }
         }
@@ -456,6 +508,10 @@ fn condition_returns_boolean(
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        IfWithBooleanLiteralBranches,
+        "cops/style/if_with_boolean_literal_branches"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         IfWithBooleanLiteralBranches,
         "cops/style/if_with_boolean_literal_branches"
     );
