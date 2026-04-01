@@ -1,5 +1,4 @@
 - `Layout/AssignmentIndentation`: bounded first-RHS-line indentation autocorrect by replacing only line-leading whitespace at offense sites (`value_line_start..value_col`) to expected base+width.
-- `Layout/ArrayAlignment`: bounded first-element-per-line indentation autocorrect for array/rescue alignment offenses by rewriting only leading whitespace for flagged lines.
 - `Layout/ClosingParenthesisIndentation`: bounded line-leading whitespace autocorrect for hanging `)` offenses when expected column is deterministic from existing style logic.
 - `Style/SafeNavigation`: conservative subset candidate — start with simple `foo && foo.bar` / `foo ? foo.bar : nil` rewrites where receiver/source equality is exact and side-effect guards already pass.
 - `Lint/HeredocMethodCallPosition`: defer; needs robust opener/body/terminator reconstruction before safe autocorrect.
