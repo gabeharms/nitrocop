@@ -1,5 +1,6 @@
 use crate::cop::node_type::{CALL_NODE, SUPER_NODE};
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -58,6 +59,10 @@ impl Cop for FirstMethodArgumentLineBreak {
         "Layout/FirstMethodArgumentLineBreak"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
@@ -73,14 +78,14 @@ impl Cop for FirstMethodArgumentLineBreak {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let allow_multiline_final = config.get_bool("AllowMultilineFinalElement", false);
         let allowed_methods = config
             .get_string_array("AllowedMethods")
             .unwrap_or_default();
 
-        let (start_offset, arg_locs) = if let Some(call) = node.as_call_node() {
+        let (start_offset, insert_start, force_first_col_indent, arg_locs) = if let Some(call) = node.as_call_node() {
             if allowed_methods
                 .iter()
                 .any(|method| method.as_bytes() == call.name().as_slice())
@@ -100,6 +105,7 @@ impl Cop for FirstMethodArgumentLineBreak {
             } else {
                 Vec::new()
             };
+            let mut force_first_col_indent = false;
 
             // In Prism, BlockArgumentNode (&block) is on call.block(), not in arguments().
             // Include it so multiline detection accounts for block args on different lines.
@@ -107,10 +113,18 @@ impl Cop for FirstMethodArgumentLineBreak {
                 if block.as_block_argument_node().is_some() {
                     let loc = block.location();
                     arg_locs.push((loc.start_offset(), loc.end_offset()));
+                    if call.arguments().is_none() {
+                        force_first_col_indent = true;
+                    }
                 }
             }
 
-            (call.location().start_offset(), arg_locs)
+            (
+                call.location().start_offset(),
+                open_loc.end_offset(),
+                force_first_col_indent,
+                arg_locs,
+            )
         } else if let Some(super_node) = node.as_super_node() {
             if super_node.lparen_loc().is_none() {
                 return;
@@ -121,6 +135,7 @@ impl Cop for FirstMethodArgumentLineBreak {
             } else {
                 Vec::new()
             };
+            let mut force_first_col_indent = false;
 
             // In Prism, BlockArgumentNode (&block) is on super_node.block(), not in arguments().
             // Include it so multiline detection accounts for block args on different lines.
@@ -128,10 +143,18 @@ impl Cop for FirstMethodArgumentLineBreak {
                 if block.as_block_argument_node().is_some() {
                     let loc = block.location();
                     arg_locs.push((loc.start_offset(), loc.end_offset()));
+                    if super_node.arguments().is_none() {
+                        force_first_col_indent = true;
+                    }
                 }
             }
 
-            (super_node.location().start_offset(), arg_locs)
+            (
+                super_node.location().start_offset(),
+                super_node.lparen_loc().unwrap().end_offset(),
+                force_first_col_indent,
+                arg_locs,
+            )
         } else {
             return;
         };
@@ -150,13 +173,41 @@ impl Cop for FirstMethodArgumentLineBreak {
             return;
         }
 
-        diagnostics.push(self.diagnostic(
+        let mut diagnostic = self.diagnostic(
             source,
             first_line,
             first_col,
             "Add a line break before the first argument of a multi-line method call.".to_string(),
-        ));
+        );
+        if let Some(corrections) = corrections.as_mut() {
+            let indent = if force_first_col_indent {
+                first_col
+            } else {
+                next_line_indent(source, first_line).unwrap_or(first_col)
+            };
+            corrections.push(Correction {
+                start: insert_start,
+                end: first_start,
+                replacement: format!("\n{}", " ".repeat(indent)),
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+        diagnostics.push(diagnostic);
     }
+}
+
+fn next_line_indent(source: &SourceFile, line: usize) -> Option<usize> {
+    let lines: Vec<&[u8]> = source.lines().collect();
+    if line >= lines.len() {
+        return None;
+    }
+    let next = lines[line];
+    let indent = next
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t' && b != b'\r')?;
+    Some(indent)
 }
 
 fn collect_arg_locs(args: Vec<ruby_prism::Node<'_>>) -> Vec<(usize, usize)> {
@@ -211,6 +262,10 @@ mod tests {
     use std::collections::HashMap;
 
     crate::cop_fixture_tests!(
+        FirstMethodArgumentLineBreak,
+        "cops/layout/first_method_argument_line_break"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         FirstMethodArgumentLineBreak,
         "cops/layout/first_method_argument_line_break"
     );
