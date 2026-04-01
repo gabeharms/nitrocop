@@ -12,6 +12,10 @@ impl Cop for HashSyntax {
         "Style/HashSyntax"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[
             ASSOC_NODE,
@@ -30,7 +34,7 @@ impl Cop for HashSyntax {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Handle both explicit hashes `{ k: v }` and implicit keyword hashes `foo(k: v)`
         let elements: Vec<ruby_prism::Node<'_>> = if let Some(hash_node) = node.as_hash_node() {
@@ -110,13 +114,14 @@ impl Cop for HashSyntax {
                 }
 
                 let mut diags = Vec::new();
+                let mut pending_corrections = Vec::new();
                 for elem in &elements {
                     let assoc = match elem.as_assoc_node() {
                         Some(a) => a,
                         None => continue,
                     };
                     let key = assoc.key();
-                    if key.as_symbol_node().is_some() {
+                    if let Some(sym) = key.as_symbol_node() {
                         if let Some(op_loc) = assoc.operator_loc() {
                             if op_loc.as_slice() == b"=>" {
                                 let (line, column) =
@@ -127,21 +132,38 @@ impl Cop for HashSyntax {
                                     column,
                                     "Use the new Ruby 1.9 hash syntax.".to_string(),
                                 ));
+
+                                if let Ok(sym_name) = std::str::from_utf8(sym.unescaped()) {
+                                    pending_corrections.push(crate::correction::Correction {
+                                        start: key.location().start_offset(),
+                                        end: op_loc.end_offset(),
+                                        replacement: format!("{sym_name}:"),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                }
                             }
                         }
                     }
                 }
+                for diag in &mut diags {
+                    diag.corrected = true;
+                }
                 diagnostics.extend(diags);
+                if let Some(c) = corrections {
+                    c.extend(pending_corrections);
+                }
             }
             "hash_rockets" => {
                 let mut diags = Vec::new();
+                let mut pending_corrections = Vec::new();
                 for elem in &elements {
                     let assoc = match elem.as_assoc_node() {
                         Some(a) => a,
                         None => continue,
                     };
                     let key = assoc.key();
-                    if key.as_symbol_node().is_some() {
+                    if let Some(sym) = key.as_symbol_node() {
                         let uses_rocket = assoc
                             .operator_loc()
                             .is_some_and(|op| op.as_slice() == b"=>");
@@ -154,10 +176,28 @@ impl Cop for HashSyntax {
                                 column,
                                 "Use hash rockets syntax.".to_string(),
                             ));
+
+                            if let Some(op_loc) = assoc.operator_loc() {
+                                if let Ok(sym_name) = std::str::from_utf8(sym.unescaped()) {
+                                    pending_corrections.push(crate::correction::Correction {
+                                        start: key.location().start_offset(),
+                                        end: op_loc.end_offset(),
+                                        replacement: format!(":{sym_name} =>"),
+                                        cop_name: self.name(),
+                                        cop_index: 0,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
+                for diag in &mut diags {
+                    diag.corrected = true;
+                }
                 diagnostics.extend(diags);
+                if let Some(c) = corrections {
+                    c.extend(pending_corrections);
+                }
             }
             "no_mixed_keys" => {
                 // All keys must use the same syntax
@@ -327,6 +367,7 @@ mod tests {
     use crate::testutil::run_cop_full_with_config;
 
     crate::cop_fixture_tests!(HashSyntax, "cops/style/hash_syntax");
+    crate::cop_autocorrect_fixture_tests!(HashSyntax, "cops/style/hash_syntax");
 
     #[test]
     fn config_hash_rockets() {
