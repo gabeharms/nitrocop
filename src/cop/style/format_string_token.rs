@@ -44,6 +44,8 @@ struct FormatToken {
     style: TokenStyle,
     /// Byte offset within the content string where this token starts
     offset: usize,
+    /// Byte offset within the content string where this token ends (exclusive)
+    end: usize,
 }
 
 impl FormatStringToken {
@@ -136,6 +138,7 @@ impl FormatStringToken {
                         tokens.push(FormatToken {
                             style: TokenStyle::Annotated,
                             offset: start,
+                            end: k,
                         });
                         i = k;
                         continue;
@@ -159,6 +162,7 @@ impl FormatStringToken {
                         tokens.push(FormatToken {
                             style: TokenStyle::Template,
                             offset: start,
+                            end: k + 1,
                         });
                         i = k + 1;
                         continue;
@@ -168,6 +172,7 @@ impl FormatStringToken {
                     tokens.push(FormatToken {
                         style: TokenStyle::Unannotated,
                         offset: start,
+                        end: j + 1,
                     });
                     i = j + 1;
                     continue;
@@ -207,6 +212,10 @@ impl Cop for FormatStringToken {
         "Style/FormatStringToken"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -214,7 +223,7 @@ impl Cop for FormatStringToken {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "annotated");
         let max_unannotated = config.get_usize("MaxUnannotatedPlaceholdersAllowed", 1);
@@ -234,6 +243,7 @@ impl Cop for FormatStringToken {
             format_context_offsets: HashSet::new(),
             allowed_method_string_offsets: HashSet::new(),
             inside_xstr_or_regexp: 0,
+            pending_corrections: Vec::new(),
         };
 
         // First pass: collect offsets of strings in format contexts and allowed method contexts
@@ -248,6 +258,9 @@ impl Cop for FormatStringToken {
         // Second pass: check strings
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = corrections.as_mut() {
+            corrections.extend(visitor.pending_corrections);
+        }
     }
 }
 
@@ -376,9 +389,34 @@ struct FormatStringTokenVisitor<'a> {
     allowed_method_string_offsets: HashSet<usize>,
     /// Depth counter for xstr/regexp contexts (skip strings inside these)
     inside_xstr_or_regexp: usize,
+    pending_corrections: Vec<crate::correction::Correction>,
 }
 
 impl FormatStringTokenVisitor<'_> {
+    fn template_to_annotated(token: &[u8]) -> Option<String> {
+        let lbrace = token.iter().position(|b| *b == b'{')?;
+        let rbrace = token.iter().position(|b| *b == b'}')?;
+        if lbrace >= rbrace || lbrace == 0 {
+            return None;
+        }
+
+        let prefix = std::str::from_utf8(&token[1..lbrace]).ok()?;
+        let name = std::str::from_utf8(&token[lbrace + 1..rbrace]).ok()?;
+        Some(format!("%{prefix}<{name}>s"))
+    }
+
+    fn annotated_to_template(token: &[u8]) -> Option<String> {
+        let langle = token.iter().position(|b| *b == b'<')?;
+        let rangle = token.iter().position(|b| *b == b'>')?;
+        if langle >= rangle || langle == 0 {
+            return None;
+        }
+
+        let prefix = std::str::from_utf8(&token[1..langle]).ok()?;
+        let name = std::str::from_utf8(&token[langle + 1..rangle]).ok()?;
+        Some(format!("%{prefix}{{{name}}}"))
+    }
+
     fn check_string_content(
         &mut self,
         content: &[u8],
@@ -427,12 +465,27 @@ impl FormatStringTokenVisitor<'_> {
                             let (line, column) = self
                                 .source
                                 .offset_to_line_col(content_start_offset + tok.offset);
-                            self.diagnostics.push(self.cop.diagnostic(
+                            let mut diag = self.cop.diagnostic(
                                 self.source,
                                 line,
                                 column,
                                 "Prefer annotated tokens (like `%<foo>s`) over template tokens (like `%{foo}`).".to_string(),
-                            ));
+                            );
+
+                            if let Some(replacement) = Self::template_to_annotated(
+                                &content[tok.offset..tok.end],
+                            ) {
+                                self.pending_corrections.push(crate::correction::Correction {
+                                    start: content_start_offset + tok.offset,
+                                    end: content_start_offset + tok.end,
+                                    replacement,
+                                    cop_name: self.cop.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+
+                            self.diagnostics.push(diag);
                         }
                     }
                 }
@@ -459,12 +512,27 @@ impl FormatStringTokenVisitor<'_> {
                             let (line, column) = self
                                 .source
                                 .offset_to_line_col(content_start_offset + tok.offset);
-                            self.diagnostics.push(self.cop.diagnostic(
+                            let mut diag = self.cop.diagnostic(
                                 self.source,
                                 line,
                                 column,
                                 "Prefer template tokens (like `%{foo}`) over annotated tokens (like `%<foo>s`).".to_string(),
-                            ));
+                            );
+
+                            if let Some(replacement) = Self::annotated_to_template(
+                                &content[tok.offset..tok.end],
+                            ) {
+                                self.pending_corrections.push(crate::correction::Correction {
+                                    start: content_start_offset + tok.offset,
+                                    end: content_start_offset + tok.end,
+                                    replacement,
+                                    cop_name: self.cop.name(),
+                                    cop_index: 0,
+                                });
+                                diag.corrected = true;
+                            }
+
+                            self.diagnostics.push(diag);
                         }
                     }
                 }
@@ -573,4 +641,5 @@ impl<'pr> Visit<'pr> for FormatStringTokenVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(FormatStringToken, "cops/style/format_string_token");
+    crate::cop_autocorrect_fixture_tests!(FormatStringToken, "cops/style/format_string_token");
 }
