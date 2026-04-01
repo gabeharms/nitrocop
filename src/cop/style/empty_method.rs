@@ -33,6 +33,10 @@ impl Cop for EmptyMethod {
         "Style/EmptyMethod"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[DEF_NODE, STATEMENTS_NODE]
     }
@@ -44,7 +48,7 @@ impl Cop for EmptyMethod {
         parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "compact");
         let def_node = match node.as_def_node() {
@@ -85,21 +89,62 @@ impl Cop for EmptyMethod {
         match enforced_style {
             "compact" if !is_single_line => {
                 let (line, column) = source.offset_to_line_col(def_loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     line,
                     column,
                     "Put empty method definitions on a single line.".to_string(),
-                ));
+                );
+
+                if let Some(corrections) = corrections.as_mut() {
+                    let def_start = def_loc.start_offset();
+                    let header_src = &source.as_bytes()[def_start..end_kw_loc.start_offset()];
+                    let normalized_header = String::from_utf8_lossy(header_src)
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+
+                    corrections.push(crate::correction::Correction {
+                        start: def_start,
+                        end: end_kw_loc.end_offset(),
+                        replacement: format!("{}; end", normalized_header.trim_end_matches(';')),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+
+                diagnostics.push(diagnostic);
             }
             "expanded" if is_single_line => {
                 let (line, column) = source.offset_to_line_col(def_loc.start_offset());
-                diagnostics.push(self.diagnostic(
+                let mut diagnostic = self.diagnostic(
                     source,
                     line,
                     column,
                     "Put the `end` on the next line.".to_string(),
-                ));
+                );
+
+                if let Some(corrections) = corrections.as_mut() {
+                    let def_start = def_loc.start_offset();
+                    let header_src = &source.as_bytes()[def_start..end_kw_loc.start_offset()];
+                    let normalized_header = String::from_utf8_lossy(header_src)
+                        .trim()
+                        .trim_end_matches(';')
+                        .trim_end()
+                        .to_string();
+
+                    corrections.push(crate::correction::Correction {
+                        start: def_start,
+                        end: end_kw_loc.end_offset(),
+                        replacement: format!("{normalized_header}\nend"),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+
+                diagnostics.push(diagnostic);
             }
             _ => {}
         }
@@ -112,6 +157,7 @@ mod tests {
     use crate::testutil::{run_cop_full, run_cop_full_with_config};
 
     crate::cop_fixture_tests!(EmptyMethod, "cops/style/empty_method");
+    crate::cop_autocorrect_fixture_tests!(EmptyMethod, "cops/style/empty_method");
 
     #[test]
     fn expanded_style_flags_single_line() {
