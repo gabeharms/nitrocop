@@ -2,7 +2,6 @@ use crate::cop::node_type::{
     ELSE_NODE, IF_NODE, INSTANCE_VARIABLE_WRITE_NODE, LOCAL_VARIABLE_WRITE_NODE,
 };
 use crate::cop::{Cop, CopConfig};
-use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -11,10 +10,6 @@ pub struct ConditionalAssignment;
 impl Cop for ConditionalAssignment {
     fn name(&self) -> &'static str {
         "Style/ConditionalAssignment"
-    }
-
-    fn supports_autocorrect(&self) -> bool {
-        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -26,6 +21,10 @@ impl Cop for ConditionalAssignment {
         ]
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_node(
         &self,
         source: &SourceFile,
@@ -33,7 +32,7 @@ impl Cop for ConditionalAssignment {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "assign_to_condition");
         let _single_line_only = config.get_bool("SingleLineConditionsOnly", true);
@@ -100,14 +99,34 @@ impl Cop for ConditionalAssignment {
                             "Use the return value of `if` expression for variable assignment and comparison.".to_string(),
                         );
 
-                        if let Some(corrs) = corrections.as_deref_mut() {
-                            if let Some(correction) = autocorrect_assignment_if(
-                                source,
-                                &if_node,
-                                &if_stmts[0],
-                                &else_list[0],
+                        if let Some(corrs) = corrections.as_mut() {
+                            let if_stmt = &if_stmts[0];
+                            let else_stmt = &else_list[0];
+                            if let (Some((target, if_rhs)), Some((_, else_rhs))) = (
+                                get_assignment_parts(source, &if_stmt),
+                                get_assignment_parts(source, &else_stmt),
                             ) {
-                                corrs.push(correction);
+                                let indent = " ".repeat(column);
+                                let body_indent = format!("{indent}  ");
+                                let predicate = if_node.predicate();
+                                let condition_src = String::from_utf8_lossy(
+                                    &source.as_bytes()[predicate.location().start_offset()
+                                        ..predicate.location().end_offset()],
+                                )
+                                .trim()
+                                .to_string();
+
+                                let replacement = format!(
+                                    "{indent}{target} = if {condition_src}\n{body_indent}{if_rhs}\n{indent}else\n{body_indent}{else_rhs}\n{indent}end"
+                                );
+
+                                corrs.push(crate::correction::Correction {
+                                    start: loc.start_offset(),
+                                    end: loc.end_offset(),
+                                    replacement,
+                                    cop_name: self.name(),
+                                    cop_index: 0,
+                                });
                                 diagnostic.corrected = true;
                             }
                         }
@@ -118,42 +137,6 @@ impl Cop for ConditionalAssignment {
             }
         }
     }
-}
-
-fn assignment_parts(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<(String, String)> {
-    if let Some(write) = node.as_local_variable_write_node() {
-        let name = std::str::from_utf8(write.name().as_slice())
-            .unwrap_or("")
-            .to_string();
-        let value = write.value();
-        let value_loc = value.location();
-        let value_src = source
-            .byte_slice(value_loc.start_offset(), value_loc.end_offset(), "")
-            .trim()
-            .to_string();
-        if name.is_empty() || value_src.is_empty() {
-            return None;
-        }
-        return Some((name, value_src));
-    }
-
-    if let Some(write) = node.as_instance_variable_write_node() {
-        let name = std::str::from_utf8(write.name().as_slice())
-            .unwrap_or("")
-            .to_string();
-        let value = write.value();
-        let value_loc = value.location();
-        let value_src = source
-            .byte_slice(value_loc.start_offset(), value_loc.end_offset(), "")
-            .trim()
-            .to_string();
-        if name.is_empty() || value_src.is_empty() {
-            return None;
-        }
-        return Some((name, value_src));
-    }
-
-    None
 }
 
 fn get_assignment_target(node: &ruby_prism::Node<'_>) -> Option<String> {
@@ -174,69 +157,33 @@ fn get_assignment_target(node: &ruby_prism::Node<'_>) -> Option<String> {
     None
 }
 
-fn autocorrect_assignment_if(
-    source: &SourceFile,
-    if_node: &ruby_prism::IfNode<'_>,
-    if_assign: &ruby_prism::Node<'_>,
-    else_assign: &ruby_prism::Node<'_>,
-) -> Option<Correction> {
-    let if_kw = if_node.if_keyword_loc()?;
-    if if_kw.as_slice() != b"if" {
-        return None;
-    }
-
-    let predicate = if_node.predicate();
-    let pred_loc = predicate.location();
-    let pred_src = source
-        .byte_slice(pred_loc.start_offset(), pred_loc.end_offset(), "")
+fn get_assignment_parts(source: &SourceFile, node: &ruby_prism::Node<'_>) -> Option<(String, String)> {
+    if let Some(write) = node.as_local_variable_write_node() {
+        let target = std::str::from_utf8(write.name().as_slice()).ok()?.to_string();
+        let value = write.value();
+        let rhs = String::from_utf8_lossy(
+            &source.as_bytes()[value.location().start_offset()..value.location().end_offset()],
+        )
         .trim()
         .to_string();
-    if pred_src.is_empty() {
-        return None;
+        return Some((target, rhs));
     }
-
-    let (target, if_value) = assignment_parts(source, if_assign)?;
-    let (else_target, else_value) = assignment_parts(source, else_assign)?;
-    if target != else_target {
-        return None;
+    if let Some(write) = node.as_instance_variable_write_node() {
+        let target = std::str::from_utf8(write.name().as_slice()).ok()?.to_string();
+        let value = write.value();
+        let rhs = String::from_utf8_lossy(
+            &source.as_bytes()[value.location().start_offset()..value.location().end_offset()],
+        )
+        .trim()
+        .to_string();
+        return Some((target, rhs));
     }
-
-    let if_assign_loc = if_assign.location();
-    let else_assign_loc = else_assign.location();
-
-    let (if_line, _) = source.offset_to_line_col(if_kw.start_offset());
-    let if_line_start = source.line_start_offset(if_line);
-    let if_indent = source.byte_slice(if_line_start, if_kw.start_offset(), "");
-
-    let (if_assign_line, _) = source.offset_to_line_col(if_assign_loc.start_offset());
-    let if_assign_line_start = source.line_start_offset(if_assign_line);
-    let if_branch_indent =
-        source.byte_slice(if_assign_line_start, if_assign_loc.start_offset(), "");
-
-    let (else_assign_line, _) = source.offset_to_line_col(else_assign_loc.start_offset());
-    let else_assign_line_start = source.line_start_offset(else_assign_line);
-    let else_branch_indent =
-        source.byte_slice(else_assign_line_start, else_assign_loc.start_offset(), "");
-
-    let replacement = format!(
-        "{if_indent}{target} = if {pred_src}\n{if_branch_indent}{if_value}\n{if_indent}else\n{else_branch_indent}{else_value}\n{if_indent}end"
-    );
-
-    Some(Correction {
-        start: if_node.location().start_offset(),
-        end: if_node.location().end_offset(),
-        replacement,
-        cop_name: "Style/ConditionalAssignment",
-        cop_index: 0,
-    })
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(ConditionalAssignment, "cops/style/conditional_assignment");
-    crate::cop_autocorrect_fixture_tests!(
-        ConditionalAssignment,
-        "cops/style/conditional_assignment"
-    );
+    crate::cop_autocorrect_fixture_tests!(ConditionalAssignment, "cops/style/conditional_assignment");
 }
