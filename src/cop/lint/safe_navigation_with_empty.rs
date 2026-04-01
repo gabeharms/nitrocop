@@ -16,6 +16,10 @@ impl Cop for SafeNavigationWithEmpty {
         "Lint/SafeNavigationWithEmpty"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_severity(&self) -> Severity {
         Severity::Warning
     }
@@ -31,7 +35,7 @@ impl Cop for SafeNavigationWithEmpty {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Look for `foo&.empty?` used inside a conditional (if/unless).
         // RuboCop's pattern: (if (csend (send ...) :empty?) ...)
@@ -93,12 +97,31 @@ impl Cop for SafeNavigationWithEmpty {
 
         let loc = call.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
-        diagnostics.push(self.diagnostic(
+        let mut diag = self.diagnostic(
             source,
             line,
             column,
             "Avoid calling `empty?` with the safe navigation operator in conditionals.".to_string(),
-        ));
+        );
+
+        if let Some(corrections) = corrections.as_mut() {
+            let recv_text = source.byte_slice(
+                receiver.location().start_offset(),
+                receiver.location().end_offset(),
+                "foo",
+            );
+            let replacement = format!("{recv_text} && {recv_text}.empty?");
+            corrections.push(crate::correction::Correction {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                replacement,
+                cop_name: self.name(),
+                cop_index: 0,
+            });
+            diag.corrected = true;
+        }
+
+        diagnostics.push(diag);
     }
 }
 
@@ -106,6 +129,10 @@ impl Cop for SafeNavigationWithEmpty {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        SafeNavigationWithEmpty,
+        "cops/lint/safe_navigation_with_empty"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         SafeNavigationWithEmpty,
         "cops/lint/safe_navigation_with_empty"
     );
