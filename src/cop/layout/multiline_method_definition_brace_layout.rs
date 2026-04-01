@@ -1,5 +1,6 @@
 use crate::cop::node_type::DEF_NODE;
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -8,6 +9,10 @@ pub struct MultilineMethodDefinitionBraceLayout;
 impl Cop for MultilineMethodDefinitionBraceLayout {
     fn name(&self) -> &'static str {
         "Layout/MultilineMethodDefinitionBraceLayout"
+    }
+
+    fn supports_autocorrect(&self) -> bool {
+        true
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
@@ -21,7 +26,7 @@ impl Cop for MultilineMethodDefinitionBraceLayout {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "symmetrical");
 
@@ -160,45 +165,77 @@ impl Cop for MultilineMethodDefinitionBraceLayout {
         let open_same_as_first = open_line == first_param_line;
         let close_same_as_last = close_line == last_param_line;
 
+        let closing_start = rparen_loc.start_offset();
+        let closing_end = rparen_loc.end_offset();
+        let opening_line_start = source.line_start_offset(open_line);
+        let opening_indent = source.as_bytes()[opening_line_start..]
+            .iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count();
+
+        let mut emit = |message: &str, want_same_line: bool| {
+            let mut diagnostic = self.diagnostic(source, close_line, close_col, message.to_string());
+
+            if let Some(corrections) = corrections.as_mut() {
+                if want_same_line {
+                    let between = &source.as_bytes()[last_end..closing_start];
+                    if between
+                        .iter()
+                        .all(|&b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r')
+                    {
+                        corrections.push(Correction {
+                            start: last_end,
+                            end: closing_end,
+                            replacement: ")".to_string(),
+                            cop_name: self.name(),
+                            cop_index: 0,
+                        });
+                        diagnostic.corrected = true;
+                    }
+                } else {
+                    corrections.push(Correction {
+                        start: last_end,
+                        end: closing_start,
+                        replacement: format!("\n{}", " ".repeat(opening_indent)),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diagnostic.corrected = true;
+                }
+            }
+
+            diagnostics.push(diagnostic);
+        };
+
         match enforced_style {
             "symmetrical" => {
                 if open_same_as_first && !close_same_as_last {
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        close_line,
-                        close_col,
-                        "Closing method definition brace must be on the same line as the last parameter when opening brace is on the same line as the first parameter.".to_string(),
-                    ));
+                    emit(
+                        "Closing method definition brace must be on the same line as the last parameter when opening brace is on the same line as the first parameter.",
+                        true,
+                    );
                 }
                 if !open_same_as_first && close_same_as_last {
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        close_line,
-                        close_col,
-                        "Closing method definition brace must be on the line after the last parameter when opening brace is on a separate line from the first parameter.".to_string(),
-                    ));
+                    emit(
+                        "Closing method definition brace must be on the line after the last parameter when opening brace is on a separate line from the first parameter.",
+                        false,
+                    );
                 }
             }
             "new_line" => {
                 if close_same_as_last {
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        close_line,
-                        close_col,
-                        "Closing method definition brace must be on the line after the last parameter."
-                            .to_string(),
-                    ));
+                    emit(
+                        "Closing method definition brace must be on the line after the last parameter.",
+                        false,
+                    );
                 }
             }
             "same_line" => {
                 if !close_same_as_last {
-                    diagnostics.push(self.diagnostic(
-                        source,
-                        close_line,
-                        close_col,
-                        "Closing method definition brace must be on the same line as the last parameter."
-                            .to_string(),
-                    ));
+                    emit(
+                        "Closing method definition brace must be on the same line as the last parameter.",
+                        true,
+                    );
                 }
             }
             _ => {}
@@ -211,6 +248,10 @@ mod tests {
     use super::*;
 
     crate::cop_fixture_tests!(
+        MultilineMethodDefinitionBraceLayout,
+        "cops/layout/multiline_method_definition_brace_layout"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         MultilineMethodDefinitionBraceLayout,
         "cops/layout/multiline_method_definition_brace_layout"
     );
