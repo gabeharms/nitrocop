@@ -43,6 +43,10 @@ impl Cop for TrailingUnderscoreVariable {
         "Style/TrailingUnderscoreVariable"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn interested_node_types(&self) -> &'static [u8] {
         &[MULTI_WRITE_NODE]
     }
@@ -54,7 +58,7 @@ impl Cop for TrailingUnderscoreVariable {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let allow_named = config.get_bool("AllowNamedUnderscoreVariables", true);
 
@@ -78,11 +82,30 @@ impl Cop for TrailingUnderscoreVariable {
             &rights,
             allow_named,
             diagnostics,
+            &mut corrections,
+            Some((
+                multi.location().start_offset(),
+                multi.value().location().start_offset(),
+            )),
         );
 
         // Check nested MultiTargetNode children (e.g., `a, (b, _) = foo`)
-        check_children_offenses(self, source, &lefts, allow_named, diagnostics);
-        check_children_offenses(self, source, &rights, allow_named, diagnostics);
+        check_children_offenses(
+            self,
+            source,
+            &lefts,
+            allow_named,
+            diagnostics,
+            &mut corrections,
+        );
+        check_children_offenses(
+            self,
+            source,
+            &rights,
+            allow_named,
+            diagnostics,
+            &mut corrections,
+        );
     }
 }
 
@@ -95,6 +118,8 @@ fn check_multi_assignment(
     rights: &[ruby_prism::Node<'_>],
     allow_named: bool,
     diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
+    assignment_offsets: Option<(usize, usize)>,
 ) {
     // Build a unified list of all variables in order: lefts, rest, rights
     // We need to find how many trailing ones are underscore variables.
@@ -172,12 +197,68 @@ fn check_multi_assignment(
     let first = first_trailing.unwrap();
     let loc = first.location();
     let (line, column) = source.offset_to_line_col(loc.start_offset());
-    diagnostics.push(cop.diagnostic(
+    let mut diagnostic = cop.diagnostic(
         source,
         line,
         column,
         "Trailing underscore variable(s) in parallel assignment are unnecessary.".to_string(),
-    ));
+    );
+
+    if let (Some((lhs_start, rhs_start)), Some(corr)) = (assignment_offsets, corrections.as_deref_mut()) {
+        if let Some((start, end)) = correction_range(
+            source,
+            lefts,
+            rest,
+            rights,
+            first,
+            trailing_count,
+            lhs_start,
+            rhs_start,
+        ) {
+            corr.push(crate::correction::Correction {
+                start,
+                end,
+                replacement: "".to_string(),
+                cop_name: cop.name(),
+                cop_index: 0,
+            });
+            diagnostic.corrected = true;
+        }
+    }
+
+    diagnostics.push(diagnostic);
+}
+
+fn correction_range(
+    source: &SourceFile,
+    lefts: &[ruby_prism::Node<'_>],
+    rest: Option<&ruby_prism::Node<'_>>,
+    rights: &[ruby_prism::Node<'_>],
+    first: &ruby_prism::Node<'_>,
+    trailing_count: usize,
+    lhs_start: usize,
+    rhs_start: usize,
+) -> Option<(usize, usize)> {
+    if rhs_start <= lhs_start {
+        return None;
+    }
+
+    let mut all_len = lefts.len() + rights.len();
+    if let Some(r) = rest {
+        if r.as_implicit_rest_node().is_none() {
+            all_len += 1;
+        }
+    }
+
+    let head = &source.as_bytes()[lhs_start..rhs_start];
+    let eq_rel = head.iter().rposition(|&b| b == b'=')?;
+    let eq_start = lhs_start + eq_rel;
+
+    if trailing_count >= all_len {
+        Some((lhs_start, rhs_start))
+    } else {
+        Some((first.location().start_offset(), eq_start))
+    }
 }
 
 /// Check if there's a non-underscore splat variable before the first trailing underscore.
@@ -249,6 +330,7 @@ fn check_children_offenses(
     variables: &[ruby_prism::Node<'_>],
     allow_named: bool,
     diagnostics: &mut Vec<Diagnostic>,
+    corrections: &mut Option<&mut Vec<crate::correction::Correction>>,
 ) {
     for var in variables {
         if let Some(mt) = var.as_multi_target_node() {
@@ -264,11 +346,13 @@ fn check_children_offenses(
                 &rights,
                 allow_named,
                 diagnostics,
+                corrections,
+                None,
             );
 
             // Recurse into nested multi-target nodes
-            check_children_offenses(cop, source, &lefts, allow_named, diagnostics);
-            check_children_offenses(cop, source, &rights, allow_named, diagnostics);
+            check_children_offenses(cop, source, &lefts, allow_named, diagnostics, corrections);
+            check_children_offenses(cop, source, &rights, allow_named, diagnostics, corrections);
         }
     }
 }
@@ -309,6 +393,10 @@ fn is_underscore_var(node: &ruby_prism::Node<'_>, allow_named: bool) -> bool {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(
+        TrailingUnderscoreVariable,
+        "cops/style/trailing_underscore_variable"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         TrailingUnderscoreVariable,
         "cops/style/trailing_underscore_variable"
     );
