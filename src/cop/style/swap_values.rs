@@ -1,6 +1,7 @@
 use ruby_prism::Visit;
 
 use crate::cop::{Cop, CopConfig};
+use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
@@ -11,6 +12,10 @@ impl Cop for SwapValues {
         "Style/SwapValues"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -18,14 +23,23 @@ impl Cop for SwapValues {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        mut corrections: Option<&mut Vec<Correction>>,
     ) {
         let mut visitor = SwapVisitor {
             cop: self,
             source,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
         };
         visitor.visit(&parse_result.node());
+
+        if let Some(corrections_out) = corrections.as_mut() {
+            corrections_out.extend(visitor.corrections);
+            for diag in &mut visitor.diagnostics {
+                diag.corrected = true;
+            }
+        }
+
         diagnostics.extend(visitor.diagnostics);
     }
 }
@@ -34,6 +48,7 @@ struct SwapVisitor<'a> {
     cop: &'a SwapValues,
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<Correction>,
 }
 
 impl<'pr> Visit<'pr> for SwapVisitor<'_> {
@@ -83,6 +98,29 @@ impl<'pr> Visit<'pr> for SwapVisitor<'_> {
                                 String::from_utf8_lossy(b_name),
                             ),
                         ));
+
+                        let first = window[0].location();
+                        let third = window[2].location();
+                        let line_start = self.source.line_start_offset(line);
+                        let indent = self
+                            .source
+                            .try_byte_slice(line_start, first.start_offset())
+                            .unwrap_or("");
+
+                        self.corrections.push(Correction {
+                            start: first.start_offset(),
+                            end: third.end_offset(),
+                            replacement: format!(
+                                "{}{}, {} = {}, {}",
+                                indent,
+                                String::from_utf8_lossy(b_name),
+                                String::from_utf8_lossy(c_name),
+                                String::from_utf8_lossy(c_name),
+                                String::from_utf8_lossy(b_name),
+                            ),
+                            cop_name: self.cop.name(),
+                            cop_index: 0,
+                        });
                     }
                 }
             }
@@ -104,4 +142,5 @@ fn get_lvar_name<'a>(node: &'a ruby_prism::Node<'a>) -> Option<&'a [u8]> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(SwapValues, "cops/style/swap_values");
+    crate::cop_autocorrect_fixture_tests!(SwapValues, "cops/style/swap_values");
 }
