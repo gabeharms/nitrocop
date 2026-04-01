@@ -59,6 +59,10 @@ impl Cop for MultilineMethodCallIndentation {
         "Layout/MultilineMethodCallIndentation"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn check_source(
         &self,
         source: &SourceFile,
@@ -66,7 +70,7 @@ impl Cop for MultilineMethodCallIndentation {
         _code_map: &crate::parse::codemap::CodeMap,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        _corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "aligned");
         let width = config.get_usize("IndentationWidth", 2);
@@ -76,11 +80,16 @@ impl Cop for MultilineMethodCallIndentation {
             style,
             width,
             diagnostics: Vec::new(),
+            corrections: Vec::new(),
+            autocorrect_enabled: corrections.is_some(),
             in_paren_args: false,
             in_hash_value: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
+        if let Some(corrections) = corrections {
+            corrections.extend(visitor.corrections);
+        }
     }
 }
 
@@ -90,6 +99,8 @@ struct ChainVisitor<'a> {
     style: &'a str,
     width: usize,
     diagnostics: Vec<Diagnostic>,
+    corrections: Vec<crate::correction::Correction>,
+    autocorrect_enabled: bool,
     in_paren_args: bool,
     /// True when visiting the value side of a hash pair (AssocNode).
     /// RuboCop checks chain indentation inside hash pair values even
@@ -177,6 +188,21 @@ impl ChainVisitor<'_> {
             };
             self.diagnostics
                 .push(self.cop.diagnostic(self.source, rhs_line, rhs_col, msg));
+
+            if self.autocorrect_enabled {
+                if let (Some(line_start), Some(rhs_start)) = (
+                    self.source.line_col_to_offset(rhs_line, 0),
+                    self.source.line_col_to_offset(rhs_line, rhs_col),
+                ) {
+                    self.corrections.push(crate::correction::Correction {
+                        start: line_start,
+                        end: rhs_start,
+                        replacement: " ".repeat(expected),
+                        cop_name: self.cop.name(),
+                        cop_index: 0,
+                    });
+                }
+            }
         }
     }
 
@@ -941,6 +967,10 @@ mod tests {
     use crate::testutil::run_cop_full;
 
     crate::cop_fixture_tests!(
+        MultilineMethodCallIndentation,
+        "cops/layout/multiline_method_call_indentation"
+    );
+    crate::cop_autocorrect_fixture_tests!(
         MultilineMethodCallIndentation,
         "cops/layout/multiline_method_call_indentation"
     );
