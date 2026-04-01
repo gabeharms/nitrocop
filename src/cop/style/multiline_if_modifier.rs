@@ -1,5 +1,4 @@
 use crate::cop::{Cop, CopConfig};
-use crate::correction::Correction;
 use crate::diagnostic::Diagnostic;
 use crate::parse::codemap::CodeMap;
 use crate::parse::source::SourceFile;
@@ -66,20 +65,20 @@ impl Cop for MultilineIfModifier {
         _code_map: &CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        corrections: Option<&mut Vec<Correction>>,
+        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = MultilineIfModifierVisitor {
             source,
             cop: self,
             diagnostics: Vec::new(),
             corrections: Vec::new(),
-            autocorrect_enabled: corrections.is_some(),
+            emit_corrections: corrections.is_some(),
             inside_flagged: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
-        if let Some(corrections) = corrections {
-            corrections.extend(visitor.corrections);
+        if let Some(ref mut corr) = corrections {
+            corr.extend(visitor.corrections);
         }
     }
 }
@@ -88,44 +87,14 @@ struct MultilineIfModifierVisitor<'a> {
     source: &'a SourceFile,
     cop: &'a MultilineIfModifier,
     diagnostics: Vec<Diagnostic>,
-    corrections: Vec<Correction>,
-    autocorrect_enabled: bool,
+    corrections: Vec<crate::correction::Correction>,
+    emit_corrections: bool,
     /// Whether we're currently inside a subtree of an already-flagged
     /// multiline modifier if/unless (RuboCop's `part_of_ignored_node?`).
     inside_flagged: bool,
 }
 
 impl MultilineIfModifierVisitor<'_> {
-    fn source_slice(&self, start: usize, end: usize) -> String {
-        String::from_utf8_lossy(&self.source.as_bytes()[start..end]).into_owned()
-    }
-
-    fn multiline_if_replacement(&self, node: &ruby_prism::IfNode<'_>) -> Option<String> {
-        let statements = node.statements()?;
-        let body = self.source_slice(
-            statements.location().start_offset(),
-            statements.location().end_offset(),
-        );
-        let predicate = self.source_slice(
-            node.predicate().location().start_offset(),
-            node.predicate().location().end_offset(),
-        );
-        Some(format!("if {}\n{}\nend", predicate.trim(), body.trim()))
-    }
-
-    fn multiline_unless_replacement(&self, node: &ruby_prism::UnlessNode<'_>) -> Option<String> {
-        let statements = node.statements()?;
-        let body = self.source_slice(
-            statements.location().start_offset(),
-            statements.location().end_offset(),
-        );
-        let predicate = self.source_slice(
-            node.predicate().location().start_offset(),
-            node.predicate().location().end_offset(),
-        );
-        Some(format!("unless {}\n{}\nend", predicate.trim(), body.trim()))
-    }
-
     /// Check if a modifier if/unless body spans multiple lines.
     /// Returns `Some((body_start_offset, body_start_line, body_start_col))` if multiline.
     ///
@@ -187,6 +156,35 @@ impl MultilineIfModifierVisitor<'_> {
             None
         }
     }
+
+    fn build_modifier_replacement(
+        &self,
+        keyword: &str,
+        predicate: &ruby_prism::Node<'_>,
+        statements: &ruby_prism::StatementsNode<'_>,
+        node_start_col: usize,
+    ) -> Option<String> {
+        let predicate_source = std::str::from_utf8(predicate.location().as_slice()).ok()?;
+        let body_source = std::str::from_utf8(statements.location().as_slice()).ok()?;
+
+        let base_indent = " ".repeat(node_start_col);
+        let body_indent = format!("{base_indent}  ");
+        let indented_body = body_source
+            .lines()
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("{body_indent}{line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Some(format!(
+            "{keyword} {predicate_source}\n{indented_body}\n{base_indent}end"
+        ))
+    }
 }
 
 impl<'pr> Visit<'pr> for MultilineIfModifierVisitor<'_> {
@@ -205,27 +203,37 @@ impl<'pr> Visit<'pr> for MultilineIfModifierVisitor<'_> {
             // Flag this offense
             if let Some(stmts) = node.statements() {
                 if let Some((_offset, line, column)) = self.check_body_multiline(&stmts) {
-                    let mut diagnostic = self.cop.diagnostic(
+                    let mut diag = self.cop.diagnostic(
                         self.source,
                         line,
                         column,
-                        "Favor a normal if-statement over a modifier clause in a multiline statement.".to_string(),
+                        "Favor a normal if-statement over a modifier clause in a multiline statement."
+                            .to_string(),
                     );
 
-                    if self.autocorrect_enabled {
-                        if let Some(replacement) = self.multiline_if_replacement(node) {
-                            self.corrections.push(Correction {
-                                start: node.location().start_offset(),
-                                end: node.location().end_offset(),
+                    if self.emit_corrections {
+                        let predicate = node.predicate();
+                        let node_loc = node.location();
+                        let (_, node_start_col) =
+                            self.source.offset_to_line_col(node_loc.start_offset());
+                        if let Some(replacement) = self.build_modifier_replacement(
+                            "if",
+                            &predicate,
+                            &stmts,
+                            node_start_col,
+                        ) {
+                            self.corrections.push(crate::correction::Correction {
+                                start: node_loc.start_offset(),
+                                end: node_loc.end_offset(),
                                 replacement,
                                 cop_name: self.cop.name(),
                                 cop_index: 0,
                             });
-                            diagnostic.corrected = true;
+                            diag.corrected = true;
                         }
                     }
 
-                    self.diagnostics.push(diagnostic);
+                    self.diagnostics.push(diag);
                 }
             }
 
@@ -252,27 +260,37 @@ impl<'pr> Visit<'pr> for MultilineIfModifierVisitor<'_> {
             // Flag this offense
             if let Some(stmts) = node.statements() {
                 if let Some((_offset, line, column)) = self.check_body_multiline(&stmts) {
-                    let mut diagnostic = self.cop.diagnostic(
+                    let mut diag = self.cop.diagnostic(
                         self.source,
                         line,
                         column,
-                        "Favor a normal unless-statement over a modifier clause in a multiline statement.".to_string(),
+                        "Favor a normal unless-statement over a modifier clause in a multiline statement."
+                            .to_string(),
                     );
 
-                    if self.autocorrect_enabled {
-                        if let Some(replacement) = self.multiline_unless_replacement(node) {
-                            self.corrections.push(Correction {
-                                start: node.location().start_offset(),
-                                end: node.location().end_offset(),
+                    if self.emit_corrections {
+                        let predicate = node.predicate();
+                        let node_loc = node.location();
+                        let (_, node_start_col) =
+                            self.source.offset_to_line_col(node_loc.start_offset());
+                        if let Some(replacement) = self.build_modifier_replacement(
+                            "unless",
+                            &predicate,
+                            &stmts,
+                            node_start_col,
+                        ) {
+                            self.corrections.push(crate::correction::Correction {
+                                start: node_loc.start_offset(),
+                                end: node_loc.end_offset(),
                                 replacement,
                                 cop_name: self.cop.name(),
                                 cop_index: 0,
                             });
-                            diagnostic.corrected = true;
+                            diag.corrected = true;
                         }
                     }
 
-                    self.diagnostics.push(diagnostic);
+                    self.diagnostics.push(diag);
                 }
             }
 
@@ -291,5 +309,8 @@ impl<'pr> Visit<'pr> for MultilineIfModifierVisitor<'_> {
 mod tests {
     use super::*;
     crate::cop_fixture_tests!(MultilineIfModifier, "cops/style/multiline_if_modifier");
-    crate::cop_autocorrect_fixture_tests!(MultilineIfModifier, "cops/style/multiline_if_modifier");
+    crate::cop_autocorrect_fixture_tests!(
+        MultilineIfModifier,
+        "cops/style/multiline_if_modifier_autocorrect"
+    );
 }
