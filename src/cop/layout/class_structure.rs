@@ -81,6 +81,10 @@ impl Cop for ClassStructure {
         "Layout/ClassStructure"
     }
 
+    fn supports_autocorrect(&self) -> bool {
+        true
+    }
+
     fn default_enabled(&self) -> bool {
         false
     }
