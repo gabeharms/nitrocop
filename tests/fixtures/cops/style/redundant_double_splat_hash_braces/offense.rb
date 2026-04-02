@@ -6,3 +6,6 @@ method(**{a: 1})
 
 call(**{x: y, z: w})
      ^^^^^^^^^^^^^^^ Style/RedundantDoubleSplatHashBraces: Remove the redundant double splat and braces, use keyword arguments directly.
+
+do_something(**{foo: bar, baz: qux}.merge(options))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Style/RedundantDoubleSplatHashBraces: Remove the redundant double splat and braces, use keyword arguments directly.

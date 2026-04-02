@@ -168,6 +168,11 @@ impl Cop for RedundantTypeConversion {
                     || is_constructor(&receiver, b"Hash", b"[]")
                     || is_chained_method(&receiver, b"to_h")
             }
+            b"to_set" => {
+                is_constructor(&receiver, b"Set", b"new")
+                    || is_constructor(&receiver, b"Set", b"[]")
+                    || is_chained_method(&receiver, b"to_set")
+            }
             _ => false,
         };
 

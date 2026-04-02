@@ -30,10 +30,11 @@ use ruby_prism::Visit;
 /// chain (`CallNode -> StatementsNode? -> BlockNode -> outer constructor CallNode`)
 /// instead of any location-contained ancestor block.
 ///
-/// **String.new special case:** RuboCop only flags `String.new` when `frozen_string_literal: false`
-/// is explicitly set. When the comment is absent or set to `true`, `String.new` is needed to
-/// create a mutable empty string, so it is not flagged. Prior to this fix, we incorrectly
-/// flagged `String.new` when the comment was absent (121 FPs in corpus).
+/// **String.new special case:** RuboCop checks `frozen_strings?` which considers:
+/// (1) `frozen_string_literal: true` magic comment means strings are frozen, skip the offense;
+/// (2) `Style/FrozenStringLiteralComment` cop enabled with no magic comment means strings
+/// are treated as frozen (project enforces frozen strings), skip the offense;
+/// (3) otherwise, strings are not frozen and `String.new` should use `''` instead.
 pub struct EmptyLiteral;
 
 /// Check if the source file has `# frozen_string_literal: false` in the first few lines.
@@ -48,6 +49,22 @@ fn has_frozen_string_literal_false(source: &SourceFile) -> bool {
             let after = &lower[pos + 22..];
             let trimmed: Vec<u8> = after.iter().copied().skip_while(|&b| b == b' ').collect();
             return trimmed.starts_with(b"false");
+        }
+    }
+    false
+}
+
+/// Check if the source file has `# frozen_string_literal: true` in the first few lines.
+fn has_frozen_string_literal_true(source: &SourceFile) -> bool {
+    for line in source.lines().take(3) {
+        let lower: Vec<u8> = line.to_ascii_lowercase();
+        if let Some(pos) = lower
+            .windows(22)
+            .position(|w| w == b"frozen_string_literal:")
+        {
+            let after = &lower[pos + 22..];
+            let trimmed: Vec<u8> = after.iter().copied().skip_while(|&b| b == b' ').collect();
+            return trimmed.starts_with(b"true");
         }
     }
     false
@@ -173,7 +190,7 @@ impl Cop for EmptyLiteral {
         source: &SourceFile,
         node: &ruby_prism::Node<'_>,
         parse_result: &ruby_prism::ParseResult<'_>,
-        _config: &CopConfig,
+        config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
         mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
@@ -239,14 +256,23 @@ impl Cop for EmptyLiteral {
             return;
         }
 
-        // String.new is only flagged when frozen_string_literal: false is explicitly set.
-        // When the comment is absent or set to true, String.new may be needed for
-        // a mutable empty string, so we don't flag it.
-        if const_name.as_slice() == b"String"
-            && method_bytes == b"new"
-            && !has_frozen_string_literal_false(source)
-        {
-            return;
+        // String.new: RuboCop's frozen_strings? logic determines when String.new is needed.
+        // 1. frozen_string_literal: true -> skip (strings frozen, String.new needed)
+        // 2. Style/FrozenStringLiteralComment enabled AND no magic comment -> skip
+        //    (project enforces frozen strings, absence means they'll be added)
+        // 3. Otherwise -> flag (strings aren't frozen, use '' instead)
+        if const_name.as_slice() == b"String" && method_bytes == b"new" {
+            let frozen_comment = has_frozen_string_literal_true(source);
+            let fslc_enabled = config.get_bool("FrozenStringLiteralCommentEnabled", false);
+            if frozen_comment {
+                // Case 1: explicitly frozen
+                return;
+            }
+            if fslc_enabled && !has_frozen_string_literal_false(source) {
+                // Case 2: cop enabled, no explicit false -> treat as frozen
+                return;
+            }
+            // Case 3: strings not frozen, flag String.new
         }
 
         let (msg, replacement) = match const_name.as_slice() {
@@ -308,11 +334,14 @@ mod tests {
     }
 
     #[test]
-    fn no_offense_string_new_without_frozen_string_literal() {
+    fn offense_string_new_without_frozen_string_literal() {
+        // When FrozenStringLiteralComment cop is not enabled (default) and there's
+        // no magic comment, strings aren't frozen -> String.new should be flagged.
         let diags = crate::testutil::run_cop_full(&EmptyLiteral, b"s = String.new\n");
-        assert!(
-            diags.is_empty(),
-            "String.new should not be flagged when frozen_string_literal comment is absent"
+        assert_eq!(
+            diags.len(),
+            1,
+            "String.new should be flagged when frozen_string_literal comment is absent and FrozenStringLiteralComment cop is not enabled"
         );
     }
 

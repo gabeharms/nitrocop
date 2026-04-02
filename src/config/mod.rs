@@ -2850,6 +2850,18 @@ impl ResolvedConfig {
                 .entry("EmptyElseStyle".to_string())
                 .or_insert_with(|| Value::String(empty_else_style.to_string()));
         }
+        // Inject Style/FrozenStringLiteralComment Enabled state for Style/EmptyLiteral
+        // (mirrors RuboCop's `config.cop_enabled?('Style/FrozenStringLiteralComment')` lookup)
+        if name == "Style/EmptyLiteral" {
+            let fslc_enabled = self
+                .cop_configs
+                .get("Style/FrozenStringLiteralComment")
+                .is_some_and(|cc| cc.enabled == EnabledState::True);
+            config
+                .options
+                .entry("FrozenStringLiteralCommentEnabled".to_string())
+                .or_insert_with(|| Value::Bool(fslc_enabled));
+        }
         // Inject Style/StringLiterals EnforcedStyle for Style/QuotedSymbols
         // (mirrors RuboCop's `config.for_cop('Style/StringLiterals')` lookup)
         if name == "Style/QuotedSymbols" {

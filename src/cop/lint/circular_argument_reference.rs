@@ -44,9 +44,8 @@ impl Cop for CircularArgumentReference {
         if let Some(kwopt) = node.as_optional_keyword_parameter_node() {
             let param_name = kwopt.name().as_slice();
             let value = kwopt.value();
-            if is_circular_ref(param_name, &value) {
-                let loc = value.location();
-                let (line, column) = source.offset_to_line_col(loc.start_offset());
+            if let Some(ref_offset) = find_circular_ref(param_name, &value) {
+                let (line, column) = source.offset_to_line_col(ref_offset);
                 diagnostics.push(self.diagnostic(
                     source,
                     line,
@@ -64,9 +63,8 @@ impl Cop for CircularArgumentReference {
         if let Some(optarg) = node.as_optional_parameter_node() {
             let param_name = optarg.name().as_slice();
             let value = optarg.value();
-            if is_circular_ref(param_name, &value) {
-                let loc = value.location();
-                let (line, column) = source.offset_to_line_col(loc.start_offset());
+            if let Some(ref_offset) = find_circular_ref(param_name, &value) {
+                let (line, column) = source.offset_to_line_col(ref_offset);
                 diagnostics.push(self.diagnostic(
                     source,
                     line,
@@ -81,12 +79,21 @@ impl Cop for CircularArgumentReference {
     }
 }
 
-fn is_circular_ref(param_name: &[u8], value: &ruby_prism::Node<'_>) -> bool {
+/// Returns the start offset of the circular reference node, or None.
+fn find_circular_ref(param_name: &[u8], value: &ruby_prism::Node<'_>) -> Option<usize> {
     // Direct reference: def foo(x = x) where value is a local variable read
     if let Some(lvar) = value.as_local_variable_read_node() {
-        return lvar.name().as_slice() == param_name;
+        if lvar.name().as_slice() == param_name {
+            return Some(lvar.location().start_offset());
+        }
+        return None;
     }
-    false
+    // Nested assignment: def foo(pie = pie = pie) — the outer value is a
+    // LocalVariableWriteNode whose own value may contain the circular ref.
+    if let Some(lvar_write) = value.as_local_variable_write_node() {
+        return find_circular_ref(param_name, &lvar_write.value());
+    }
+    None
 }
 
 #[cfg(test)]

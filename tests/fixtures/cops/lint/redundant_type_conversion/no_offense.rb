@@ -10,3 +10,5 @@ Native::Array.new(object, *args, &block).to_a
 ::Native::Array.new(object).to_a
 Foo::Hash.new.to_h
 Custom::String.new("text").to_s
+# to_set with block transforms — not redundant
+items.to_set { |x| x.name }

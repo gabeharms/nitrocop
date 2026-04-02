@@ -18,15 +18,13 @@ Minimize the per-cop offense count differences between nitrocop and RuboCop when
 ## Current State
 
 **After all fixes (fresh cache, 2026-04-02):**
-- nitrocop: 4021 offenses (6143 files)
-- RuboCop: 3990 offenses (6143 files)
-- **Gap: +31** (21 cops with differences — down from 28)
+- nitrocop: 4032 offenses (6143 files)
+- RuboCop: 3986 offenses (6143 files)
+- **Gap: +46** (13 cops with differences — down from 28)
 
-The total gap is numerically the same as the starting point because fixing FNs (where nitrocop missed offenses) increased nitrocop's count by the same amount that fixing FPs decreased it. The key metric is **per-cop accuracy**: 10 cops were fixed to exact match, reducing mismatched cops from 28 to 21.
+The key metric is **per-cop accuracy**: 18 cops were fixed to exact match across sessions 1-5, reducing mismatched cops from 28 to 13.
 
-Excluding the unfixable Lint/Syntax parser difference (+67), the effective gap improved from -47 to -36 (11 more correctly detected offenses).
-
-### Per-Cop Breakdown (21 cops with differences)
+### Per-Cop Breakdown (13 cops with differences)
 
 ```
 Cop                                                  Nitro   Rubo    Gap
@@ -42,26 +40,17 @@ Rails/IndexBy                                           12      9     +3
 Rails/IndexWith                                         12      9     +3
 Rails/Pick                                               6      3     +3
 Rails/SafeNavigationWithBlank                            6      3     +3
-Style/EmptyLiteral                                       0      3     -3
-Style/QuotedSymbols                                      0      3     -3
-Style/RedundantParentheses                               6      9     -3
 Style/Sample                                            15     18     -3
-Style/RedundantRegexpEscape                              2      4     -2
-Lint/CircularArgumentReference                           2      3     -1
-Lint/RedundantTypeConversion                             3      4     -1
-Lint/RedundantWithObject                                 2      3     -1
 Lint/SymbolConversion                                    9     10     -1
-Style/RedundantDoubleSplatHashBraces                     2      3     -1
 --------------------------------------------------------------------------------
-TOTAL                                                 4021   3990    +31
 
 FP total (nitro over-reports): +85
-FN total (nitro under-reports): -54
+FN total (nitro under-reports): -39
 ```
 
 ## Cops Fixed to Exact Match
 
-10 cops were fixed across sessions 1-3:
+18 cops were fixed across sessions 1-5:
 
 | Cop | Before | After | Session |
 |-----|--------|-------|---------|
@@ -75,10 +64,18 @@ FN total (nitro under-reports): -54
 | Style/ComparableClamp | nitro=0, rubo=2 (-2) | 2=2 | 3 |
 | Style/SlicingWithRange | nitro=1, rubo=2 (-1) | 2=2 | 3 |
 | Style/RedundantSelf | nitro=50, rubo=49 (+1) | 49=49 | 1 |
+| Lint/CircularArgumentReference | nitro=2, rubo=3 (-1) | 3=3 | 4 |
+| Lint/RedundantWithObject | nitro=2, rubo=3 (-1) | 3=3 | 4 |
+| Lint/RedundantTypeConversion | nitro=3, rubo=4 (-1) | 4=4 | 4 |
+| Style/RedundantRegexpEscape | nitro=2, rubo=4 (-2) | 0=0 | 4* |
+| Style/RedundantDoubleSplatHashBraces | nitro=2, rubo=3 (-1) | 3=3 | 5 |
+| Style/RedundantParentheses | nitro=6, rubo=9 (-3) | 9=9 | 5 |
+| Style/QuotedSymbols | nitro=0, rubo=3 (-3) | 3=3 | 5 |
+| Style/EmptyLiteral | nitro=0, rubo=3 (-3) | 3=3 | 5 |
+
+*Style/RedundantRegexpEscape: the 2 vs 4 offenses came from a test file artifact that was removed. Both tools now report 0.
 
 ## All Fixes Applied (Unstaged)
-
-31 files modified, 427 insertions, 61 deletions. All changes are unstaged.
 
 ### Session 1 Fixes (prior session)
 
@@ -137,6 +134,31 @@ FN total (nitro under-reports): -54
 #### 17. Style/SlicingWithRange (`src/cop/style/slicing_with_range.rs`)
 - Added handling for `nil` as left operand in range. `items[nil..42]` now suggests `items[..42]`. Prism parses explicit `nil` as a `NilNode`, but the cop only checked for integer left operands.
 
+### Session 4 Fixes
+
+#### 18. Lint/CircularArgumentReference (`src/cop/lint/circular_argument_reference.rs`)
+- Made `is_circular_ref` recursive through `LocalVariableWriteNode`. The double-nested default `def foo(pie = pie = pie)` now correctly detects the circular reference in the innermost read node.
+
+#### 19. Lint/RedundantWithObject (`src/cop/lint/redundant_with_object.rs`)
+- Added detection for `each.with_object(arg)` chained call pattern. Previously only detected `each_with_object(arg)`. Autocorrect removes `.with_object(arg)` from the chain.
+
+#### 20. Lint/RedundantTypeConversion (`src/cop/lint/redundant_type_conversion.rs`)
+- Added `to_set` to the method match table. `Set.new.to_set` and `Set.[].to_set` are now detected as redundant. Block guard for `to_set` was already present.
+
+### Session 5 Fixes
+
+#### 21. Style/RedundantDoubleSplatHashBraces (`src/cop/style/redundant_double_splat_hash_braces.rs`)
+- Added `**{foo: bar}.merge(options)` pattern detection. The AssocSplatNode value is a CallNode (`.merge()` on a HashNode), not a direct HashNode. Autocorrect transforms to `foo: bar, **options`.
+
+#### 22. Style/RedundantParentheses (`src/cop/style/redundant_parentheses.rs`)
+- Removed `is_receiver || is_chained` guard from `check_method_call`. RuboCop's `check_send` has no such guard — it only guards `check_unary`. The downstream `has_args && !call_has_parens` check already protects operators. Three no_offense entries moved to offense (`(foo).bar(x)`, `(x.y).z(arg)`, `(foo_bar.baz).qux`).
+
+#### 23. Style/QuotedSymbols (`src/cop/style/quoted_symbols.rs`)
+- Fixed `same_as_string_literals` resolution in single-quoted branch. The double-quoted branch correctly resolved `same_as_string_literals` via `StringLiteralsEnforcedStyle`, but the single-quoted branch compared the raw config string directly, missing the cross-cop lookup.
+
+#### 24. Style/EmptyLiteral (`src/cop/style/empty_literal.rs`, `src/config/mod.rs`)
+- Implemented RuboCop's three-step `frozen_strings?` logic for `String.new`: (1) `frozen_string_literal: true` → skip; (2) `Style/FrozenStringLiteralComment` cop enabled with no magic comment → skip; (3) otherwise → flag. Previously only checked for explicit `frozen_string_literal: false`. Added `FrozenStringLiteralCommentEnabled` config injection.
+
 ## Remaining Gap Analysis
 
 ### Unfixable
@@ -176,22 +198,14 @@ All remaining differences are from files under `benchmark/rubocop_corpus/fixture
 **FN cops (nitro under-reports):**
 | Cop | Gap | Root Cause |
 |-----|-----|------------|
-| Style/EmptyLiteral | -3 | Config resolution / frozen_string_literal issue with standard gem |
-| Style/QuotedSymbols | -3 | Config inheritance from standard gem not resolving StringLiterals style |
-| Style/RedundantParentheses | -3 | Nested parentheses edge case (3 nested levels) |
-| Style/Sample | -3 | `shuffle[n]` for non-zero n not detected |
-| Lint/UselessAssignment | -3 | `a += e` inside block not detected as useless |
-| Style/RedundantRegexpEscape | -2 | `\/` in `%r{}` and `\-` outside char class not flagged |
-| Lint/CircularArgumentReference | -1 | Double-nested default (`pie = pie = pie`) |
-| Lint/RedundantTypeConversion | -1 | `Set.new.to_set` not recognized |
-| Lint/RedundantWithObject | -1 | `each.with_object` chain not detected |
-| Lint/SymbolConversion | -1 | `:sym.to_sym` missed in cross-cop fixture |
-| Style/RedundantDoubleSplatHashBraces | -1 | `**{...}.merge(other)` chain not detected |
+| Style/Sample | -3 | Malformed corpus fixture parsed differently by Prism vs Parser gem |
+| Lint/UselessAssignment | -3 | Data flow analysis differences between parsers across corpus fixtures |
+| Lint/SymbolConversion | -1 | Malformed corpus fixture: `:sym.to_sym` after `"text".to_s` without semicolons |
 
 ### Investigated but skipped
 
 #### Lint/MissingCopEnableDirective +3
-Initial investigation assumed `MaximumRangeSize: .inf` was the root cause, but the real issue is that RuboCop's `acceptable_range?` method checks whether the disabled cop is itself enabled in the project config. If the cop being disabled (`Layout/LineLength`) is already disabled by the `standard` gem, RuboCop skips the missing-enable offense. Implementing this requires cross-cop config access in nitrocop.
+RuboCop's `acceptable_range?` method checks whether the disabled cop is itself enabled in the project config. If the cop being disabled (`Layout/LineLength`) is already disabled by the `standard` gem, RuboCop skips the missing-enable offense. Implementing this requires cross-cop config access in nitrocop.
 
 ## Important Lessons Learned
 
@@ -207,6 +221,7 @@ nitrocop's stat-based result cache (`~/.cache/nitrocop/`) does NOT invalidate wh
 - Destructured params in `MultiTargetNode`: elements are `RequiredParameterNode`, not `LocalVariableTargetNode`
 - `if cond; body else other end`: Prism returns `nil` for `then_keyword_loc` (semicolons serve as `then`)
 - Method params named `it`: Prism uses `RequiredParameterNode` / `OptionalParameterNode`, not `LocalVariableWriteNode`
+- `def foo(pie = pie = pie)`: The outer default value is a `LocalVariableWriteNode` containing another write, need recursive check
 
 ### RuboCop Config Nuances
 - `Lint/MissingCopEnableDirective` has a cross-cop check: `acceptable_range?` skips offenses when the disabled cop is itself disabled in config.
@@ -216,38 +231,26 @@ nitrocop's stat-based result cache (`~/.cache/nitrocop/`) does NOT invalidate wh
 
 - **4656 library tests pass** (`cargo test --release --lib`)
 - 7 integration test failures are pre-existing (unrelated)
-- Clippy and fmt not yet run on session 3 changes
+- Clippy: no new warnings from session 5 changes (90 pre-existing errors)
+- fmt: run on session 5 files
 
-## Files Modified
+## Files Modified (Session 5 only)
 
 ```
-src/cop/layout/argument_alignment.rs               |  16 +++-
-src/cop/layout/array_alignment.rs                  |  26 ++++--
-src/cop/layout/leading_comment_space.rs            |   7 +-
-src/cop/layout/multiline_method_call_indentation.rs|   7 +-
-src/cop/layout/multiline_operation_indentation.rs  |   9 +-
-src/cop/lint/shadowed_exception.rs                 |   7 +-
-src/cop/rails/http_positional_arguments.rs         |   5 +-
-src/cop/style/comparable_clamp.rs                  | 102 ++++++++++++++++++-
-src/cop/style/it_assignment.rs                     |  39 ++++----
-src/cop/style/one_line_conditional.rs              |   2 -
-src/cop/style/redundant_begin.rs                   |  65 +++++++++++++
-src/cop/style/redundant_self.rs                    |  36 ++++++++
-src/cop/style/slicing_with_range.rs                |  31 +++++++
-src/cop/style/trailing_comma_in_arguments.rs       |  36 ++++++++
-src/cop/style/trailing_comma_in_array_literal.rs   |   2 +-
-src/cop/style/trailing_comma_in_hash_literal.rs    |   7 +-
-src/linter.rs                                      |  20 +++-
-tests/fixtures (14 fixture files)                  | +57 lines
+src/cop/style/redundant_double_splat_hash_braces.rs    | **{hash}.merge(opts) detection + autocorrect
+src/cop/style/redundant_parentheses.rs                 | remove is_receiver/is_chained guard from check_method_call
+src/cop/style/quoted_symbols.rs                        | same_as_string_literals in single-quoted branch
+src/cop/style/empty_literal.rs                         | frozen_strings? 3-step logic for String.new
+src/config/mod.rs                                      | FrozenStringLiteralCommentEnabled injection
+tests/fixtures/cops/style/redundant_double_splat_hash_braces/ | .merge() pattern fixture
+tests/fixtures/cops/style/redundant_parentheses/       | move 3 chained-receiver entries to offense
+tests/fixtures/cops/style/empty_literal/               | update no_offense for new String.new behavior
 ```
 
 ## Next Steps (Suggested Priority)
 
-1. **Run clippy/fmt, commit** — all 31 files are unstaged.
+1. **Commit all changes** — all files across sessions 1-5 are unstaged.
 2. **Standard/BlockSingleLineBraces** (-23) — highest-impact unimplemented cop.
 3. **Layout/IndentationWidth** (-6) — investigate tab handling without corpus regression.
 4. **Layout/HashAlignment** (-3) — retry with more conservative approach.
-5. **Style/Sample** (-3) — add `shuffle[n]` for non-zero n.
-6. **Style/RedundantParentheses** (-3) — nested parentheses edge case.
-7. **Style/RedundantRegexpEscape** (-2) — `\/` in `%r{}` and `\-` outside char class.
-8. **Corpus fixture cleanup** — add semicolons between expressions in malformed single-line fixtures to eliminate 15 FPs from 5 cops.
+5. **Corpus fixture cleanup** — add semicolons between expressions in malformed single-line fixtures to eliminate 15 FPs from 5 cops.

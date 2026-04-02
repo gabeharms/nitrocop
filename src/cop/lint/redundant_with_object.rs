@@ -48,7 +48,14 @@ impl Cop for RedundantWithObject {
 
         let method_name = call.name().as_slice();
 
-        if method_name != b"each_with_object" {
+        // Match `each_with_object(arg)` or `each.with_object(arg)`
+        let is_each_with_object = method_name == b"each_with_object";
+        let is_each_dot_with_object = method_name == b"with_object"
+            && call.receiver().is_some_and(|r| {
+                r.as_call_node()
+                    .is_some_and(|c| c.name().as_slice() == b"each")
+            });
+        if !is_each_with_object && !is_each_dot_with_object {
             return;
         }
 
@@ -76,20 +83,29 @@ impl Cop for RedundantWithObject {
             let (line, column) = source.offset_to_line_col(msg_loc.start_offset());
             let mut diag =
                 self.diagnostic(source, line, column, "Redundant `with_object`.".to_string());
-            // Autocorrect: replace `each_with_object(arg)` with `each`
+            // Autocorrect: replace with `each`
             if let Some(ref mut corr) = corrections {
-                // Replace method name and remove arguments
                 let args_end = call.arguments().unwrap().location().end_offset();
-                // Find closing paren after args
                 let src = source.as_bytes();
                 let mut end = args_end;
                 if end < src.len() && src[end] == b')' {
                     end += 1;
                 }
+                let (start, replacement) = if is_each_dot_with_object {
+                    // `each.with_object(arg)` → remove `.with_object(arg)`
+                    let dot_start = call
+                        .call_operator_loc()
+                        .map(|l| l.start_offset())
+                        .unwrap_or(msg_loc.start_offset());
+                    (dot_start, String::new())
+                } else {
+                    // `each_with_object(arg)` → replace with `each`
+                    (msg_loc.start_offset(), "each".to_string())
+                };
                 corr.push(crate::correction::Correction {
-                    start: msg_loc.start_offset(),
+                    start,
                     end,
-                    replacement: "each".to_string(),
+                    replacement,
                     cop_name: self.name(),
                     cop_index: 0,
                 });

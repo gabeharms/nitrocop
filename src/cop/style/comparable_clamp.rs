@@ -186,14 +186,13 @@ fn extract_array_clamp(
     }
 
     // One element must be a call to the opposite method on an array
-    let (inner_call_node, outer_bound_node) =
-        if let Some(c) = outer_elems[0].as_call_node() {
-            (c, &outer_elems[1])
-        } else if let Some(c) = outer_elems[1].as_call_node() {
-            (c, &outer_elems[0])
-        } else {
-            return None;
-        };
+    let (inner_call_node, outer_bound_node) = if let Some(c) = outer_elems[0].as_call_node() {
+        (c, &outer_elems[1])
+    } else if let Some(c) = outer_elems[1].as_call_node() {
+        (c, &outer_elems[0])
+    } else {
+        return None;
+    };
 
     let inner_method = inner_call_node.name().as_slice();
     // Inner must be opposite of outer

@@ -22,6 +22,17 @@ x = (foo.bar)
 x = (foo.bar(1))
     ^^^^^^^^^^^^ Style/RedundantParentheses: Don't use parentheses around a method call.
 
+# Chained method call — parens around simple method call receiver are redundant
+(foo).bar(x)
+^^^^^ Style/RedundantParentheses: Don't use parentheses around a method call.
+
+(x.y).z(arg)
+^^^^^ Style/RedundantParentheses: Don't use parentheses around a method call.
+
+(foo_bar.baz)
+^^^^^^^^^^^^^ Style/RedundantParentheses: Don't use parentheses around a method call.
+  .qux
+
 (x == y)
 ^^^^^^^^ Style/RedundantParentheses: Don't use parentheses around a comparison expression.
 

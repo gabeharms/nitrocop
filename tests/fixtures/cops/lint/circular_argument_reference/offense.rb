@@ -12,3 +12,8 @@ def greet(name: name)
                 ^^^^ Lint/CircularArgumentReference: Circular argument reference - `name`.
   puts name
 end
+
+def foo(pie = pie = pie)
+                    ^^^ Lint/CircularArgumentReference: Circular argument reference - `pie`.
+  pie
+end

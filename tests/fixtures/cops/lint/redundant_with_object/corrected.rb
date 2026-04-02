@@ -5,3 +5,5 @@ items.each do |item|
 end
 
 items.each { _1 }
+
+items.each { |x| puts x }

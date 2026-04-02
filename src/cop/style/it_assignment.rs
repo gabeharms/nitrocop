@@ -1,4 +1,6 @@
-use crate::cop::node_type::{LOCAL_VARIABLE_WRITE_NODE, OPTIONAL_PARAMETER_NODE, REQUIRED_PARAMETER_NODE};
+use crate::cop::node_type::{
+    LOCAL_VARIABLE_WRITE_NODE, OPTIONAL_PARAMETER_NODE, REQUIRED_PARAMETER_NODE,
+};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
@@ -13,7 +15,11 @@ impl Cop for ItAssignment {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[LOCAL_VARIABLE_WRITE_NODE, REQUIRED_PARAMETER_NODE, OPTIONAL_PARAMETER_NODE]
+        &[
+            LOCAL_VARIABLE_WRITE_NODE,
+            REQUIRED_PARAMETER_NODE,
+            OPTIONAL_PARAMETER_NODE,
+        ]
     }
 
     fn check_node(

@@ -872,10 +872,6 @@ fn check_method_call<'a>(
         return check_unary(content, paren_node, inner, parent, is_receiver);
     }
 
-    if is_receiver || is_chained(content, paren_node) {
-        return None;
-    }
-
     // prefix_not: !expr — don't flag as method call (handled by unary check above)
     if call.name().as_slice() == b"!" && call.receiver().is_some() && call.arguments().is_none() {
         return None;

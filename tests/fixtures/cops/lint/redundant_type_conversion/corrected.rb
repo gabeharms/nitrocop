@@ -4,3 +4,5 @@
 data.to_json
 foo.to_json(arg)
 ("#{left}:#{right}")
+Set.new
+Set.[](1, 2)

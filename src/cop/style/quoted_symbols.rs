@@ -117,13 +117,21 @@ impl Cop for QuotedSymbols {
 
             let has_double_quote = inner.contains(&b'"');
 
-            if style == "double_quotes" && !has_double_quote {
+            let prefer_double = match style {
+                "double_quotes" => true,
+                "same_as_string_literals" => {
+                    let sl_style = config.get_str("StringLiteralsEnforcedStyle", "single_quotes");
+                    sl_style == "double_quotes"
+                }
+                _ => false,
+            };
+            if prefer_double && !has_double_quote {
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
                 let mut diag = self.diagnostic(
                     source,
                     line,
                     column,
-                    "Prefer double-quoted symbols.".to_string(),
+                    "Prefer double-quoted symbols unless you need single quotes to avoid extra backslashes for escaping.".to_string(),
                 );
 
                 if !inner.contains(&b'\\') {

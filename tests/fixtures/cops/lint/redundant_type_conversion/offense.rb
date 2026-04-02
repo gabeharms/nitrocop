@@ -10,3 +10,7 @@ foo.to_json(arg).to_s
                  ^^^^ Lint/RedundantTypeConversion: Redundant `to_s` detected.
 ("#{left}:#{right}").to_s
                      ^^^^ Lint/RedundantTypeConversion: Redundant `to_s` detected.
+Set.new.to_set
+        ^^^^^^ Lint/RedundantTypeConversion: Redundant `to_set` detected.
+Set.[](1, 2).to_set
+             ^^^^^^ Lint/RedundantTypeConversion: Redundant `to_set` detected.
