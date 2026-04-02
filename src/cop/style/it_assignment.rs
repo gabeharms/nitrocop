@@ -1,9 +1,11 @@
-use crate::cop::node_type::LOCAL_VARIABLE_WRITE_NODE;
+use crate::cop::node_type::{LOCAL_VARIABLE_WRITE_NODE, OPTIONAL_PARAMETER_NODE, REQUIRED_PARAMETER_NODE};
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
 use crate::parse::source::SourceFile;
 
 pub struct ItAssignment;
+
+const MSG: &str = "Avoid assigning to local variable `it`, since `it` will be the default block parameter in Ruby 3.4+. Consider using a different variable name.";
 
 impl Cop for ItAssignment {
     fn name(&self) -> &'static str {
@@ -11,7 +13,7 @@ impl Cop for ItAssignment {
     }
 
     fn interested_node_types(&self) -> &'static [u8] {
-        &[LOCAL_VARIABLE_WRITE_NODE]
+        &[LOCAL_VARIABLE_WRITE_NODE, REQUIRED_PARAMETER_NODE, OPTIONAL_PARAMETER_NODE]
     }
 
     fn check_node(
@@ -23,25 +25,28 @@ impl Cop for ItAssignment {
         diagnostics: &mut Vec<Diagnostic>,
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        // Detect assignment to `it` variable: it = something
-        let write_node = match node.as_local_variable_write_node() {
-            Some(w) => w,
-            None => return,
-        };
+        let name_bytes: &[u8];
+        let start_offset: usize;
 
-        if write_node.name().as_slice() != b"it" {
+        if let Some(w) = node.as_local_variable_write_node() {
+            name_bytes = w.name().as_slice();
+            start_offset = w.location().start_offset();
+        } else if let Some(p) = node.as_required_parameter_node() {
+            name_bytes = p.name().as_slice();
+            start_offset = p.location().start_offset();
+        } else if let Some(p) = node.as_optional_parameter_node() {
+            name_bytes = p.name().as_slice();
+            start_offset = p.location().start_offset();
+        } else {
             return;
         }
 
-        let loc = write_node.location();
-        let (line, column) = source.offset_to_line_col(loc.start_offset());
+        if name_bytes != b"it" {
+            return;
+        }
 
-        diagnostics.push(self.diagnostic(
-            source,
-            line,
-            column,
-            "Avoid assigning to local variable `it`, since `it` will be the default block parameter in Ruby 3.4+. Consider using a different variable name.".to_string(),
-        ));
+        let (line, column) = source.offset_to_line_col(start_offset);
+        diagnostics.push(self.diagnostic(source, line, column, MSG.to_string()));
     }
 }
 

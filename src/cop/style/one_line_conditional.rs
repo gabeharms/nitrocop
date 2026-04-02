@@ -36,7 +36,6 @@ impl Cop for OneLineConditional {
             };
             if kw_loc.as_slice() != b"if"
                 || if_node.end_keyword_loc().is_none()
-                || if_node.then_keyword_loc().is_none()
                 || if_node.subsequent().is_none()
             {
                 return;
@@ -85,7 +84,6 @@ impl Cop for OneLineConditional {
         if let Some(unless_node) = node.as_unless_node() {
             if unless_node.keyword_loc().as_slice() != b"unless"
                 || unless_node.end_keyword_loc().is_none()
-                || unless_node.then_keyword_loc().is_none()
                 || unless_node.else_clause().is_none()
             {
                 return;

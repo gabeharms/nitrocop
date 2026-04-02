@@ -90,10 +90,10 @@ impl Cop for MultilineOperationIndentation {
             let recv_line_bytes = source.lines().nth(recv_start_line - 1).unwrap_or(b"");
             let recv_indent = indentation_of(recv_line_bytes);
             let expected_indented = recv_indent + width;
+            let (_, recv_col) = source.offset_to_line_col(recv_loc.start_offset());
             let expected = match style {
                 "aligned" => {
                     // Align with the receiver's column
-                    let (_, recv_col) = source.offset_to_line_col(recv_loc.start_offset());
                     recv_col
                 }
                 _ => expected_indented, // "indented" (default)
@@ -117,11 +117,10 @@ impl Cop for MultilineOperationIndentation {
                 arg_col == expected
                     || arg_col == expected_indented
                     || line_indent == expected_indented
-                    || arg_col == recv_indent
                     || kw_expected.is_some_and(|kw| arg_col == kw || line_indent == kw)
             } else {
                 arg_col == expected
-                    || arg_col == recv_indent
+                    || arg_col == recv_col
                     || kw_expected.is_some_and(|kw| arg_col == kw || line_indent == kw)
             };
 
@@ -354,23 +353,19 @@ impl MultilineOperationIndentation {
         // For "aligned" style, accept both aligned and indented forms.
         // For "indented" style, also accept:
         // - Line indentation matching expected (leading operator: `&& expr`)
-        // - Right col matching left indent (aligned with containing expression)
         // - Right col matching left col (aligned with left operand)
         // - Keyword-condition double-width indentation
         // For both styles, also accept:
         // - Line indentation matching expected_indented (leading operator: `&& expr`)
-        // - Right col matching left indent (aligned with containing expression)
         // - Right col matching left col (aligned with left operand)
         let is_ok = if style == "aligned" {
             right_col == expected
                 || right_col == expected_indented
                 || line_indent == expected_indented
-                || right_col == left_indent
                 || kw_expected.is_some_and(|kw| right_col == kw || line_indent == kw)
         } else {
             right_col == expected
                 || line_indent == expected
-                || right_col == left_indent
                 || right_col == left_col
                 || kw_expected.is_some_and(|kw| right_col == kw || line_indent == kw)
         };

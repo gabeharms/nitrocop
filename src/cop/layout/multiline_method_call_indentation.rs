@@ -607,14 +607,19 @@ impl Visit<'_> for ChainVisitor<'_> {
             self.visit(&recv);
         }
 
-        // Visit arguments: if call has parens, mark as in_paren_args
+        // Visit arguments: if call has parens, mark as in_paren_args and reset
+        // in_hash_value so chains nested inside parenthesized args are treated
+        // as regular paren-args context, not hash-value context.
         let has_parens = node.opening_loc().is_some();
         if let Some(args) = node.arguments() {
             if has_parens {
                 let saved_paren = self.in_paren_args;
+                let saved_hash = self.in_hash_value;
                 self.in_paren_args = true;
+                self.in_hash_value = false;
                 self.visit(&args.as_node());
                 self.in_paren_args = saved_paren;
+                self.in_hash_value = saved_hash;
             } else {
                 self.visit(&args.as_node());
             }

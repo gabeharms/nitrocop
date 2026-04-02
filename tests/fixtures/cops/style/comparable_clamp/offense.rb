@@ -24,3 +24,9 @@ elsif x > high
 else
   x
 end
+
+[[x, low].max, high].min
+^^^^^^^^^^^^^^^^^^^^^^^^ Style/ComparableClamp: Use `clamp` instead of `if/elsif/else`.
+
+[[x, high].min, low].max
+^^^^^^^^^^^^^^^^^^^^^^^^ Style/ComparableClamp: Use `clamp` instead of `if/elsif/else`.

@@ -30,6 +30,7 @@ impl Cop for RedundantBegin {
             diagnostics: Vec::new(),
             pending_corrections: Vec::new(),
             autocorrect_enabled: corrections.is_some(),
+            in_loop_body: false,
         };
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
@@ -45,9 +46,25 @@ struct RedundantBeginVisitor<'a> {
     diagnostics: Vec<Diagnostic>,
     pending_corrections: Vec<crate::correction::Correction>,
     autocorrect_enabled: bool,
+    /// Set when about to visit the body of a while/until begin-modifier loop.
+    in_loop_body: bool,
 }
 
 impl RedundantBeginVisitor<'_> {
+    /// Check if the begin body contains a RescueModifierNode (inline rescue).
+    /// `begin X rescue Y end` has rescue as a modifier inside statements, not as
+    /// the BeginNode's rescue_clause. The begin wrapper is NOT redundant here.
+    fn body_has_rescue_modifier(begin_node: &ruby_prism::BeginNode<'_>) -> bool {
+        if let Some(stmts) = begin_node.statements() {
+            for child in stmts.body().iter() {
+                if child.as_rescue_modifier_node().is_some() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Check if a body (block, lambda, etc.) contains a redundant `begin` block.
     /// A `begin..rescue..end` or `begin..ensure..end` inside a block body is
     /// redundant when it's the only statement, because the block itself supports
@@ -281,6 +298,30 @@ impl<'pr> Visit<'pr> for RedundantBeginVisitor<'_> {
     }
 
     fn visit_begin_node(&mut self, node: &ruby_prism::BeginNode<'pr>) {
+        // A standalone `begin...end` without rescue/ensure/else is redundant —
+        // the begin/end wrapper serves no purpose. This covers top-level,
+        // conditional-body, and other non-method/block/assignment contexts.
+        // Exceptions: begin...end inside while/until (do-while loops), and
+        // begin with inline rescue modifier (RescueModifierNode in body).
+        if let Some(begin_kw_loc) = node.begin_keyword_loc() {
+            if node.rescue_clause().is_none()
+                && node.ensure_clause().is_none()
+                && node.else_clause().is_none()
+                && !self.in_loop_body
+                && !Self::body_has_rescue_modifier(node)
+            {
+                let offset = begin_kw_loc.start_offset();
+                let (line, column) = self.source.offset_to_line_col(offset);
+                self.diagnostics.push(self.cop.diagnostic(
+                    self.source,
+                    line,
+                    column,
+                    "Redundant `begin` block detected.".to_string(),
+                ));
+            }
+        }
+        self.in_loop_body = false;
+
         // Continue visiting children to find nested begin nodes (e.g. nested defs)
         if let Some(stmts) = node.statements() {
             for child in stmts.body().iter() {
@@ -293,6 +334,30 @@ impl<'pr> Visit<'pr> for RedundantBeginVisitor<'_> {
         if let Some(ensure) = node.ensure_clause() {
             self.visit_ensure_node(&ensure);
         }
+    }
+
+    fn visit_while_node(&mut self, node: &ruby_prism::WhileNode<'pr>) {
+        // `begin...end while cond` is a do-while loop. The begin is NOT
+        // redundant — it's what makes it a post-condition loop. Set flag
+        // so visit_begin_node skips the redundancy check.
+        self.in_loop_body = true;
+        if let Some(stmts) = node.statements() {
+            for child in stmts.body().iter() {
+                self.visit(&child);
+            }
+        }
+        self.in_loop_body = false;
+    }
+
+    fn visit_until_node(&mut self, node: &ruby_prism::UntilNode<'pr>) {
+        // `begin...end until cond` — same as while, the begin is NOT redundant.
+        self.in_loop_body = true;
+        if let Some(stmts) = node.statements() {
+            for child in stmts.body().iter() {
+                self.visit(&child);
+            }
+        }
+        self.in_loop_body = false;
     }
 
     fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {

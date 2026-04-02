@@ -179,11 +179,10 @@ impl Cop for ArgumentAlignment {
             source.offset_to_line_col(first_arg.location().start_offset());
 
         let mut checked_lines = std::collections::HashSet::new();
-        checked_lines.insert(first_line);
 
         // For "with_fixed_indentation", the expected column is the call line's
         // indentation + indent_width
-        let expected_col = match style {
+        let (expected_col, skip_first) = match style {
             "with_fixed_indentation" => {
                 // Use the line containing the method selector (or opening paren),
                 // NOT the full call expression start (which includes the receiver
@@ -200,12 +199,19 @@ impl Cop for ArgumentAlignment {
                         .0
                 };
                 let base_line_bytes = source.lines().nth(base_line - 1).unwrap_or(b"");
-                crate::cop::util::indentation_of(base_line_bytes) + indent_width
+                (
+                    crate::cop::util::indentation_of(base_line_bytes) + indent_width,
+                    false, // check first element too
+                )
             }
-            _ => first_col, // "with_first_argument" (default)
+            _ => {
+                checked_lines.insert(first_line);
+                (first_col, true) // "with_first_argument" (default)
+            }
         };
 
-        for arg in effective_args.iter().skip(1) {
+        let skip = if skip_first { 1 } else { 0 };
+        for arg in effective_args.iter().skip(skip) {
             let (arg_line, arg_col) = source.offset_to_line_col(arg.location().start_offset());
             // Only check the FIRST argument on each new line
             if !checked_lines.contains(&arg_line) {

@@ -131,6 +131,11 @@ BLOCKED_OBJECT_TYPES.each_value do |object_type|
   define_method("#{object_type}?") { self.object_type == object_type }
 end
 
+# Destructured parameter shadows method name - self is required
+def set_rack_response((status, headers, body))
+  self.headers.merge!(headers)
+end
+
 # Uppercase method names - could be confused with constants
 def test_uppercase_methods
   self.Foo

@@ -6,3 +6,6 @@ post :create, { name: "foo" }, { "X-TOKEN" => "abc" }
 
 put :update, { id: 1 }, { "Authorization" => "Bearer xyz" }
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Rails/HttpPositionalArguments: Use keyword arguments for HTTP request methods.
+
+get :new, { user_id: 1 }
+^^^^^^^^^^^^^^^^^^^^^^^^ Rails/HttpPositionalArguments: Use keyword arguments for HTTP request methods.

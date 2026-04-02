@@ -24,3 +24,6 @@ raw[idx..nil]
 
 raw[idx...nil]
    ^^^^^^^^^^^ Style/SlicingWithRange: Prefer `[idx...]` over `[idx...nil]`.
+
+items[nil..42]
+     ^^^^^^^^^ Style/SlicingWithRange: Prefer `items[..42]` over `items[nil..42]`.

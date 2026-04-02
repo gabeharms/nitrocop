@@ -72,3 +72,13 @@ run do
     cleanup
   end
 end
+
+# Standalone begin without rescue/ensure is redundant
+begin
+^^^^^ Style/RedundantBegin: Redundant `begin` block detected.
+  do_something
+end
+
+# Single-line standalone begin
+begin    do_something  end
+^^^^^ Style/RedundantBegin: Redundant `begin` block detected.

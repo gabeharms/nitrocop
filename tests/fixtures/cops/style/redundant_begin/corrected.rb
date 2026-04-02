@@ -57,3 +57,11 @@ run do
     cleanup
   end
 end
+
+# Standalone begin without rescue/ensure is redundant
+begin
+  do_something
+end
+
+# Single-line standalone begin
+begin    do_something  end

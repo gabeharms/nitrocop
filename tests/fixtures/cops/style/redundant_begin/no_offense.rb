@@ -85,3 +85,17 @@ items.map { |item|
     handle(e)
   end
 end
+
+# Standalone begin with rescue is NOT redundant
+begin
+  do_something
+rescue => e
+  handle(e)
+end
+
+# Standalone begin with ensure is NOT redundant
+begin
+  do_something
+ensure
+  cleanup
+end

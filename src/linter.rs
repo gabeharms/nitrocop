@@ -1029,9 +1029,10 @@ fn is_recovery_ignoring_message(message: &str) -> bool {
 }
 
 /// Prism can emit multiple diagnostics at the same location during error recovery,
-/// including secondary "..., ignoring it" notices. RuboCop/Parser typically reports
-/// just the primary parser diagnostic for that location. Keep recovery notices only
-/// when there is no primary diagnostic at the same location.
+/// including secondary "..., ignoring it" notices and exact-duplicate cascading errors.
+/// RuboCop/Parser keeps distinct error messages at the same location but does not
+/// emit true duplicates. First suppress recovery notices when a primary diagnostic
+/// exists at the same location, then deduplicate exact (line, column, message) triples.
 fn suppress_secondary_syntax_diagnostics(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
     let mut loc_has_primary: HashSet<(usize, usize)> = HashSet::new();
     for diag in &diagnostics {
@@ -1040,11 +1041,20 @@ fn suppress_secondary_syntax_diagnostics(diagnostics: Vec<Diagnostic>) -> Vec<Di
         }
     }
 
+    let mut seen = HashSet::new();
     diagnostics
         .into_iter()
         .filter(|diag| {
-            !is_recovery_ignoring_message(&diag.message)
-                || !loc_has_primary.contains(&(diag.location.line, diag.location.column))
+            if is_recovery_ignoring_message(&diag.message)
+                && loc_has_primary.contains(&(diag.location.line, diag.location.column))
+            {
+                return false;
+            }
+            seen.insert((
+                diag.location.line,
+                diag.location.column,
+                diag.message.clone(),
+            ))
         })
         .collect()
 }

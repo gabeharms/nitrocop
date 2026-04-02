@@ -27,12 +27,34 @@ impl Cop for ComparableClamp {
         diagnostics: &mut Vec<Diagnostic>,
         mut corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
-        // Pattern: if x < low then low elsif x > high then high else x end
+        // Pattern A: [[x, low].max, high].min or [[x, high].min, low].max
+        if let Some(call) = node.as_call_node() {
+            if let Some((x, min, max)) = extract_array_clamp(&call, source) {
+                let loc = call.location();
+                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                let mut diag = self.diagnostic(
+                    source,
+                    line,
+                    column,
+                    "Use `clamp` instead of `if/elsif/else`.".to_string(),
+                );
+                if let Some(corr) = corrections.as_mut() {
+                    corr.push(crate::correction::Correction {
+                        start: loc.start_offset(),
+                        end: loc.end_offset(),
+                        replacement: format!("{}.clamp({}, {})", x, min, max),
+                        cop_name: self.name(),
+                        cop_index: 0,
+                    });
+                    diag.corrected = true;
+                }
+                diagnostics.push(diag);
+                return;
+            }
+        }
+
+        // Pattern B: if x < low then low elsif x > high then high else x end
         // (or with > / reversed operand positions)
-        // Must match RuboCop's exact structural pattern:
-        // - The if body must equal the bound from the condition
-        // - The elsif body must equal the bound from the condition
-        // - The else body must equal the clamped variable
         let if_node = match node.as_if_node() {
             Some(n) => n,
             None => return,
@@ -140,6 +162,76 @@ impl Cop for ComparableClamp {
             diagnostics.push(diag);
         }
     }
+}
+
+/// Extract clamp from array pattern: `[[x, low].max, high].min` or `[[x, high].min, low].max`.
+fn extract_array_clamp(
+    outer_call: &ruby_prism::CallNode<'_>,
+    source: &SourceFile,
+) -> Option<(String, String, String)> {
+    let outer_method = outer_call.name().as_slice();
+    if outer_method != b"min" && outer_method != b"max" {
+        return None;
+    }
+    // Must have no arguments (it's `array.min`, not `array.min(something)`)
+    if outer_call.arguments().is_some() {
+        return None;
+    }
+    // Receiver must be an ArrayNode with exactly 2 elements
+    let outer_recv = outer_call.receiver()?;
+    let outer_array = outer_recv.as_array_node()?;
+    let outer_elems: Vec<_> = outer_array.elements().iter().collect();
+    if outer_elems.len() != 2 {
+        return None;
+    }
+
+    // One element must be a call to the opposite method on an array
+    let (inner_call_node, outer_bound_node) =
+        if let Some(c) = outer_elems[0].as_call_node() {
+            (c, &outer_elems[1])
+        } else if let Some(c) = outer_elems[1].as_call_node() {
+            (c, &outer_elems[0])
+        } else {
+            return None;
+        };
+
+    let inner_method = inner_call_node.name().as_slice();
+    // Inner must be opposite of outer
+    let valid_pair = (outer_method == b"min" && inner_method == b"max")
+        || (outer_method == b"max" && inner_method == b"min");
+    if !valid_pair {
+        return None;
+    }
+    if inner_call_node.arguments().is_some() {
+        return None;
+    }
+
+    let inner_recv = inner_call_node.receiver()?;
+    let inner_array = inner_recv.as_array_node()?;
+    let inner_elems: Vec<_> = inner_array.elements().iter().collect();
+    if inner_elems.len() != 2 {
+        return None;
+    }
+
+    let x_src = node_src(&inner_elems[0], source);
+    let inner_bound_src = node_src(&inner_elems[1], source);
+    let outer_bound_src = node_src(outer_bound_node, source);
+
+    // Determine min/max based on outer method
+    let (min, max) = if outer_method == b"min" {
+        // [[x, low].max, high].min → low is min, high is max
+        (inner_bound_src, outer_bound_src)
+    } else {
+        // [[x, high].min, low].max → low is min, high is max
+        (outer_bound_src, inner_bound_src)
+    };
+
+    Some((x_src, min, max))
+}
+
+fn node_src(node: &ruby_prism::Node<'_>, source: &SourceFile) -> String {
+    let loc = node.location();
+    String::from_utf8_lossy(&source.as_bytes()[loc.start_offset()..loc.end_offset()]).to_string()
 }
 
 /// Get source text of a single statement in a StatementsNode.

@@ -195,6 +195,9 @@ impl RedundantSelfVisitor<'_> {
         for p in params.requireds().iter() {
             if let Some(req) = p.as_required_parameter_node() {
                 self.add_local(req.name().as_slice());
+            } else if let Some(multi) = p.as_multi_target_node() {
+                // Destructured parameter: def foo((a, b, c))
+                self.collect_multi_target_locals(&multi);
             }
         }
         for p in params.optionals().iter() {
@@ -226,6 +229,39 @@ impl RedundantSelfVisitor<'_> {
         if let Some(block) = params.block() {
             if let Some(name) = block.name() {
                 self.add_local(name.as_slice());
+            }
+        }
+    }
+
+    /// Collect local variable names from a destructured parameter (MultiTargetNode).
+    /// Prism represents the inner elements as RequiredParameterNode (not
+    /// LocalVariableTargetNode), so we check both node types.
+    fn collect_multi_target_locals(&mut self, multi: &ruby_prism::MultiTargetNode<'_>) {
+        for target in multi.lefts().iter() {
+            if let Some(local) = target.as_local_variable_target_node() {
+                self.add_local(local.name().as_slice());
+            } else if let Some(req) = target.as_required_parameter_node() {
+                self.add_local(req.name().as_slice());
+            } else if let Some(nested) = target.as_multi_target_node() {
+                self.collect_multi_target_locals(&nested);
+            }
+        }
+        if let Some(rest) = multi.rest() {
+            if let Some(splat) = rest.as_splat_node() {
+                if let Some(expr) = splat.expression() {
+                    if let Some(local) = expr.as_local_variable_target_node() {
+                        self.add_local(local.name().as_slice());
+                    }
+                }
+            }
+        }
+        for target in multi.rights().iter() {
+            if let Some(local) = target.as_local_variable_target_node() {
+                self.add_local(local.name().as_slice());
+            } else if let Some(req) = target.as_required_parameter_node() {
+                self.add_local(req.name().as_slice());
+            } else if let Some(nested) = target.as_multi_target_node() {
+                self.collect_multi_target_locals(&nested);
             }
         }
     }

@@ -108,10 +108,11 @@ impl<'pr> Visit<'pr> for HttpPosArgsVisitor<'_> {
         if HTTP_METHODS.contains(&method_name) && node.receiver().is_none() {
             if let Some(args) = node.arguments() {
                 let arg_list: Vec<_> = args.arguments().iter().collect();
-                // Only flag explicit HashNode (old-style positional: `get path, {params}, headers`).
+                // Only flag explicit HashNode (old-style positional: `get path, {params}` or
+                // `get path, {params}, headers`).
                 // A keyword_hash_node means keyword args (`get path, params: ...`), which is
                 // the correct new-style syntax this cop promotes — don't flag it.
-                if arg_list.len() >= 3 && arg_list[1].as_hash_node().is_some() {
+                if arg_list.len() >= 2 && arg_list[1].as_hash_node().is_some() {
                     let loc = node.location();
                     let (line, column) = self.source.offset_to_line_col(loc.start_offset());
                     self.diagnostics.push(self.cop.diagnostic(

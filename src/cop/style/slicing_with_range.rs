@@ -99,6 +99,37 @@ impl Cop for SlicingWithRange {
             let src = std::str::from_utf8(node.location().as_slice()).unwrap_or("");
             let recv_src = std::str::from_utf8(receiver.location().as_slice()).unwrap_or("ary");
 
+            // Pattern 0: nil..x or nil...x — beginless range with explicit nil left.
+            // Suggest [..x] instead of [nil..x].
+            if let Some(left) = irange.left() {
+                if left.as_nil_node().is_some() {
+                    if let Some(right) = irange.right() {
+                        let right_src =
+                            std::str::from_utf8(right.location().as_slice()).unwrap_or("x");
+                        let (line, column) = source.offset_to_line_col(bracket_offset);
+                        let replacement = format!("{recv_src}[{op_str}{right_src}]");
+                        let mut diag = self.diagnostic(
+                            source,
+                            line,
+                            column,
+                            format!("Prefer `{replacement}` over `{src}`."),
+                        );
+                        if let Some(ref mut corr) = corrections {
+                            corr.push(crate::correction::Correction {
+                                start: node.location().start_offset(),
+                                end: node.location().end_offset(),
+                                replacement,
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+                        diagnostics.push(diag);
+                    }
+                    return;
+                }
+            }
+
             if let Some(left) = irange.left() {
                 let left_is_zero = Self::int_value(&left) == Some(0);
 

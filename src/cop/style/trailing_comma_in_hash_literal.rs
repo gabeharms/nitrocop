@@ -1,4 +1,5 @@
 use crate::cop::node_type::HASH_NODE;
+use crate::cop::style::trailing_comma_in_array_literal::no_elements_on_same_line;
 use crate::cop::util::has_trailing_comma;
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::Diagnostic;
@@ -151,8 +152,10 @@ impl Cop for TrailingCommaInHashLiteral {
 
         match style {
             "comma" | "consistent_comma" => {
-                // Require trailing comma in multiline; no opinion on single-line
-                if is_multiline && !has_comma {
+                // Require trailing comma in multiline when each element is on its own line
+                let each_on_own_line =
+                    no_elements_on_same_line(source, &elements[..], closing_start);
+                if is_multiline && each_on_own_line && !has_comma {
                     push_insert_diagnostic(
                         self,
                         source,

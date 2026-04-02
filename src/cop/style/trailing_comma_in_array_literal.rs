@@ -363,7 +363,7 @@ fn last_item_precedes_newline(bytes: &[u8], last_end: usize, closing_start: usiz
 
 /// Returns true if no two consecutive items (including the closing bracket)
 /// are on the same line. This matches RuboCop's `no_elements_on_same_line?`.
-fn no_elements_on_same_line(
+pub(crate) fn no_elements_on_same_line(
     source: &SourceFile,
     elements: &[ruby_prism::Node<'_>],
     closing_start: usize,

@@ -159,10 +159,9 @@ fn equivalent_exception_classes(a: &str, b: &str) -> bool {
     let a = normalize_exception_name(a);
     let b = normalize_exception_name(b);
 
-    if a == b {
-        return true;
-    }
-
+    // Don't treat identical names as "equivalent" here — duplicate exception
+    // names in the same rescue clause are Lint/DuplicateRescueException, not
+    // Lint/ShadowedException. Only match known alias groups (e.g. OpenSSL::PKey::*).
     EQUIVALENT_EXCEPTION_GROUPS
         .iter()
         .any(|group| group.contains(&a) && group.contains(&b))

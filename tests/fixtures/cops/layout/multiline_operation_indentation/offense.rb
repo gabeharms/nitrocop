@@ -7,3 +7,6 @@ z = 5 +
 w = a &&
          b
          ^^^^ Layout/MultilineOperationIndentation: Use 2 (not 9) spaces for indentation of a continuation line.
+value = 1 +
+1
+^^^ Layout/MultilineOperationIndentation: Use 2 (not 0) spaces for indentation of a continuation line.

@@ -15,3 +15,5 @@ items[1...]
 raw[idx..]
 
 raw[idx...]
+
+items[..42]

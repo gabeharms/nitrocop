@@ -186,9 +186,9 @@ impl ArrayAlignment {
         };
         let (first_line, first_col) = source.offset_to_line_col(first.location().start_offset());
 
-        let expected_col = match style {
+        let (expected_col, check_first) = match style {
             "with_fixed_indentation" => {
-                if is_bracketed {
+                let col = if is_bracketed {
                     let open_loc = array_node.opening_loc().unwrap();
                     let (open_line, _) = source.offset_to_line_col(open_loc.start_offset());
                     let open_line_bytes = source.lines().nth(open_line - 1).unwrap_or(b"");
@@ -198,9 +198,10 @@ impl ArrayAlignment {
                     // line indentation + indent_width
                     let first_line_bytes = source.lines().nth(first_line - 1).unwrap_or(b"");
                     crate::cop::util::indentation_of(first_line_bytes) + indent_width
-                }
+                };
+                (col, true)
             }
-            _ => first_col, // "with_first_element" (default)
+            _ => (first_col, false), // "with_first_element" (default)
         };
 
         self.check_element_alignment(
@@ -208,6 +209,7 @@ impl ArrayAlignment {
             &elements,
             first_line,
             expected_col,
+            check_first,
             diagnostics,
             corrections,
         );
@@ -234,13 +236,16 @@ impl ArrayAlignment {
         };
         let (first_line, first_col) = source.offset_to_line_col(first.location().start_offset());
 
-        let expected_col = match style {
+        let (expected_col, check_first) = match style {
             "with_fixed_indentation" => {
                 // Use the rescue keyword line's indentation + indent_width
                 let rescue_line_bytes = source.lines().nth(first_line - 1).unwrap_or(b"");
-                crate::cop::util::indentation_of(rescue_line_bytes) + indent_width
+                (
+                    crate::cop::util::indentation_of(rescue_line_bytes) + indent_width,
+                    true,
+                )
             }
-            _ => first_col, // "with_first_element" (default)
+            _ => (first_col, false), // "with_first_element" (default)
         };
 
         self.check_element_alignment(
@@ -248,6 +253,7 @@ impl ArrayAlignment {
             &exceptions,
             first_line,
             expected_col,
+            check_first,
             diagnostics,
             corrections,
         );
@@ -259,12 +265,14 @@ impl ArrayAlignment {
         elements: &ruby_prism::NodeList<'_>,
         first_line: usize,
         expected_col: usize,
+        check_first: bool,
         diagnostics: &mut Vec<Diagnostic>,
         corrections: &mut Vec<Correction>,
     ) {
-        let mut last_checked_line = first_line;
+        let mut last_checked_line = if check_first { 0 } else { first_line };
+        let skip = if check_first { 0 } else { 1 };
 
-        for elem in elements.iter().skip(1) {
+        for elem in elements.iter().skip(skip) {
             let start_offset = elem.location().start_offset();
             let (elem_line, elem_col) = source.offset_to_line_col(start_offset);
             // Only check the first element on each new line; subsequent elements

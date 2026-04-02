@@ -104,7 +104,7 @@ impl Cop for LeadingCommentSpace {
     ) {
         let _allow_doxygen = config.get_bool("AllowDoxygenCommentStyle", false);
         let _allow_gemfile_ruby = config.get_bool("AllowGemfileRubyComment", false);
-        let _allow_rbs_inline = config.get_bool("AllowRBSInlineAnnotation", false);
+        let allow_rbs_inline = config.get_bool("AllowRBSInlineAnnotation", false);
         let _allow_steep = config.get_bool("AllowSteepAnnotation", false);
         let bytes = source.as_bytes();
 
@@ -127,6 +127,11 @@ impl Cop for LeadingCommentSpace {
             let text = &bytes[start..end];
 
             if !missing_space_after_hash(text) {
+                continue;
+            }
+
+            // RBS inline type annotations: `#: Integer`
+            if allow_rbs_inline && text.starts_with(b"#:") {
                 continue;
             }
 

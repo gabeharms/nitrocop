@@ -302,6 +302,30 @@ impl Cop for TrailingCommaInArguments {
                         diag.corrected = true;
                     }
                     diagnostics.push(diag);
+                } else if !is_multiline && has_comma && last_end < closing_start {
+                    // Single-line call with unwanted trailing comma
+                    let search_range = &bytes[last_end..closing_start];
+                    if let Some(comma_offset) = search_range.iter().position(|&b| b == b',') {
+                        let abs_offset = last_end + comma_offset;
+                        let (line, column) = source.offset_to_line_col(abs_offset);
+                        let mut diag = self.diagnostic(
+                            source,
+                            line,
+                            column,
+                            "Avoid comma after the last parameter of a method call.".to_string(),
+                        );
+                        if let Some(corr) = corrections.as_mut() {
+                            corr.push(crate::correction::Correction {
+                                start: abs_offset,
+                                end: abs_offset + 1,
+                                replacement: "".to_string(),
+                                cop_name: self.name(),
+                                cop_index: 0,
+                            });
+                            diag.corrected = true;
+                        }
+                        diagnostics.push(diag);
+                    }
                 }
             }
             _ => {
@@ -501,6 +525,18 @@ mod tests {
         assert!(
             diags.is_empty(),
             "comma style should not flag heredoc chained-call argument with trailing comma on the opening line"
+        );
+    }
+
+    #[test]
+    fn consistent_comma_single_line_unwanted_trailing_comma() {
+        let source = b"method(1, 2,)\n";
+        let diags =
+            run_cop_full_with_config(&TrailingCommaInArguments, source, consistent_comma_config());
+        assert_eq!(
+            diags.len(),
+            1,
+            "consistent_comma should flag unwanted trailing comma on single-line call"
         );
     }
 }
