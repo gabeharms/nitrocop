@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::cop::{Cop, CopConfig};
 use crate::diagnostic::{Diagnostic, Severity};
@@ -58,6 +58,19 @@ impl Cop for MissingCopEnableDirective {
         _corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let max_range = get_max_range_size(config);
+        // Build set of cop names that are disabled in project config.
+        // When a disabled cop is never re-enabled (range to EOF), RuboCop's
+        // `acceptable_range?` skips the offense because the disable is harmless.
+        let disabled_cop_names: HashSet<String> = config
+            .options
+            .get("DisabledCopNames")
+            .and_then(|v| v.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
         // Track open disables: cop_name -> (line_number, column)
         let mut open_disables: HashMap<String, (usize, usize)> = HashMap::new();
         let lines: Vec<&[u8]> = source.lines().collect();
@@ -143,6 +156,11 @@ impl Cop for MissingCopEnableDirective {
 
         // Report all remaining open disables (never re-enabled)
         for (cop, (line, _col)) in &open_disables {
+            // RuboCop's acceptable_range? skips offenses when the disabled cop is
+            // itself not enabled in config — the disable is harmless.
+            if disabled_cop_names.contains(cop) {
+                continue;
+            }
             if max_range.is_finite() {
                 let range_size = lines.len().saturating_sub(*line);
                 if range_size > max_range as usize {

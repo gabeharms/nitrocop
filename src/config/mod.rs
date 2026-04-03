@@ -2862,6 +2862,31 @@ impl ResolvedConfig {
                 .entry("FrozenStringLiteralCommentEnabled".to_string())
                 .or_insert_with(|| Value::Bool(fslc_enabled));
         }
+        // Inject disabled cop names for Lint/MissingCopEnableDirective
+        // (mirrors RuboCop's `acceptable_range?` which skips offenses when the disabled cop
+        // is itself not enabled in config)
+        if name == "Lint/MissingCopEnableDirective" {
+            let mut disabled_names: Vec<Value> = Vec::new();
+            for (cop_name, cop_cfg) in &self.cop_configs {
+                if cop_cfg.enabled == EnabledState::False {
+                    disabled_names.push(Value::String(cop_name.clone()));
+                    // Also add the short name (part after '/') for legacy directive matching
+                    // e.g. "LineLength" for "Layout/LineLength"
+                    if let Some(short) = cop_name.split('/').nth(1) {
+                        disabled_names.push(Value::String(short.to_string()));
+                    }
+                }
+            }
+            for (dept_name, dept_cfg) in &self.department_configs {
+                if dept_cfg.enabled == EnabledState::False {
+                    disabled_names.push(Value::String(dept_name.clone()));
+                }
+            }
+            config
+                .options
+                .entry("DisabledCopNames".to_string())
+                .or_insert_with(|| Value::Sequence(disabled_names));
+        }
         // Inject Style/StringLiterals EnforcedStyle for Style/QuotedSymbols
         // (mirrors RuboCop's `config.for_cop('Style/StringLiterals')` lookup)
         if name == "Style/QuotedSymbols" {

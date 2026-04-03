@@ -24,3 +24,6 @@ arr.shuffle.slice(0)
 
 arr.shuffle.slice(-1)
 ^^^^^^^^^^^^^^^^^^^^^ Style/Sample: Use `sample` instead of `arr.shuffle.slice(-1)`.
+
+arr.shuffle[0, 3]
+^^^^^^^^^^^^^^^^^ Style/Sample: Use `sample(3)` instead of `arr.shuffle[0, 3]`.

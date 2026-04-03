@@ -57,7 +57,7 @@ impl Cop for Sample {
             _ => return,
         };
 
-        // For [] / at / slice, validate the argument is integer 0 or -1
+        // For [] / at / slice, validate the argument(s)
         if matches!(
             pattern,
             ShufflePattern::IndexAccess | ShufflePattern::AtOrSlice
@@ -67,18 +67,31 @@ impl Cop for Sample {
                 None => return,
             };
             let arg_list: Vec<_> = args.arguments().iter().collect();
-            // Must have exactly one argument
-            if arg_list.len() != 1 {
-                return;
-            }
-            let arg = &arg_list[0];
-            let is_valid = if let Some(int_node) = arg.as_integer_node() {
-                let val_str = std::str::from_utf8(int_node.location().as_slice()).unwrap_or("");
-                matches!(val_str, "0" | "-1")
+
+            if arg_list.len() == 1 {
+                // Single arg: must be integer 0 or -1
+                let arg = &arg_list[0];
+                let is_valid = if let Some(int_node) = arg.as_integer_node() {
+                    let val_str = std::str::from_utf8(int_node.location().as_slice()).unwrap_or("");
+                    matches!(val_str, "0" | "-1")
+                } else {
+                    false
+                };
+                if !is_valid {
+                    return;
+                }
+            } else if arg_list.len() == 2 && matches!(pattern, ShufflePattern::IndexAccess) {
+                // Two args for []: first must be integer 0, second must be integer
+                // e.g. shuffle[0, 2] is equivalent to sample(2)
+                let first_valid = arg_list[0]
+                    .as_integer_node()
+                    .map(|n| std::str::from_utf8(n.location().as_slice()).unwrap_or("") == "0")
+                    .unwrap_or(false);
+                let second_valid = arg_list[1].as_integer_node().is_some();
+                if !first_valid || !second_valid {
+                    return;
+                }
             } else {
-                false
-            };
-            if !is_valid {
                 return;
             }
         }
@@ -101,40 +114,69 @@ impl Cop for Sample {
                 let (line, column) = source.offset_to_line_col(loc.start_offset());
 
                 // Determine the correct replacement
-                let correct =
-                    if matches!(pattern, ShufflePattern::FirstLast) && call.arguments().is_some() {
-                        let arg_src = call
-                            .arguments()
-                            .map(|a| {
-                                let args: Vec<_> = a.arguments().iter().collect();
-                                if !args.is_empty() {
-                                    std::str::from_utf8(args[0].location().as_slice())
-                                        .unwrap_or("")
-                                        .to_string()
-                                } else {
-                                    String::new()
-                                }
-                            })
-                            .unwrap_or_default();
-
-                        if shuffle_call.arguments().is_some() {
-                            let shuffle_args = shuffle_call
-                                .arguments()
-                                .map(|a| std::str::from_utf8(a.location().as_slice()).unwrap_or(""))
-                                .unwrap_or("");
-                            format!("sample({}, {})", arg_src, shuffle_args)
+                // For two-arg bracket access `shuffle[0, n]`, the size is the second arg.
+                let two_arg_size: Option<String> = if matches!(pattern, ShufflePattern::IndexAccess)
+                {
+                    call.arguments().and_then(|a| {
+                        let args: Vec<_> = a.arguments().iter().collect();
+                        if args.len() == 2 {
+                            Some(
+                                std::str::from_utf8(args[1].location().as_slice())
+                                    .unwrap_or("0")
+                                    .to_string(),
+                            )
                         } else {
-                            format!("sample({})", arg_src)
+                            None
                         }
-                    } else if shuffle_call.arguments().is_some() {
+                    })
+                } else {
+                    None
+                };
+
+                let correct = if let Some(size) = two_arg_size {
+                    if shuffle_call.arguments().is_some() {
                         let shuffle_args = shuffle_call
                             .arguments()
                             .map(|a| std::str::from_utf8(a.location().as_slice()).unwrap_or(""))
                             .unwrap_or("");
-                        format!("sample({})", shuffle_args)
+                        format!("sample({}, {})", size, shuffle_args)
                     } else {
-                        "sample".to_string()
-                    };
+                        format!("sample({})", size)
+                    }
+                } else if matches!(pattern, ShufflePattern::FirstLast) && call.arguments().is_some()
+                {
+                    let arg_src = call
+                        .arguments()
+                        .map(|a| {
+                            let args: Vec<_> = a.arguments().iter().collect();
+                            if !args.is_empty() {
+                                std::str::from_utf8(args[0].location().as_slice())
+                                    .unwrap_or("")
+                                    .to_string()
+                            } else {
+                                String::new()
+                            }
+                        })
+                        .unwrap_or_default();
+
+                    if shuffle_call.arguments().is_some() {
+                        let shuffle_args = shuffle_call
+                            .arguments()
+                            .map(|a| std::str::from_utf8(a.location().as_slice()).unwrap_or(""))
+                            .unwrap_or("");
+                        format!("sample({}, {})", arg_src, shuffle_args)
+                    } else {
+                        format!("sample({})", arg_src)
+                    }
+                } else if shuffle_call.arguments().is_some() {
+                    let shuffle_args = shuffle_call
+                        .arguments()
+                        .map(|a| std::str::from_utf8(a.location().as_slice()).unwrap_or(""))
+                        .unwrap_or("");
+                    format!("sample({})", shuffle_args)
+                } else {
+                    "sample".to_string()
+                };
 
                 let mut diag = self.diagnostic(
                     source,

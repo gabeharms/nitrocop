@@ -359,20 +359,24 @@ impl Cop for IndexBy {
             if chain.outer_method == b"to_h"
                 && (chain.inner_method == b"map" || chain.inner_method == b"collect")
             {
-                if let Some(block) = chain.inner_call.block() {
-                    if let Some(block_node) = block.as_block_node() {
-                        if is_index_by_block(&block_node)
-                            || is_index_by_block_numbered(&block_node)
-                            || is_index_by_block_it(&block_node)
-                        {
-                            let loc = node.location();
-                            let (line, column) = source.offset_to_line_col(loc.start_offset());
-                            diagnostics.push(self.diagnostic(
-                                source,
-                                line,
-                                column,
-                                "Use `index_by` instead of `map { ... }.to_h`.".to_string(),
-                            ));
+                // `.to_h` must have no arguments — `.to_h(arg)` is a different semantic.
+                let outer_call = node.as_call_node().unwrap();
+                if outer_call.arguments().is_none() {
+                    if let Some(block) = chain.inner_call.block() {
+                        if let Some(block_node) = block.as_block_node() {
+                            if is_index_by_block(&block_node)
+                                || is_index_by_block_numbered(&block_node)
+                                || is_index_by_block_it(&block_node)
+                            {
+                                let loc = node.location();
+                                let (line, column) = source.offset_to_line_col(loc.start_offset());
+                                diagnostics.push(self.diagnostic(
+                                    source,
+                                    line,
+                                    column,
+                                    "Use `index_by` instead of `map { ... }.to_h`.".to_string(),
+                                ));
+                            }
                         }
                     }
                 }

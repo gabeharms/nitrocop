@@ -54,10 +54,17 @@ impl Cop for StringBytesize {
             return;
         }
 
+        // The outer method must have no arguments.
+        // `.bytes.count` = total byte count (equivalent to bytesize)
+        // `.bytes.count(42)` = count of specific byte value (NOT equivalent)
+        let outer_call = node.as_call_node().unwrap();
+        if outer_call.arguments().is_some() {
+            return;
+        }
+
         // Report on the `.bytes.{size,length,count}` portion
         // Offense range starts at the `.bytes` selector
         let inner_loc = chain.inner_call.message_loc().unwrap();
-        let outer_call = node.as_call_node().unwrap();
         let outer_end = outer_call.location().end_offset();
         let start = inner_loc.start_offset();
 

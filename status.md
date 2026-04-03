@@ -2,7 +2,7 @@
 
 **Branch:** `autoresearch/autocorrect-gap-20260330`
 **Target project:** `~/Dev/wt-gph-rspec-rip-out`
-**Date:** 2026-04-02
+**Date:** 2026-04-03
 
 ## Goal
 
@@ -17,14 +17,14 @@ Minimize the per-cop offense count differences between nitrocop and RuboCop when
 
 ## Current State
 
-**After all fixes (fresh cache, 2026-04-02):**
-- nitrocop: 4032 offenses (6143 files)
+**After all fixes (fresh cache, 2026-04-03):**
+- nitrocop: 4017 offenses (6143 files)
 - RuboCop: 3986 offenses (6143 files)
-- **Gap: +46** (13 cops with differences — down from 28)
+- **Gap: +31** (6 cops with differences — down from 28)
 
-The key metric is **per-cop accuracy**: 18 cops were fixed to exact match across sessions 1-5, reducing mismatched cops from 28 to 13.
+The key metric is **per-cop accuracy**: 25 cops were fixed to exact match across sessions 1-6, reducing mismatched cops from 28 to 6.
 
-### Per-Cop Breakdown (13 cops with differences)
+### Per-Cop Breakdown (6 cops with differences)
 
 ```
 Cop                                                  Nitro   Rubo    Gap
@@ -33,24 +33,17 @@ Lint/Syntax                                           1523   1456    +67
 Standard/BlockSingleLineBraces                           0     23    -23
 Layout/IndentationWidth                                 18     24     -6
 Layout/HashAlignment                                     6      9     -3
-Lint/MissingCopEnableDirective                           3      0     +3
 Lint/UselessAssignment                                 241    244     -3
-Performance/StringBytesize                               6      3     +3
-Rails/IndexBy                                           12      9     +3
-Rails/IndexWith                                         12      9     +3
-Rails/Pick                                               6      3     +3
-Rails/SafeNavigationWithBlank                            6      3     +3
-Style/Sample                                            15     18     -3
 Lint/SymbolConversion                                    9     10     -1
 --------------------------------------------------------------------------------
 
-FP total (nitro over-reports): +85
-FN total (nitro under-reports): -39
+FP total (nitro over-reports): +67
+FN total (nitro under-reports): -36
 ```
 
 ## Cops Fixed to Exact Match
 
-18 cops were fixed across sessions 1-5:
+25 cops were fixed across sessions 1-6:
 
 | Cop | Before | After | Session |
 |-----|--------|-------|---------|
@@ -72,6 +65,13 @@ FN total (nitro under-reports): -39
 | Style/RedundantParentheses | nitro=6, rubo=9 (-3) | 9=9 | 5 |
 | Style/QuotedSymbols | nitro=0, rubo=3 (-3) | 3=3 | 5 |
 | Style/EmptyLiteral | nitro=0, rubo=3 (-3) | 3=3 | 5 |
+| Lint/MissingCopEnableDirective | nitro=3, rubo=0 (+3) | 0=0 | 6 |
+| Performance/StringBytesize | nitro=6, rubo=3 (+3) | 3=3 | 6 |
+| Rails/Pick | nitro=6, rubo=3 (+3) | 3=3 | 6 |
+| Rails/SafeNavigationWithBlank | nitro=6, rubo=3 (+3) | 3=3 | 6 |
+| Rails/IndexBy | nitro=12, rubo=9 (+3) | 9=9 | 6 |
+| Rails/IndexWith | nitro=12, rubo=9 (+3) | 9=9 | 6 |
+| Style/Sample | nitro=15, rubo=18 (-3) | 18=18 | 6 |
 
 *Style/RedundantRegexpEscape: the 2 vs 4 offenses came from a test file artifact that was removed. Both tools now report 0.
 
@@ -159,6 +159,29 @@ FN total (nitro under-reports): -39
 #### 24. Style/EmptyLiteral (`src/cop/style/empty_literal.rs`, `src/config/mod.rs`)
 - Implemented RuboCop's three-step `frozen_strings?` logic for `String.new`: (1) `frozen_string_literal: true` → skip; (2) `Style/FrozenStringLiteralComment` cop enabled with no magic comment → skip; (3) otherwise → flag. Previously only checked for explicit `frozen_string_literal: false`. Added `FrozenStringLiteralCommentEnabled` config injection.
 
+### Session 6 Fixes
+
+#### 25. Lint/MissingCopEnableDirective (`src/cop/lint/missing_cop_enable_directive.rs`, `src/config/mod.rs`)
+- Implemented RuboCop's `acceptable_range?` logic: skip offense when the disabled cop is itself not enabled in config. Added `DisabledCopNames` config injection in `src/config/mod.rs` that builds a list of all disabled cop names (full and short forms) plus disabled department names. The cop now builds a `HashSet` from this config and skips offenses for disabled cops.
+
+#### 26. Performance/StringBytesize (`src/cop/performance/string_bytesize.rs`)
+- Added argument check on the outer call. `.bytes.count` (no args) = total byte count (equivalent to bytesize), but `.bytes.count(42)` = count of specific byte value (NOT equivalent). Malformed corpus fixtures caused Prism to fold subsequent expressions as arguments.
+
+#### 27. Rails/Pick (`src/cop/rails/pick.rs`)
+- Added argument check on `.first`. `.pluck(...).first` (no args) = one value (equivalent to pick), but `.pluck(...).first(n)` = first n elements (NOT equivalent).
+
+#### 28. Rails/SafeNavigationWithBlank (`src/cop/rails/safe_navigation_with_blank.rs`)
+- Added argument check on `.blank?`. The method takes no arguments — if arguments are present (from malformed corpus parsing), skip the offense.
+
+#### 29. Rails/IndexBy (`src/cop/rails/index_by.rs`)
+- Added argument check on `.to_h` in Pattern 1 (`map { ... }.to_h`). `.to_h` with arguments is a different semantic — in malformed corpus fixtures, Prism folds subsequent expressions (like `Hash[...]`) as arguments to `.to_h`.
+
+#### 30. Rails/IndexWith (`src/cop/rails/index_with.rs`)
+- Same fix as Rails/IndexBy: added argument check on `.to_h` in Pattern 1.
+
+#### 31. Style/Sample (`src/cop/style/sample.rs`)
+- Added handling for two-argument bracket access pattern `shuffle[0, n]`. In Ruby, `arr[0, n]` is equivalent to `arr.slice(0, n)` which returns n elements starting at index 0 — equivalent to `sample(n)` after a shuffle. Previously only single-argument bracket patterns were handled.
+
 ## Remaining Gap Analysis
 
 ### Unfixable
@@ -181,31 +204,13 @@ A `standard` gem cop, not part of core RuboCop. Would require implementing from 
 #### Layout/HashAlignment -3
 - Previously attempted, reverted due to +252 FP regression on corpus.
 
-### Corpus fixture artifacts (not real-world code)
+### Corpus fixture artifacts
 
-All remaining differences are from files under `benchmark/rubocop_corpus/fixtures/` (synthetic test data):
+#### Lint/UselessAssignment -3
+Data flow analysis differences between Prism and Parser gem on malformed single-line corpus fixtures.
 
-**FP cops (nitro over-reports):**
-| Cop | Gap | Root Cause |
-|-----|-----|------------|
-| Lint/MissingCopEnableDirective | +3 | Cross-cop config check: disabled cop doesn't need matching enable. Non-trivial to implement. |
-| Performance/StringBytesize | +3 | Malformed single-line multi-expression corpus fixture |
-| Rails/IndexBy | +3 | Malformed single-line multi-expression corpus fixture |
-| Rails/IndexWith | +3 | Malformed single-line multi-expression corpus fixture |
-| Rails/Pick | +3 | Malformed single-line multi-expression corpus fixture |
-| Rails/SafeNavigationWithBlank | +3 | Malformed single-line multi-expression corpus fixture |
-
-**FN cops (nitro under-reports):**
-| Cop | Gap | Root Cause |
-|-----|-----|------------|
-| Style/Sample | -3 | Malformed corpus fixture parsed differently by Prism vs Parser gem |
-| Lint/UselessAssignment | -3 | Data flow analysis differences between parsers across corpus fixtures |
-| Lint/SymbolConversion | -1 | Malformed corpus fixture: `:sym.to_sym` after `"text".to_s` without semicolons |
-
-### Investigated but skipped
-
-#### Lint/MissingCopEnableDirective +3
-RuboCop's `acceptable_range?` method checks whether the disabled cop is itself enabled in the project config. If the cop being disabled (`Layout/LineLength`) is already disabled by the `standard` gem, RuboCop skips the missing-enable offense. Implementing this requires cross-cop config access in nitrocop.
+#### Lint/SymbolConversion -1
+Malformed corpus fixture: `:sym.to_sym` after `"text".to_s` without semicolons. Prism folds `:sym.to_sym` as argument to preceding expression.
 
 ## Important Lessons Learned
 
@@ -222,35 +227,41 @@ nitrocop's stat-based result cache (`~/.cache/nitrocop/`) does NOT invalidate wh
 - `if cond; body else other end`: Prism returns `nil` for `then_keyword_loc` (semicolons serve as `then`)
 - Method params named `it`: Prism uses `RequiredParameterNode` / `OptionalParameterNode`, not `LocalVariableWriteNode`
 - `def foo(pie = pie = pie)`: The outer default value is a `LocalVariableWriteNode` containing another write, need recursive check
+- Malformed single-line multi-expression corpus fixtures: Prism folds subsequent expressions as arguments to the first, causing spurious argument nodes on method calls
 
 ### RuboCop Config Nuances
-- `Lint/MissingCopEnableDirective` has a cross-cop check: `acceptable_range?` skips offenses when the disabled cop is itself disabled in config.
+- `Lint/MissingCopEnableDirective` has a cross-cop check: `acceptable_range?` skips offenses when the disabled cop is itself disabled in config. Implemented via `DisabledCopNames` config injection.
 - `Style/QuotedSymbols` resolves its style from `Style/StringLiterals EnforcedStyle` via `same_as_string_literals` — config inheritance from `inherit_gem: standard` may not resolve this correctly.
+- `Style/EmptyLiteral` has a three-step `frozen_strings?` check that depends on `Style/FrozenStringLiteralComment` cop state. Implemented via `FrozenStringLiteralCommentEnabled` config injection.
+
+### Argument Check Pattern for Malformed Fixtures
+Many cops can be hardened against malformed corpus fixtures by checking that the outer method call has no unexpected arguments. RuboCop's node_pattern DSL naturally rejects calls with extra arguments, but nitrocop's manual AST traversal doesn't — explicit `arguments().is_none()` / `arguments().is_some()` checks are needed. This pattern was applied to 6 cops in session 6.
 
 ## Test Status
 
 - **4656 library tests pass** (`cargo test --release --lib`)
 - 7 integration test failures are pre-existing (unrelated)
-- Clippy: no new warnings from session 5 changes (90 pre-existing errors)
-- fmt: run on session 5 files
+- Clippy: no new warnings from session 6 changes (90 pre-existing errors)
+- fmt: run on all session 6 files
 
-## Files Modified (Session 5 only)
+## Files Modified (Session 6)
 
 ```
-src/cop/style/redundant_double_splat_hash_braces.rs    | **{hash}.merge(opts) detection + autocorrect
-src/cop/style/redundant_parentheses.rs                 | remove is_receiver/is_chained guard from check_method_call
-src/cop/style/quoted_symbols.rs                        | same_as_string_literals in single-quoted branch
-src/cop/style/empty_literal.rs                         | frozen_strings? 3-step logic for String.new
-src/config/mod.rs                                      | FrozenStringLiteralCommentEnabled injection
-tests/fixtures/cops/style/redundant_double_splat_hash_braces/ | .merge() pattern fixture
-tests/fixtures/cops/style/redundant_parentheses/       | move 3 chained-receiver entries to offense
-tests/fixtures/cops/style/empty_literal/               | update no_offense for new String.new behavior
+src/config/mod.rs                                      | DisabledCopNames injection for MissingCopEnableDirective
+src/cop/lint/missing_cop_enable_directive.rs            | skip offenses for disabled cops
+src/cop/performance/string_bytesize.rs                 | argument check on outer call (.count)
+src/cop/rails/pick.rs                                  | argument check on outer call (.first)
+src/cop/rails/safe_navigation_with_blank.rs            | argument check on .blank?
+src/cop/rails/index_by.rs                              | argument check on .to_h in Pattern 1
+src/cop/rails/index_with.rs                            | argument check on .to_h in Pattern 1
+src/cop/style/sample.rs                                | two-arg bracket access [0, n] pattern
+tests/fixtures/cops/style/sample/offense.rb            | add shuffle[0, 3] test case
+tests/fixtures/cops/style/sample/corrected.rb          | add sample(3) expected correction
 ```
 
 ## Next Steps (Suggested Priority)
 
-1. **Commit all changes** — all files across sessions 1-5 are unstaged.
+1. **Commit all changes** — all files across sessions 1-6 are unstaged.
 2. **Standard/BlockSingleLineBraces** (-23) — highest-impact unimplemented cop.
 3. **Layout/IndentationWidth** (-6) — investigate tab handling without corpus regression.
 4. **Layout/HashAlignment** (-3) — retry with more conservative approach.
-5. **Corpus fixture cleanup** — add semicolons between expressions in malformed single-line fixtures to eliminate 15 FPs from 5 cops.

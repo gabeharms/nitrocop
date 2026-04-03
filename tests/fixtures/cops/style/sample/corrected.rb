@@ -15,3 +15,5 @@ arr.sample
 arr.sample
 
 arr.sample
+
+arr.sample(3)

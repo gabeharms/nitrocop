@@ -46,6 +46,14 @@ impl Cop for Pick {
             return;
         }
 
+        // `.first` must have no arguments.
+        // `.pluck(...).first` = one value (equivalent to pick)
+        // `.pluck(...).first(n)` = first n elements (NOT equivalent)
+        let outer_call = node.as_call_node().unwrap();
+        if outer_call.arguments().is_some() {
+            return;
+        }
+
         let loc = node.location();
         let (line, column) = source.offset_to_line_col(loc.start_offset());
         diagnostics.push(self.diagnostic(

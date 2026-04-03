@@ -19,6 +19,11 @@ fn check_safe_blank_predicate(
         return Vec::new();
     }
 
+    // `blank?` takes no arguments — if arguments are present, skip.
+    if call.arguments().is_some() {
+        return Vec::new();
+    }
+
     // Check for safe navigation operator (&.)
     let call_op = match call.call_operator_loc() {
         Some(op) => op,
