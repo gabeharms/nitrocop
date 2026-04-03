@@ -4,3 +4,10 @@ else
   do_y
 end
 do_z
+
+if foo
+  bar
+else
+  baz
+end
+result

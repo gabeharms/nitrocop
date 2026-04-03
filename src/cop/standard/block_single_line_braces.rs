@@ -175,7 +175,7 @@ fn collect_ignored_blocks(node: &ruby_prism::Node<'_>, ignored: &mut HashSet<usi
         }
         return;
     }
-    // Hash without braces (keyword hash in method args)
+    // Hash without braces (keyword_hash_node / keyword hash in method args)
     if let Some(hash_node) = node.as_hash_node() {
         if hash_node.opening_loc().as_slice() != b"{" {
             // unbraced hash — recurse into children

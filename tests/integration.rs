@@ -1749,10 +1749,8 @@ fn all_cops_have_minimum_test_coverage() {
         "Lint/Syntax",                       // syntax errors reported by parser, not this cop
         // Unsupported cops — obsolete under modern Ruby, kept as no-ops for config compatibility
         "Lint/ItWithoutArgumentsInBlock", // `it` is a block parameter in Ruby 3.4+
-        "Lint/NonDeterministicRequireOrder", // Dir sorts since Ruby 3.0
         "Lint/NumberedParameterAssignment", // `_1 = x` is a syntax error in Ruby 3.4+
         "Lint/UselessElseWithoutRescue",  // `else` without `rescue` is a syntax error in Ruby 3.4+
-        "Security/YAMLLoad",              // YAML.load is safe since Ruby 3.1
     ];
 
     let mut failures = Vec::new();
@@ -2996,7 +2994,6 @@ fn ruby_version_gates() {
         "Lint/ErbNewArguments",
         // No-op cops — obsolete under modern Ruby, kept for config compatibility
         "Lint/ItWithoutArgumentsInBlock",
-        "Lint/NonDeterministicRequireOrder",
         "Lint/SafeNavigationChain",
         "Lint/SuppressedExceptionInNumberConversion",
         "Lint/UselessElseWithoutRescue",
@@ -3036,8 +3033,6 @@ fn ruby_version_gates() {
         "Style/SlicingWithRange",
         "Style/SymbolArray",
         "Style/UnpackFirst",
-        // No-op cop — YAML.load is safe since Ruby 3.1
-        "Security/YamlLoad",
     ]
     .into_iter()
     .collect();
@@ -3564,7 +3559,7 @@ fn autocorrect_redundant_disable_removes_inline_directive() {
     let file = write_file(
         &dir,
         "test.rb",
-        b"# frozen_string_literal: true\n\nx = 1 # rubocop:disable Style/Copyright\n",
+        b"# frozen_string_literal: true\n\nputs 'hello' # rubocop:disable Style/Copyright\n",
     );
     let config = load_config(None, None, None).unwrap();
     let registry = CopRegistry::default_registry();
@@ -3591,7 +3586,7 @@ fn autocorrect_redundant_disable_removes_inline_directive() {
     assert!(redundant[0].corrected, "offense should be marked corrected");
 
     let corrected = fs::read_to_string(&file).unwrap();
-    assert_eq!(corrected, "# frozen_string_literal: true\n\nx = 1\n");
+    assert_eq!(corrected, "# frozen_string_literal: true\n\nputs 'hello'\n");
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -5408,7 +5403,7 @@ fn autocorrect_all_mode_includes_unsafe_cops() {
 #[test]
 fn autocorrect_clean_file_unchanged() {
     let dir = temp_dir("autocorrect_clean");
-    let content = b"# frozen_string_literal: true\n\nx = 1\ny = 2\n";
+    let content = b"# frozen_string_literal: true\n\nputs 'hello'\nputs 'world'\n";
     let file = write_file(&dir, "clean.rb", content);
     let config = load_config(None, None, None).unwrap();
     let registry = CopRegistry::default_registry();
