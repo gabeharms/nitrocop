@@ -91,10 +91,17 @@ fn starts_with_access_modifier(stmts: &ruby_prism::StatementsNode<'_>) -> bool {
 }
 
 /// Check if the line at the given byte offset uses tab indentation.
-/// RuboCop's `Layout/IndentationWidth` skips tab-indented lines — tab indentation
-/// is handled by `Layout/IndentationStyle` instead. Without this check, each tab
-/// counts as 1 character, causing false "Use 2 (not 1) spaces" offenses.
-fn line_uses_tab_indentation(source: &SourceFile, body_offset: usize) -> bool {
+/// When `Layout/IndentationStyle` is `tabs`, skip tab-indented lines (tab width
+/// is handled by that cop). When it's `spaces` (default), tab-indented lines are
+/// still checked — each tab counts as 1 column, matching RuboCop's behavior.
+///
+/// The `skip_tabs` parameter controls behavior: when `true` (tabs mode), returns
+/// `true` for tab-indented lines so callers skip them. When `false` (spaces mode),
+/// always returns `false` so tab-indented lines are checked normally.
+fn line_uses_tab_indentation(source: &SourceFile, body_offset: usize, skip_tabs: bool) -> bool {
+    if !skip_tabs {
+        return false;
+    }
     let bytes = source.as_bytes();
     let mut line_start = body_offset;
     while line_start > 0 && bytes[line_start - 1] != b'\n' {
@@ -188,6 +195,7 @@ impl IndentationWidth {
         member: &ruby_prism::Node<'_>,
         width: usize,
         style_name: Option<&str>,
+        skip_tabs: bool,
         corrections: Option<&mut Vec<Correction>>,
     ) -> Option<Diagnostic> {
         let (base_line, _) = source.offset_to_line_col(base_offset);
@@ -202,8 +210,8 @@ impl IndentationWidth {
             return None;
         }
 
-        // Skip tab-indented lines (handled by Layout/IndentationStyle)
-        if line_uses_tab_indentation(source, loc.start_offset()) {
+        // Skip tab-indented lines when IndentationStyle is "tabs"
+        if line_uses_tab_indentation(source, loc.start_offset(), skip_tabs) {
             return None;
         }
 
@@ -236,6 +244,7 @@ impl IndentationWidth {
         body: Option<ruby_prism::Node<'_>>,
         width: usize,
         styles: MemberStyles<'_>,
+        skip_tabs: bool,
         mut corrections: Option<&mut Vec<Correction>>,
     ) -> Vec<Diagnostic> {
         let body = match body {
@@ -267,6 +276,7 @@ impl IndentationWidth {
                         first,
                         width,
                         None,
+                        skip_tabs,
                         corrections.as_deref_mut(),
                     ) {
                         diagnostics.push(diagnostic);
@@ -279,6 +289,7 @@ impl IndentationWidth {
                 first,
                 width,
                 None,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ) {
                 diagnostics.push(diagnostic);
@@ -301,6 +312,7 @@ impl IndentationWidth {
                         member,
                         width,
                         Some("indented_internal_methods"),
+                        skip_tabs,
                         corrections.as_deref_mut(),
                     ) {
                         diagnostics.push(diagnostic);
@@ -319,6 +331,7 @@ impl IndentationWidth {
                 first,
                 width,
                 None,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ) {
                 diagnostics.push(diagnostic);
@@ -337,6 +350,7 @@ impl IndentationWidth {
                 member,
                 width,
                 None,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ) {
                 diagnostics.push(diagnostic);
@@ -354,6 +368,7 @@ impl IndentationWidth {
         body: Option<ruby_prism::Node<'_>>,
         width: usize,
         access_modifier_style: &str,
+        skip_tabs: bool,
         mut corrections: Option<&mut Vec<Correction>>,
     ) -> Vec<Diagnostic> {
         let body = match body {
@@ -375,6 +390,7 @@ impl IndentationWidth {
                 &members[0],
                 width,
                 None,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ) {
                 diagnostics.push(diagnostic);
@@ -398,6 +414,7 @@ impl IndentationWidth {
                     member,
                     width,
                     Some("indented_internal_methods"),
+                    skip_tabs,
                     corrections.as_deref_mut(),
                 ) {
                     diagnostics.push(diagnostic);
@@ -418,6 +435,7 @@ impl IndentationWidth {
         base_col: usize,
         body: Option<ruby_prism::Node<'_>>,
         width: usize,
+        skip_tabs: bool,
         corrections: Option<&mut Vec<Correction>>,
     ) -> Vec<Diagnostic> {
         let body = match body {
@@ -461,7 +479,7 @@ impl IndentationWidth {
         }
 
         // Skip tab-indented lines (handled by Layout/IndentationStyle)
-        if line_uses_tab_indentation(source, loc.start_offset()) {
+        if line_uses_tab_indentation(source, loc.start_offset(), skip_tabs) {
             return Vec::new();
         }
 
@@ -496,6 +514,7 @@ impl IndentationWidth {
         alt_base_col: Option<usize>,
         stmts: Option<ruby_prism::StatementsNode<'_>>,
         width: usize,
+        skip_tabs: bool,
         corrections: Option<&mut Vec<Correction>>,
     ) -> Vec<Diagnostic> {
         let stmts = match stmts {
@@ -529,7 +548,7 @@ impl IndentationWidth {
         }
 
         // Skip tab-indented lines (handled by Layout/IndentationStyle)
-        if line_uses_tab_indentation(source, loc.start_offset()) {
+        if line_uses_tab_indentation(source, loc.start_offset(), skip_tabs) {
             return Vec::new();
         }
 
@@ -572,6 +591,7 @@ impl IndentationWidth {
         source: &SourceFile,
         begin_node: &ruby_prism::BeginNode<'_>,
         width: usize,
+        skip_tabs: bool,
         diagnostics: &mut Vec<Diagnostic>,
         mut corrections: Option<&mut Vec<Correction>>,
     ) {
@@ -587,6 +607,7 @@ impl IndentationWidth {
                 None,
                 rescue_node.statements(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             rescue_opt = rescue_node.subsequent();
@@ -603,6 +624,7 @@ impl IndentationWidth {
                 None,
                 else_clause.statements(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
         }
@@ -618,6 +640,7 @@ impl IndentationWidth {
                 None,
                 ensure_node.statements(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
         }
@@ -631,6 +654,7 @@ impl IndentationWidth {
         source: &SourceFile,
         else_node: &ruby_prism::ElseNode<'_>,
         width: usize,
+        skip_tabs: bool,
         diagnostics: &mut Vec<Diagnostic>,
         corrections: Option<&mut Vec<Correction>>,
     ) {
@@ -643,6 +667,7 @@ impl IndentationWidth {
             None,
             else_node.statements(),
             width,
+            skip_tabs,
             corrections,
         ));
     }
@@ -692,6 +717,8 @@ impl Cop for IndentationWidth {
         let align_style = config.get_str("EnforcedStyleAlignWith", "start_of_line");
         let consistency_style = config.get_str("IndentationConsistencyStyle", "normal");
         let access_modifier_style = config.get_str("AccessModifierIndentationStyle", "indent");
+        let indentation_style = config.get_str("IndentationStyleEnforcedStyle", "spaces");
+        let skip_tabs = indentation_style == "tabs";
         let allowed_patterns = config
             .get_string_array("AllowedPatterns")
             .unwrap_or_default();
@@ -737,6 +764,7 @@ impl Cop for IndentationWidth {
                     None,
                     begin_node.statements(),
                     width,
+                    skip_tabs,
                     corrections.as_deref_mut(),
                 ));
                 // Check rescue/ensure/else clauses (these bypass the walker)
@@ -744,6 +772,7 @@ impl Cop for IndentationWidth {
                     source,
                     &begin_node,
                     width,
+                    skip_tabs,
                     diagnostics,
                     corrections.as_deref_mut(),
                 );
@@ -766,6 +795,7 @@ impl Cop for IndentationWidth {
                     access_modifier: access_modifier_style,
                     consistency: consistency_style,
                 },
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             return;
@@ -784,6 +814,7 @@ impl Cop for IndentationWidth {
                     access_modifier: access_modifier_style,
                     consistency: consistency_style,
                 },
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             return;
@@ -802,6 +833,7 @@ impl Cop for IndentationWidth {
                     access_modifier: access_modifier_style,
                     consistency: consistency_style,
                 },
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             return;
@@ -835,6 +867,7 @@ impl Cop for IndentationWidth {
                 base_col,
                 def_node.body(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             // For `def...rescue...end`, the body is an implicit BeginNode.
@@ -845,6 +878,7 @@ impl Cop for IndentationWidth {
                         source,
                         &begin_node,
                         width,
+                        skip_tabs,
                         diagnostics,
                         corrections.as_deref_mut(),
                     );
@@ -880,6 +914,7 @@ impl Cop for IndentationWidth {
                     alt_base,
                     if_node.statements(),
                     width,
+                    skip_tabs,
                     corrections.as_deref_mut(),
                 ));
                 // Check else body (ElseNode bypasses the walker).
@@ -890,6 +925,7 @@ impl Cop for IndentationWidth {
                             source,
                             &else_node,
                             width,
+                            skip_tabs,
                             diagnostics,
                             corrections.as_deref_mut(),
                         );
@@ -909,6 +945,7 @@ impl Cop for IndentationWidth {
                 None,
                 unless_node.statements(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             // Check else clause (ElseNode bypasses the walker)
@@ -917,6 +954,7 @@ impl Cop for IndentationWidth {
                     source,
                     &else_clause,
                     width,
+                    skip_tabs,
                     diagnostics,
                     corrections.as_deref_mut(),
                 );
@@ -935,6 +973,7 @@ impl Cop for IndentationWidth {
                 None,
                 for_node.statements(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             return;
@@ -1009,6 +1048,7 @@ impl Cop for IndentationWidth {
                         base_col,
                         block.body(),
                         width,
+                        skip_tabs,
                         corrections.as_deref_mut(),
                     ));
                     if consistency_style == "indented_internal_methods"
@@ -1021,6 +1061,7 @@ impl Cop for IndentationWidth {
                             block.body(),
                             width,
                             access_modifier_style,
+                            skip_tabs,
                             corrections.as_deref_mut(),
                         ));
                     }
@@ -1057,6 +1098,7 @@ impl Cop for IndentationWidth {
                 None,
                 when_node.statements(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             return;
@@ -1069,6 +1111,7 @@ impl Cop for IndentationWidth {
                     source,
                     &else_clause,
                     width,
+                    skip_tabs,
                     diagnostics,
                     corrections.as_deref_mut(),
                 );
@@ -1083,6 +1126,7 @@ impl Cop for IndentationWidth {
                     source,
                     &else_clause,
                     width,
+                    skip_tabs,
                     diagnostics,
                     corrections.as_deref_mut(),
                 );
@@ -1112,6 +1156,7 @@ impl Cop for IndentationWidth {
                 alt_base,
                 while_node.statements(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
             return;
@@ -1139,6 +1184,7 @@ impl Cop for IndentationWidth {
                 alt_base,
                 until_node.statements(),
                 width,
+                skip_tabs,
                 corrections.as_deref_mut(),
             ));
         }

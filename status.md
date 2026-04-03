@@ -18,29 +18,29 @@ Minimize the per-cop offense count differences between nitrocop and RuboCop when
 ## Current State
 
 **After all fixes (fresh cache, 2026-04-03):**
-- nitrocop: 4046 offenses (6143 files)
+- nitrocop: 4053 offenses (6143 files)
 - RuboCop: 3986 offenses (6143 files)
-- **Gap: +60** (3 cops with differences — down from 28)
+- **Gap: +67** (1 cop with differences — down from 28)
 
-The key metric is **per-cop accuracy**: 31 cops were fixed to exact match across sessions 1-7, reducing mismatched cops from 28 to 3.
+The key metric is **per-cop accuracy**: 33 cops were fixed to exact match across sessions 1-8, reducing mismatched cops from 28 to 1.
 
-### Per-Cop Breakdown (3 cops with differences)
+### Per-Cop Breakdown (1 cop with differences)
 
 ```
 Cop                                                  Nitro   Rubo    Gap
 --------------------------------------------------------------------------------
 Lint/Syntax                                           1523   1456    +67
-Layout/IndentationWidth                                 18     24     -6
-Lint/SymbolConversion                                    9     10     -1
 --------------------------------------------------------------------------------
 
 FP total (nitro over-reports): +67
-FN total (nitro under-reports): -7
+FN total (nitro under-reports): 0
 ```
+
+The only remaining difference is Lint/Syntax (+67), an unfixable parser difference between Prism and the Parser gem. Every other cop matches RuboCop exactly.
 
 ## Cops Fixed to Exact Match
 
-31 cops were fixed across sessions 1-7:
+33 cops were fixed across sessions 1-8:
 
 | Cop | Before | After | Session |
 |-----|--------|-------|---------|
@@ -71,8 +71,9 @@ FN total (nitro under-reports): -7
 | Style/Sample | nitro=15, rubo=18 (-3) | 18=18 | 6 |
 | Layout/HashAlignment | nitro=6, rubo=9 (-3) | 9=9 | 7 |
 | Lint/UselessAssignment | nitro=241, rubo=244 (-3) | 244=244 | 7 |
-| Layout/IndentationWidth (partial) | nitro=18, rubo=24 (-6) | 18→18 (partial, -6 remain) | 7 |
 | Standard/BlockSingleLineBraces | nitro=0, rubo=23 (-23) | 23=23 | 7 |
+| Layout/IndentationWidth | nitro=18, rubo=24 (-6) | 24=24 | 8 |
+| Lint/SymbolConversion | nitro=9, rubo=10 (-1) | 10=10 | 8 |
 
 *Style/RedundantRegexpEscape: the 2 vs 4 offenses came from a test file artifact that was removed. Both tools now report 0.
 
@@ -190,16 +191,7 @@ FN total (nitro under-reports): -7
 #### Lint/Syntax +67
 Inherent difference between Prism (nitrocop's parser) and the Parser gem (RuboCop's parser). They produce different parse error counts/messages. Cannot be resolved without switching parsers.
 
-### Deferred (risky tradeoff)
-
-#### Layout/IndentationWidth -6
-- Remaining 6 FNs are all from tab-indented files. Tab handling would regress 159 FPs on the corpus.
-- Session 7 fixed the `def` base_col computation (effective_column) and removed begin...end alt_base.
-
-### Corpus fixture artifacts
-
-#### Lint/SymbolConversion -1
-Malformed corpus fixture: `:sym.to_sym` after `"text".to_s` without semicolons. Prism folds `:sym.to_sym` as argument to preceding expression.
+Both Layout/IndentationWidth and Lint/SymbolConversion were fixed in session 8. All false negatives are now resolved.
 
 ## Important Lessons Learned
 
@@ -246,30 +238,34 @@ Many cops can be hardened against malformed corpus fixtures by checking that the
 - Added `Standard` department: `src/cop/standard/mod.rs`, registered in `registry.rs`.
 - Added `("Standard", "standard-custom")` to `PLUGIN_GEM_DEPARTMENTS` in `src/config/mod.rs`.
 
+### Session 8 Fixes
+
+#### 36. Layout/IndentationWidth (`src/cop/layout/indentation_width.rs`, `src/config/mod.rs`)
+- Made tab-indented line skip conditional on `Layout/IndentationStyle.EnforcedStyle`. Under `spaces` (default), tab-indented lines are now checked normally (each tab = 1 column), matching RuboCop. Under `tabs`, lines are still skipped (tab width handled by IndentationStyle cop).
+- Injected `IndentationStyleEnforcedStyle` config in `config/mod.rs`.
+- Threaded `skip_tabs: bool` through all check methods: `check_member_indentation`, `check_class_like_members`, `check_block_internal_method_members`, `check_body_indentation`, `check_statements_indentation`, `check_begin_clauses`, `check_else_clause`.
+- Removed tab-indented test cases from `no_offense.rb` (they are offenses under default `spaces` mode).
+
+#### 37. Lint/SymbolConversion (`src/cop/lint/symbol_conversion.rs`)
+- Removed `call.arguments().is_some()` guard from `check_call_node`. RuboCop flags `.to_sym`/`.intern` on symbol/string/dstr receivers regardless of arguments. The guard was preventing detection of `:sym.to_sym` in malformed multi-expression fixtures where Prism folds trailing expressions as arguments.
+
 ## Test Status
 
-- **4658 library tests pass** (`cargo test --release --lib`)
+- **4659 library tests pass** (`cargo test --release --lib`)
 - 7 integration test failures are pre-existing (unrelated)
-- Clippy: no new warnings from session 7 changes (89 pre-existing errors)
-- fmt: run on all session 7 files
+- fmt: run on all session 8 files
 
-## Files Modified (Session 7)
+## Files Modified (Session 8)
 
 ```
-src/cop/layout/hash_alignment.rs                       | preceding-char heuristic for call arg context
-src/cop/lint/useless_assignment.rs                     | fix param name skip in report_useless
-src/cop/layout/indentation_width.rs                    | effective_column for def base_col, remove begin alt_base
-src/cop/standard/block_single_line_braces.rs           | NEW: Standard/BlockSingleLineBraces cop
-src/cop/standard/mod.rs                                | NEW: Standard department module
-src/cop/mod.rs                                         | add pub mod standard
-src/cop/registry.rs                                    | register Standard department, update count
-src/config/mod.rs                                      | add Standard to PLUGIN_GEM_DEPARTMENTS
-tests/integration.rs                                   | update cop count from 915 to 916
-tests/fixtures/cops/standard/block_single_line_braces/ | NEW: offense.rb, no_offense.rb
+src/cop/layout/indentation_width.rs                    | conditional tab skip based on IndentationStyle
+src/config/mod.rs                                      | IndentationStyleEnforcedStyle injection
+src/cop/lint/symbol_conversion.rs                      | remove argument guard on check_call_node
+tests/fixtures/cops/layout/indentation_width/no_offense.rb | remove tab-indented cases
+tests/fixtures/cops/lint/symbol_conversion/no_offense.rb   | remove "foo".to_sym(1) case
 ```
 
-## Next Steps (Suggested Priority)
+## Next Steps
 
-1. **Commit all changes** — all files across sessions 1-7 are unstaged.
-2. **Layout/IndentationWidth** (-6) — remaining tab-related FNs, risky.
-3. **Lint/SymbolConversion** (-1) — corpus fixture artifact, low priority.
+1. **Commit all changes** — all files across sessions 1-8 are unstaged.
+2. All false negatives are resolved. The only remaining gap is Lint/Syntax (+67), an unfixable parser difference.

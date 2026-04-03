@@ -29,8 +29,6 @@ alias foo bar
 :""
 # to_sym on variable
 name.to_sym
-# method call that looks like to_sym but has args
-"foo".to_sym(1)
 # Chained method call
 "foo".upcase.to_sym
 # Rocket-style hash keys with non-identifier-start values

@@ -726,11 +726,6 @@ impl SymbolConversion {
             return;
         }
 
-        // Must have no arguments
-        if call.arguments().is_some() {
-            return;
-        }
-
         let recv = match call.receiver() {
             Some(r) => r,
             None => return,
@@ -922,6 +917,34 @@ mod tests {
             (r#""foo".to_sym()"#, ":foo"),
             (r#"'bar'.intern()"#, ":bar"),
             (":baz.to_sym()", ":baz"),
+        ];
+        for (source, expected) in &offense_cases {
+            let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
+            assert!(
+                !diags.is_empty(),
+                "Expected offense for {:?} but got none",
+                source
+            );
+            assert!(
+                diags[0].message.contains(&format!("`{expected}`")),
+                "Expected correction {} in message for {:?}, got: {}",
+                expected,
+                source,
+                diags[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn to_sym_with_trailing_expressions_parsed_as_args() {
+        let cop = SymbolConversion;
+        // When multiple expressions are on the same line without semicolons,
+        // Prism may parse subsequent expressions as arguments to .to_sym.
+        // RuboCop still flags :sym.to_sym regardless of arguments, so we should too.
+        let offense_cases = [
+            (":sym.to_sym  42.to_i", ":sym"),
+            (r#""foo".to_sym  :bar"#, ":foo"),
+            (r#""foo".to_sym(1)"#, ":foo"),
         ];
         for (source, expected) in &offense_cases {
             let diags = crate::testutil::run_cop_full(&cop, source.as_bytes());
@@ -1151,8 +1174,8 @@ mod tests {
             // to_sym on non-literal
             "name.to_sym",
             "x.to_sym",
-            // to_sym with args
-            "\"foo\".to_sym(1)",
+            // to_sym with args (RuboCop still flags this)
+            // "\"foo\".to_sym(1)",
             // Escape-needed symbols
             ":\"\\n\"",
             ":\"\\t\"",
