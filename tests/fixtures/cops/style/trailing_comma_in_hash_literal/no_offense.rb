@@ -33,3 +33,12 @@ RUBY
   foo: 'foo',
   bar: 'bar'.delete(',')
 }
+
+# nitrocop-config: Style/TrailingCommaInHashLiteral: { EnforcedStyleForMultiline: comma }
+# Heredoc with trailing comma on heredoc opening line (not on closing bracket line)
+{
+  type: "thinking",
+  thinking: <<~TEXT,
+    some content
+  TEXT
+}

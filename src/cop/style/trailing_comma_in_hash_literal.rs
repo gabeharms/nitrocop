@@ -133,7 +133,17 @@ impl Cop for TrailingCommaInHashLiteral {
         } else {
             last_end
         };
-        let has_comma = has_trailing_comma(bytes, effective_last_end, closing_start);
+        // Check both the closing bracket's line and the heredoc opening line.
+        // The trailing comma after `<<~TEXT,` sits on the heredoc opening line,
+        // not on the closing bracket's line.
+        let has_comma = has_trailing_comma(bytes, effective_last_end, closing_start)
+            || (effective_last_end != last_end && {
+                let eol = bytes[last_end..closing_start]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map_or(closing_start, |p| last_end + p);
+                has_trailing_comma(bytes, last_end, eol)
+            });
 
         let style = config.get_str("EnforcedStyleForMultiline", "no_comma");
         let last_line = source.offset_to_line_col(last_end).0;
