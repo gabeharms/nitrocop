@@ -179,7 +179,7 @@ impl Cop for SoleNestedConditional {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<Correction>>,
+        corrections: Option<&mut Vec<Correction>>,
     ) {
         let allow_modifier = config.get_bool("AllowModifier", false);
 
@@ -289,7 +289,7 @@ impl Cop for SoleNestedConditional {
             "Consider merging nested conditions into outer `if` conditions.".to_string(),
         );
 
-        if let Some(corrections) = corrections.as_deref_mut() {
+        if let Some(corrections) = corrections {
             let outer_is_modifier = if let Some(outer_if) = node.as_if_node() {
                 outer_if.end_keyword_loc().is_none()
             } else if let Some(outer_unless) = node.as_unless_node() {

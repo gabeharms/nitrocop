@@ -110,6 +110,7 @@ impl Cop for TrailingUnderscoreVariable {
 }
 
 /// Check a multi-assignment (lefts + optional rest + posts) for trailing underscore variables.
+#[allow(clippy::too_many_arguments)]
 fn check_multi_assignment(
     cop: &TrailingUnderscoreVariable,
     source: &SourceFile,
@@ -231,6 +232,7 @@ fn check_multi_assignment(
     diagnostics.push(diagnostic);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn correction_range(
     source: &SourceFile,
     lefts: &[ruby_prism::Node<'_>],

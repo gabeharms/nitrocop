@@ -17,6 +17,7 @@ use crate::parse::source::SourceFile;
 ///   guard, nitrocop would flag `when`/`in` in compact trailing forms as misindented.
 pub struct CaseIndentation;
 
+#[allow(clippy::too_many_arguments)]
 fn push_case_indent_offense(
     cop: &dyn Cop,
     source: &SourceFile,

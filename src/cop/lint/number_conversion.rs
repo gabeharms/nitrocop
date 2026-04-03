@@ -130,6 +130,7 @@ impl Cop for NumberConversion {
 
 impl NumberConversion {
     /// Handle direct conversion: `receiver.to_i`, `receiver.to_f`, etc.
+    #[allow(clippy::too_many_arguments)]
     fn handle_direct_conversion(
         &self,
         source: &SourceFile,

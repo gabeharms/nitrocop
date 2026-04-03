@@ -80,7 +80,7 @@ impl MultilineBlockLayout {
         body: Option<ruby_prism::Node<'_>>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<Correction>>,
+        corrections: Option<&mut Vec<Correction>>,
     ) {
         let (open_line, _) = source.offset_to_line_col(opening_loc.start_offset());
         let (close_line, _) = source.offset_to_line_col(closing_loc.start_offset());
@@ -171,7 +171,7 @@ impl MultilineBlockLayout {
                         body_col,
                         "Block body expression is on the same line as the block start.".to_string(),
                     );
-                    if let Some(corrections) = corrections.as_deref_mut() {
+                    if let Some(corrections) = corrections {
                         let line_indent = line_leading_indent(source, open_line);
                         let params_end = parameters
                             .and_then(|p| {

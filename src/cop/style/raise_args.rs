@@ -84,7 +84,7 @@ impl RaiseArgs {
         call: &ruby_prism::CallNode<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
         method_name: &str,
     ) {
         let args = match call.arguments() {
@@ -147,7 +147,7 @@ impl RaiseArgs {
             format!("Provide an exception class and message as arguments to `{method_name}`."),
         );
 
-        if let Some(corrs) = corrections.as_deref_mut() {
+        if let Some(corrs) = corrections {
             let receiver_loc = receiver.location();
             if let Some(receiver_src) =
                 source.try_byte_slice(receiver_loc.start_offset(), receiver_loc.end_offset())

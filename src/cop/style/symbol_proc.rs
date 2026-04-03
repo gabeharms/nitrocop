@@ -236,6 +236,7 @@ impl SymbolProc {
     }
 
     /// Check a SuperNode with an attached block (e.g., `super(args) { |x| x.foo }`).
+    #[allow(clippy::too_many_arguments)]
     fn check_super_block(
         &self,
         source: &SourceFile,
@@ -302,6 +303,7 @@ impl SymbolProc {
     }
 
     /// Check the body of a block for the symbol proc pattern.
+    #[allow(clippy::too_many_arguments)]
     fn check_block_body(
         &self,
         source: &SourceFile,

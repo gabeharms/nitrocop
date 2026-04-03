@@ -51,7 +51,7 @@ impl Cop for RedundantArgument {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let _methods = config.get_string_hash("Methods");
 
@@ -127,7 +127,7 @@ impl Cop for RedundantArgument {
                 format!("Argument `{arg_src}` is redundant because it is implied by default."),
             );
 
-            if let Some(corr) = corrections.as_deref_mut() {
+            if let Some(corr) = corrections {
                 if let (Some(open), Some(close)) = (call.opening_loc(), call.closing_loc()) {
                     corr.push(crate::correction::Correction {
                         start: open.start_offset(),

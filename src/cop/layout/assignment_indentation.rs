@@ -277,6 +277,7 @@ impl AssignmentIndentation {
         Some((diagnostic, correction))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_check(
         &self,
         source: &SourceFile,

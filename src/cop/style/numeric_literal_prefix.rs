@@ -110,19 +110,19 @@ impl Cop for NumericLiteralPrefix {
         };
 
         // Check uppercase hex prefix: 0X...
-        if literal.starts_with("0X") {
+        if let Some(rest) = literal.strip_prefix("0X") {
             emit(
                 "Use 0x for hexadecimal literals.",
-                format!("{sign_prefix}0x{}", &literal[2..]),
+                format!("{sign_prefix}0x{rest}"),
             );
             return;
         }
 
         // Check uppercase binary prefix: 0B...
-        if literal.starts_with("0B") {
+        if let Some(rest) = literal.strip_prefix("0B") {
             emit(
                 "Use 0b for binary literals.",
-                format!("{sign_prefix}0b{}", &literal[2..]),
+                format!("{sign_prefix}0b{rest}"),
             );
             return;
         }
@@ -139,10 +139,10 @@ impl Cop for NumericLiteralPrefix {
         // Octal handling
         if enforced_octal_style == "zero_with_o" {
             // Bad: 0O... (uppercase)
-            if literal.starts_with("0O") {
+            if let Some(rest) = literal.strip_prefix("0O") {
                 emit(
                     "Use 0o for octal literals.",
-                    format!("{sign_prefix}0o{}", &literal[2..]),
+                    format!("{sign_prefix}0o{rest}"),
                 );
                 return;
             }

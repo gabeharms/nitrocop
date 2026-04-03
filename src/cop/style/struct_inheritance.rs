@@ -30,7 +30,7 @@ impl Cop for StructInheritance {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let class_node = match node.as_class_node() {
             Some(c) => c,
@@ -55,7 +55,7 @@ impl Cop for StructInheritance {
                 "Don't extend an instance initialized by `Struct.new`. Use a block to customize the struct.".to_string(),
             );
 
-            if let Some(corrs) = corrections.as_deref_mut() {
+            if let Some(corrs) = corrections {
                 if apply_struct_inheritance_autocorrect(source, &class_node, &superclass, corrs) {
                     diagnostic.corrected = true;
                 }

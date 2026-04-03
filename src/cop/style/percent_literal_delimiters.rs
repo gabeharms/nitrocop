@@ -22,8 +22,10 @@ use crate::parse::source::SourceFile;
 ///   `include_same_character_as_used_for_delimiter?` check matching RuboCop.
 pub struct PercentLiteralDelimiters;
 
+type DelimiterMap = HashMap<usize, Rc<HashMap<String, (u8, u8)>>>;
+
 thread_local! {
-    static PREFERRED_DELIMITERS_CACHE: RefCell<HashMap<usize, Rc<HashMap<String, (u8, u8)>>>> =
+    static PREFERRED_DELIMITERS_CACHE: RefCell<DelimiterMap> =
         RefCell::new(HashMap::new());
 }
 

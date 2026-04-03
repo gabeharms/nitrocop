@@ -114,7 +114,7 @@ impl Cop for EmptyLinesAroundArguments {
                     close_loc.start_offset(),
                     diagnostics,
                     self,
-                    corrections.as_deref_mut(),
+                    corrections,
                 );
             }
         }

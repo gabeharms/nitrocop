@@ -266,24 +266,18 @@ impl Cop for StringConcatenation {
                     &source.as_bytes()[arg_loc.start_offset()..arg_loc.end_offset()],
                 );
 
-                if recv_src.starts_with('"')
+                let can_interpolate = if recv_src.starts_with('"')
                     && recv_src.ends_with('"')
                     && !recv_src[1..recv_src.len() - 1].contains("\"")
                 {
-                    let inner = &recv_src[1..recv_src.len() - 1];
-                    corr.push(crate::correction::Correction {
-                        start: loc.start_offset(),
-                        end: loc.end_offset(),
-                        replacement: format!("\"{}#{{{}}}\"", inner, arg_src),
-                        cop_name: self.name(),
-                        cop_index: 0,
-                    });
-                    diag.corrected = true;
-                } else if recv_src.starts_with('\'')
-                    && recv_src.ends_with('\'')
-                    && !recv_src[1..recv_src.len() - 1].contains("'")
-                    && !recv_src[1..recv_src.len() - 1].contains('\\')
-                {
+                    true
+                } else {
+                    recv_src.starts_with('\'')
+                        && recv_src.ends_with('\'')
+                        && !recv_src[1..recv_src.len() - 1].contains("'")
+                        && !recv_src[1..recv_src.len() - 1].contains('\\')
+                };
+                if can_interpolate {
                     let inner = &recv_src[1..recv_src.len() - 1];
                     corr.push(crate::correction::Correction {
                         start: loc.start_offset(),

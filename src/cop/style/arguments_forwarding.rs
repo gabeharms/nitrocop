@@ -251,13 +251,14 @@ impl Cop for ArgumentsForwarding {
                 fwd_kwrest.filter(|_| kwrest_is_redundant),
                 fwd_block.filter(|_| block_is_redundant),
                 diagnostics,
-                corrections.as_deref_mut(),
+                corrections,
             );
         }
     }
 }
 
 impl ArgumentsForwarding {
+    #[allow(clippy::too_many_arguments)]
     fn report_anonymous_forwarding(
         &self,
         source: &SourceFile,

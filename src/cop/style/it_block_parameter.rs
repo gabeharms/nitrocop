@@ -141,14 +141,7 @@ impl Cop for ItBlockParameter {
         }
         if let Some(fwd_super) = node.as_forwarding_super_node() {
             if let Some(block_node) = fwd_super.block() {
-                self.check_block_params(
-                    source,
-                    node,
-                    &block_node,
-                    style,
-                    diagnostics,
-                    corrections.as_deref_mut(),
-                );
+                self.check_block_params(source, node, &block_node, style, diagnostics, corrections);
             }
         }
     }

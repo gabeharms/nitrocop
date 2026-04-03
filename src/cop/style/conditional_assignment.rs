@@ -103,8 +103,8 @@ impl Cop for ConditionalAssignment {
                             let if_stmt = &if_stmts[0];
                             let else_stmt = &else_list[0];
                             if let (Some((target, if_rhs)), Some((_, else_rhs))) = (
-                                get_assignment_parts(source, &if_stmt),
-                                get_assignment_parts(source, &else_stmt),
+                                get_assignment_parts(source, if_stmt),
+                                get_assignment_parts(source, else_stmt),
                             ) {
                                 let indent = " ".repeat(column);
                                 let body_indent = format!("{indent}  ");

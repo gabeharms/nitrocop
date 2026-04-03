@@ -480,7 +480,7 @@ impl Cop for RedundantCondition {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Handle IfNode (includes ternary)
         if let Some(if_node) = node.as_if_node() {
@@ -534,7 +534,7 @@ impl Cop for RedundantCondition {
                 kw_offset,
                 config,
                 diagnostics,
-                corrections.as_deref_mut(),
+                corrections,
             );
             return;
         }

@@ -157,8 +157,7 @@ impl Cop for HashAsLastArrayItem {
                         let inner_start = open.end_offset();
                         let inner_end = close.start_offset();
                         let inner = if inner_start <= inner_end {
-                            std::str::from_utf8(&source.as_bytes()[inner_start..inner_end])
-                                .unwrap_or("")
+                            source.byte_slice(inner_start, inner_end, "")
                         } else {
                             ""
                         };

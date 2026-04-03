@@ -270,13 +270,7 @@ impl Cop for RedundantSafeNavigation {
         // Case 4: Receiver is a guaranteed instance method call (to_s, to_i, etc.)
         // foo.to_s&.strip is redundant because to_s always returns a string
         if is_guaranteed_instance_receiver(&receiver) {
-            add_safe_nav_offense(
-                self,
-                source,
-                &op_loc,
-                diagnostics,
-                corrections.as_deref_mut(),
-            );
+            add_safe_nav_offense(self, source, &op_loc, diagnostics, corrections);
         }
 
         // Case 5: AllowedMethods used in conditions — handled by check_source below

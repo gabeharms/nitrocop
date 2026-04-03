@@ -61,6 +61,7 @@ impl ElseAlignment {
         first_nonws == offset
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_alignment_offense(
         &self,
         source: &SourceFile,
@@ -88,6 +89,7 @@ impl ElseAlignment {
 
     /// Check else alignment for begin/rescue/else constructs.
     /// `base_keyword` is the keyword name to use in the message (e.g., "begin", "def").
+    #[allow(clippy::too_many_arguments)]
     fn check_begin_else(
         &self,
         source: &SourceFile,

@@ -40,7 +40,7 @@ impl Cop for Lambda {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let style = config.get_str("EnforcedStyle", "line_count_dependent");
 
@@ -71,13 +71,7 @@ impl Cop for Lambda {
             return;
         }
 
-        self.check_lambda_method(
-            source,
-            &call,
-            style,
-            diagnostics,
-            corrections.as_deref_mut(),
-        );
+        self.check_lambda_method(source, &call, style, diagnostics, corrections);
     }
 }
 
@@ -190,7 +184,7 @@ impl Lambda {
                         "Use the `-> {}` lambda literal syntax for single-line lambdas."
                             .to_string(),
                     );
-                    if let Some(corr) = corrections.as_deref_mut() {
+                    if let Some(corr) = corrections {
                         if apply_lambda_method_autocorrect(call, corr) {
                             diagnostic.corrected = true;
                         }

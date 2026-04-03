@@ -56,7 +56,7 @@ impl Cop for MultilineMemoization {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<Correction>>,
+        corrections: Option<&mut Vec<Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "keyword");
 
@@ -109,7 +109,7 @@ impl Cop for MultilineMemoization {
 
                 // Conservative autocorrect: swap delimiters only when the
                 // parenthesized RHS already starts on a new line.
-                if let Some(corrections) = corrections.as_deref_mut() {
+                if let Some(corrections) = corrections {
                     let full = value_loc.as_slice();
                     if full.len() >= 2 {
                         let inner = &full[1..full.len() - 1];

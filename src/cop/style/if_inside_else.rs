@@ -44,7 +44,7 @@ fn build_elsif_replacement(
 
     let start = inner_if_kw.start_offset();
     let end = inner_end_kw.start_offset();
-    let raw = std::str::from_utf8(&source.as_bytes()[start..end]).ok()?;
+    let raw = source.try_byte_slice(start, end)?;
 
     let mut lines: Vec<String> = raw.lines().map(|line| line.to_string()).collect();
     if lines.is_empty() {

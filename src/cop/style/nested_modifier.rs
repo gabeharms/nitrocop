@@ -140,7 +140,7 @@ impl Cop for NestedModifier {
                 );
 
                 if let (Some(corrs), Some((outer_kw, outer_predicate))) =
-                    (corrections.as_deref_mut(), outer_if_unless.as_ref())
+                    (corrections, outer_if_unless.as_ref())
                 {
                     let (start, end, replacement) = build_if_unless_rewrite(
                         source,

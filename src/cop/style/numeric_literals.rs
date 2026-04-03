@@ -133,7 +133,7 @@ impl Cop for NumericLiterals {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Get the source location and text for either integer or float nodes
         let loc = if let Some(int_node) = node.as_integer_node() {
@@ -159,7 +159,7 @@ impl Cop for NumericLiterals {
         self.check_integer_part(source, &loc, int_part, config, diagnostics);
 
         if diagnostics.len() > before {
-            if let Some(corr) = corrections.as_deref_mut() {
+            if let Some(corr) = corrections {
                 if let Some(replacement) = normalize_numeric_literal(text) {
                     corr.push(crate::correction::Correction {
                         start: loc.start_offset(),

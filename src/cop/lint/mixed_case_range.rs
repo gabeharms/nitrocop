@@ -217,6 +217,7 @@ impl MixedCaseRange {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_regexp_class(
         &self,
         source: &SourceFile,

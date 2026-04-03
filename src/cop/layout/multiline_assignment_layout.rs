@@ -165,7 +165,7 @@ impl Cop for MultilineAssignmentLayout {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<Correction>>,
+        corrections: Option<&mut Vec<Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "new_line");
         let supported_types = config
@@ -219,7 +219,7 @@ impl Cop for MultilineAssignmentLayout {
                         "Right hand side of multi-line assignment is on the same line as the assignment operator `=`.".to_string(),
                     );
 
-                    if let Some(corrections) = corrections.as_deref_mut() {
+                    if let Some(corrections) = corrections {
                         let indent = leading_indent(source, eq_line).unwrap_or(0)
                             + config.get_usize("IndentationWidth", 2);
                         corrections.push(Correction {

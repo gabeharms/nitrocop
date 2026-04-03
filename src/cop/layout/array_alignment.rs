@@ -259,6 +259,7 @@ impl ArrayAlignment {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_element_alignment(
         &self,
         source: &SourceFile,

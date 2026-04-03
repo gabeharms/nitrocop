@@ -310,7 +310,7 @@ impl Cop for RedundantSelfAssignment {
                     ),
                 );
 
-                if let Some(corr) = corrections.as_deref_mut() {
+                if let Some(corr) = corrections {
                     let replacement = std::str::from_utf8(rhs_call.location().as_slice())
                         .unwrap_or("")
                         .to_string();

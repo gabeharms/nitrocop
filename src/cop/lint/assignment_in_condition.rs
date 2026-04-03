@@ -144,6 +144,7 @@ const MSG_WITHOUT_SAFE_ASSIGNMENT: &str =
 
 /// Recursively traverses a condition node tree looking for assignments.
 /// Mirrors RuboCop's `traverse_node` logic.
+#[allow(clippy::too_many_arguments)]
 fn traverse_condition(
     source: &SourceFile,
     node: &ruby_prism::Node<'_>,
@@ -392,6 +393,7 @@ fn find_call_assignment_equals(
 }
 
 /// Recurse into child nodes of common condition expression types.
+#[allow(clippy::too_many_arguments)]
 fn recurse_children(
     source: &SourceFile,
     node: &ruby_prism::Node<'_>,

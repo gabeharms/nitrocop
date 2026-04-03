@@ -42,7 +42,7 @@ impl Cop for SuperArguments {
         _code_map: &crate::parse::codemap::CodeMap,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let mut visitor = SuperArgumentsVisitor {
             cop: self,
@@ -54,7 +54,7 @@ impl Cop for SuperArguments {
         visitor.visit(&parse_result.node());
         diagnostics.extend(visitor.diagnostics);
 
-        if let Some(corr) = corrections.as_deref_mut() {
+        if let Some(corr) = corrections {
             corr.extend(visitor.pending_corrections);
         }
     }

@@ -198,10 +198,9 @@ impl Cop for EndlessMethod {
                             column,
                             "Avoid endless method definitions with multiple lines.".to_string(),
                         ));
-                        if let (Some(corrections), Some(replacement)) = (
-                            corrections.as_deref_mut(),
-                            endless_to_regular(source, &def_node),
-                        ) {
+                        if let (Some(corrections), Some(replacement)) =
+                            (corrections, endless_to_regular(source, &def_node))
+                        {
                             corrections.push(Correction {
                                 start: def_node.location().start_offset(),
                                 end: def_node.location().end_offset(),

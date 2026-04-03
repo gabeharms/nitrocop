@@ -96,7 +96,7 @@ impl Cop for ClosingParenthesisIndentation {
                         call.arguments(),
                         node_col,
                         config,
-                        corrections.as_mut().map(|c| &mut **c),
+                        corrections.as_deref_mut(),
                     ));
                     return;
                 }
@@ -117,7 +117,7 @@ impl Cop for ClosingParenthesisIndentation {
                     close_loc,
                     parens.body(),
                     config,
-                    corrections.as_mut().map(|c| &mut **c),
+                    corrections.as_deref_mut(),
                 ));
             }
             return;
@@ -135,13 +135,14 @@ impl Cop for ClosingParenthesisIndentation {
                     close_loc,
                     def_node.parameters(),
                     config,
-                    corrections.as_mut().map(|c| &mut **c),
+                    corrections,
                 ));
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_parens(
     source: &SourceFile,
     cop: &ClosingParenthesisIndentation,

@@ -256,7 +256,7 @@ impl Cop for HeredocIndentation {
                         indentation_width, indent_type_str,
                     ),
                 );
-                if let Some(corrections) = corrections.as_deref_mut() {
+                if let Some(corrections) = corrections {
                     if add_heredoc_indent_corrections(
                         source,
                         opening_loc.start_offset(),

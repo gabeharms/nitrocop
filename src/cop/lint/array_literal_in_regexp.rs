@@ -72,11 +72,10 @@ impl RegexpArrayVisitor<'_, '_> {
 
         let loc = node.location();
         if node.as_integer_node().is_some() || node.as_float_node().is_some() {
-            return std::str::from_utf8(
-                &self.source.as_bytes()[loc.start_offset()..loc.end_offset()],
-            )
-            .ok()
-            .map(str::to_string);
+            return self
+                .source
+                .try_byte_slice(loc.start_offset(), loc.end_offset())
+                .map(str::to_string);
         }
 
         None

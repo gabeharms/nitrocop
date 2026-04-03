@@ -120,7 +120,7 @@ impl Cop for DuplicateRegexpCharacterClassElement {
                 &offsets,
                 extended,
                 diagnostics,
-                corrections.as_deref_mut(),
+                corrections,
             );
         }
     }

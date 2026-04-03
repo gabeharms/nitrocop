@@ -185,22 +185,19 @@ fn build_replacement(
     keyword: &str,
 ) -> Option<String> {
     let condition_loc = if_node.predicate().location();
-    let condition_src = std::str::from_utf8(
-        &source.as_bytes()[condition_loc.start_offset()..condition_loc.end_offset()],
-    )
-    .ok()?
-    .trim();
+    let condition_src = source
+        .try_byte_slice(condition_loc.start_offset(), condition_loc.end_offset())?
+        .trim();
 
     let assignment_value = opposite_branch
         .as_ref()
         .and_then(|stmts| stmts.body().iter().next())
-        .map(|node| {
+        .and_then(|node| {
             let loc = node.location();
-            std::str::from_utf8(&source.as_bytes()[loc.start_offset()..loc.end_offset()])
-                .ok()
+            source
+                .try_byte_slice(loc.start_offset(), loc.end_offset())
                 .map(|s| s.trim().to_string())
         })
-        .flatten()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "nil".to_string());
 

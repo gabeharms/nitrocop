@@ -10,6 +10,7 @@ use crate::parse::source::SourceFile;
 /// and only collecting `StringNode` content for the slash check.
 pub struct RegexpLiteral;
 
+#[allow(clippy::too_many_arguments)]
 fn push_slashes_diagnostic(
     cop: &RegexpLiteral,
     source: &SourceFile,

@@ -125,11 +125,9 @@ impl Cop for KeywordParametersOrder {
             let mut optional_src: Vec<&str> = Vec::new();
             for kw in &keywords {
                 let loc = kw.location();
-                let kw_src = match std::str::from_utf8(
-                    &source.as_bytes()[loc.start_offset()..loc.end_offset()],
-                ) {
-                    Ok(s) => s.trim(),
-                    Err(_) => return,
+                let kw_src = match source.try_byte_slice(loc.start_offset(), loc.end_offset()) {
+                    Some(s) => s.trim(),
+                    None => return,
                 };
                 if kw.as_required_keyword_parameter_node().is_some() {
                     required_src.push(kw_src);

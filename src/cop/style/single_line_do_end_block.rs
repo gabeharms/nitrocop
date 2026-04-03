@@ -23,6 +23,7 @@ use crate::parse::source::SourceFile;
 pub struct SingleLineDoEndBlock;
 
 impl SingleLineDoEndBlock {
+    #[allow(clippy::too_many_arguments)]
     fn check_do_end_block(
         &self,
         source: &SourceFile,
@@ -150,7 +151,7 @@ impl Cop for SingleLineDoEndBlock {
                 lambda.closing_loc(),
                 lambda.opening_loc().end_offset(),
                 diagnostics,
-                corrections.as_deref_mut(),
+                corrections,
             );
         }
     }

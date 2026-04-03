@@ -25,7 +25,7 @@ impl Cop for RedundantDoubleSplatHashBraces {
         _parse_result: &ruby_prism::ParseResult<'_>,
         _config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         // Look for **{key: val, ...} in keyword arguments (KeywordHashNode in method calls)
         // Only check KeywordHashNode (method call keyword args), not plain HashNode
@@ -38,7 +38,7 @@ impl Cop for RedundantDoubleSplatHashBraces {
             source,
             keyword_hash.elements().iter(),
             diagnostics,
-            corrections.as_deref_mut(),
+            corrections,
         );
     }
 }
@@ -94,9 +94,7 @@ impl RedundantDoubleSplatHashBraces {
                             if let (Some(first), Some(last)) = (first, last) {
                                 let start = first.location().start_offset();
                                 let end = last.location().end_offset();
-                                if let Ok(replacement) =
-                                    std::str::from_utf8(&source.as_bytes()[start..end])
-                                {
+                                if let Some(replacement) = source.try_byte_slice(start, end) {
                                     corr.push(crate::correction::Correction {
                                         start: loc.start_offset(),
                                         end: loc.end_offset(),
@@ -156,16 +154,14 @@ impl RedundantDoubleSplatHashBraces {
                             if let (Some(first), Some(last)) = (first, last) {
                                 let start = first.location().start_offset();
                                 let end = last.location().end_offset();
-                                if let Ok(hash_pairs) =
-                                    std::str::from_utf8(&source.as_bytes()[start..end])
-                                {
+                                if let Some(hash_pairs) = source.try_byte_slice(start, end) {
                                     let mut replacement = hash_pairs.to_string();
                                     for arg in &arg_list {
                                         let arg_start = arg.location().start_offset();
                                         let arg_end = arg.location().end_offset();
-                                        if let Ok(arg_text) = std::str::from_utf8(
-                                            &source.as_bytes()[arg_start..arg_end],
-                                        ) {
+                                        if let Some(arg_text) =
+                                            source.try_byte_slice(arg_start, arg_end)
+                                        {
                                             replacement.push_str(", **");
                                             replacement.push_str(arg_text);
                                         }

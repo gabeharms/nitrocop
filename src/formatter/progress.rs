@@ -25,7 +25,7 @@ impl Formatter for ProgressFormatter {
         let offense_file_count = worst_by_file.len();
         let clean_file_count = file_count.saturating_sub(offense_file_count);
         let mut progress = String::new();
-        for (_, &severity) in &worst_by_file {
+        for &severity in worst_by_file.values() {
             progress.push(severity.letter());
         }
         for _ in 0..clean_file_count {

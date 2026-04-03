@@ -88,7 +88,7 @@ impl Cop for BooleanSymbol {
             symbol_node.location(),
             boolean_name,
             diagnostics,
-            corrections.as_deref_mut(),
+            corrections,
             format!(":{boolean_name} =>"),
         );
     }

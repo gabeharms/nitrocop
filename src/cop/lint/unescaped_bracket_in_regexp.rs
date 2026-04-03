@@ -117,6 +117,7 @@ fn is_extended_regex(closing_loc: &[u8]) -> bool {
     closing_loc.contains(&b'x')
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan_regex_segment(
     cop: &UnescapedBracketInRegexp,
     source: &SourceFile,

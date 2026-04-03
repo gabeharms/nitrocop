@@ -112,6 +112,7 @@ impl RescueEnsureAlignment {
         false
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_alignment_offense(
         &self,
         source: &SourceFile,
@@ -141,6 +142,7 @@ impl RescueEnsureAlignment {
     /// `align_col` is the column the rescue/ensure should align to.
     /// `align_line` is the line of the enclosing keyword (for same-line checks).
     /// `keyword` is the name used in the diagnostic message (e.g., "def", "class").
+    #[allow(clippy::too_many_arguments)]
     fn check_implicit_begin(
         &self,
         source: &SourceFile,

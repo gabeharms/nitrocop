@@ -244,6 +244,7 @@ impl Cop for EndAlignment {
 }
 
 impl EndAlignment {
+    #[allow(clippy::too_many_arguments)]
     fn check_keyword_end(
         &self,
         source: &SourceFile,

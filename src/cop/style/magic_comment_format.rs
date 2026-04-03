@@ -122,6 +122,7 @@ impl Cop for MagicCommentFormat {
 }
 
 impl MagicCommentFormat {
+    #[allow(clippy::too_many_arguments)]
     fn check_directive_style(
         diagnostics: &mut Vec<Diagnostic>,
         corrections: &mut Option<&mut Vec<crate::correction::Correction>>,

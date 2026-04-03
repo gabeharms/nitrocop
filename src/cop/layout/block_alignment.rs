@@ -410,7 +410,7 @@ impl Cop for BlockAlignment {
                         end_line,
                         closing_loc.start_offset(),
                         expression_start_col,
-                        corrections.as_deref_mut(),
+                        corrections,
                     );
                     diagnostics.push(self.diagnostic(
                         source,
@@ -550,7 +550,7 @@ impl BlockAlignment {
                         end_line,
                         closing_loc.start_offset(),
                         expression_start_col,
-                        corrections.as_deref_mut(),
+                        corrections,
                     );
                     diagnostics.push(self.diagnostic(
                         source,

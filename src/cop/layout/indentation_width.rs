@@ -187,6 +187,7 @@ impl IndentationWidth {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_member_indentation(
         &self,
         source: &SourceFile,
@@ -236,6 +237,7 @@ impl IndentationWidth {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_class_like_members(
         &self,
         source: &SourceFile,
@@ -360,6 +362,7 @@ impl IndentationWidth {
         diagnostics
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_block_internal_method_members(
         &self,
         source: &SourceFile,
@@ -428,6 +431,7 @@ impl IndentationWidth {
     /// Check body indentation.
     /// `keyword_offset` is used to determine which line the keyword is on (for same-line skip).
     /// `base_col` is the column that expected indentation is relative to.
+    #[allow(clippy::too_many_arguments)]
     fn check_body_indentation(
         &self,
         source: &SourceFile,
@@ -506,6 +510,7 @@ impl IndentationWidth {
         Vec::new()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_statements_indentation(
         &self,
         source: &SourceFile,
@@ -641,7 +646,7 @@ impl IndentationWidth {
                 ensure_node.statements(),
                 width,
                 skip_tabs,
-                corrections.as_deref_mut(),
+                corrections,
             ));
         }
     }
@@ -1185,7 +1190,7 @@ impl Cop for IndentationWidth {
                 until_node.statements(),
                 width,
                 skip_tabs,
-                corrections.as_deref_mut(),
+                corrections,
             ));
         }
     }

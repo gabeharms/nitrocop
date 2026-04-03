@@ -182,6 +182,7 @@ impl AmbiguousOperatorPrecedence {
     /// `check_arithmetic` controls whether CallNode (arithmetic/bitwise) children
     /// are checked. Keyword `and`/`or` only flag logical mixing (AndNode inside
     /// OrNode), while symbolic `&&`/`||` also flag arithmetic children.
+    #[allow(clippy::too_many_arguments)]
     fn check_logical_children(
         &self,
         source: &SourceFile,

@@ -96,7 +96,7 @@ impl Cop for AccessorGrouping {
         _parse_result: &ruby_prism::ParseResult<'_>,
         config: &CopConfig,
         diagnostics: &mut Vec<Diagnostic>,
-        mut corrections: Option<&mut Vec<crate::correction::Correction>>,
+        corrections: Option<&mut Vec<crate::correction::Correction>>,
     ) {
         let enforced_style = config.get_str("EnforcedStyle", "grouped");
 
@@ -122,13 +122,7 @@ impl Cop for AccessorGrouping {
         };
 
         if enforced_style == "grouped" {
-            check_grouped(
-                self,
-                source,
-                &stmts,
-                diagnostics,
-                corrections.as_deref_mut(),
-            );
+            check_grouped(self, source, &stmts, diagnostics, corrections);
         }
     }
 }
@@ -378,11 +372,10 @@ fn accessor_call_info(
     let args_loc = args.location();
     let call_loc = call.location();
 
-    let args_source =
-        std::str::from_utf8(&source.as_bytes()[args_loc.start_offset()..args_loc.end_offset()])
-            .ok()?
-            .trim()
-            .to_string();
+    let args_source = source
+        .try_byte_slice(args_loc.start_offset(), args_loc.end_offset())?
+        .trim()
+        .to_string();
 
     if args_source.is_empty() {
         return None;

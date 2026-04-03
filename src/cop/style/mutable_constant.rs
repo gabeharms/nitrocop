@@ -529,7 +529,7 @@ impl Cop for MutableConstant {
                 &value,
                 frozen_strings,
                 enforced_style,
-                corrections.as_deref_mut(),
+                corrections,
             ));
         }
     }

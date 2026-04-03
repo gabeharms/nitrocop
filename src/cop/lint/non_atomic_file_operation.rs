@@ -359,10 +359,9 @@ impl Cop for NonAtomicFileOperation {
         let should_emit_atomic_offense = !is_force_method(method) && !file_op_has_force_option;
         let keyword_loc = if let Some(if_node) = node.as_if_node() {
             if_node.if_keyword_loc()
-        } else if let Some(unless_node) = node.as_unless_node() {
-            Some(unless_node.keyword_loc())
         } else {
-            None
+            node.as_unless_node()
+                .map(|unless_node| unless_node.keyword_loc())
         };
 
         let mut did_autocorrect = false;

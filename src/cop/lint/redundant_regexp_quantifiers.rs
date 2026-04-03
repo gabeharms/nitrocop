@@ -101,6 +101,7 @@ impl Cop for RedundantRegexpQuantifiers {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_quantifier_correction(
     corrections: &mut Vec<Correction>,
     cop: &RedundantRegexpQuantifiers,

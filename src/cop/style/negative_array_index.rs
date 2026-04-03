@@ -295,6 +295,7 @@ impl NegativeArrayIndex {
         diagnostics.push(diag);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_range_pattern(
         &self,
         source: &SourceFile,

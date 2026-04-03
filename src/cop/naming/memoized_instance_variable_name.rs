@@ -112,6 +112,7 @@ impl MemoizedInstanceVariableName {
     /// RuboCop's `on_or_asgn` fires for EVERY `||=`, so `@a ||= @b ||= expr`
     /// flags both `@a` and `@b` independently. `body.children.last` for the outer
     /// `||=` returns the inner `||=`, which equals the inner node.
+    #[allow(clippy::too_many_arguments)]
     fn check_or_write_chain(
         &self,
         source: &SourceFile,
@@ -341,6 +342,7 @@ impl MemoizedInstanceVariableName {
 
     /// Check the `defined?` memoization pattern and emit offenses on each ivar reference.
     /// RuboCop emits one offense per ivar occurrence (defined? check, return, assignment).
+    #[allow(clippy::too_many_arguments)]
     fn check_defined_memoized(
         &self,
         source: &SourceFile,

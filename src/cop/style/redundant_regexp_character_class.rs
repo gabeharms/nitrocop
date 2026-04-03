@@ -147,6 +147,7 @@ fn is_extended_regex(closing_loc: &[u8]) -> bool {
     closing_loc.contains(&b'x')
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_regexp_fragment(
     cop: &RedundantRegexpCharacterClass,
     source: &SourceFile,
@@ -200,6 +201,7 @@ fn check_regexp_fragment(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_character_class(
     cop: &RedundantRegexpCharacterClass,
     source: &SourceFile,

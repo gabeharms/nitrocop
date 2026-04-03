@@ -307,8 +307,7 @@ fn git_ls_ruby_files(dir: &Path) -> Option<DiscoveredDirectory> {
             watched_files.insert(line.to_string());
         }
 
-        if line.ends_with("/.rubocop.yml") {
-            let parent_rel = &line[..line.len() - "/.rubocop.yml".len()];
+        if let Some(parent_rel) = line.strip_suffix("/.rubocop.yml") {
             if !parent_rel.is_empty() {
                 sub_config_dirs.push(dir.join(parent_rel));
                 sub_config_dirs_rel.push(parent_rel.to_string());
